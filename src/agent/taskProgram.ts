@@ -42,10 +42,12 @@ export interface HistoryTaskStep extends TaskActionStepBase { kind: 'history'; a
 export interface AssertTaskStep { id: string; kind: 'assert'; description?: string; condition: TaskPredicate; next: string; onFailure?: string; }
 export interface BranchTaskStep { id: string; kind: 'branch'; description?: string; condition: TaskPredicate; then: string; else: string; }
 export interface WaitTaskStep { id: string; kind: 'wait'; description?: string; condition: TaskPredicate; next: string; onTimeout?: string; maxPolls?: number; pollIntervalMs?: number; }
+/** Observe-only quiet-network wait. It never participates in interaction risk/approval. */
+export interface WaitNetworkIdleTaskStep { id: string; kind: 'wait-network-idle'; description?: string; next: string; onTimeout?: string; quietMs?: number; maxInflight?: number; timeoutMs?: number; pollIntervalMs?: number; }
 export interface FailTaskStep { id: string; kind: 'fail'; description?: string; }
 export interface CompleteTaskStep { id: string; kind: 'complete'; description?: string; condition?: TaskPredicate; onFailure?: string; }
 
-export type TaskStep = ActivateTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | FailTaskStep | CompleteTaskStep;
+export type TaskStep = ActivateTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
 export interface TaskProgram { version: 1; name?: string; entry: string; inputs?: readonly string[]; steps: readonly TaskStep[]; }
 export interface TaskProgramValidation { valid: boolean; errors: string[]; warnings: string[]; }
 
@@ -64,7 +66,7 @@ function referencedStepIds(step: TaskStep): string[] {
   switch (step.kind) {
     case 'activate': case 'type': case 'upload': case 'press-key': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch': return [step.then, step.else];
-    case 'wait': return [step.next, ...(step.onTimeout ? [step.onTimeout] : [])];
+    case 'wait': case 'wait-network-idle': return [step.next, ...(step.onTimeout ? [step.onTimeout] : [])];
     case 'fail': return [];
     case 'complete': return step.onFailure ? [step.onFailure] : [];
   }
@@ -103,6 +105,12 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
     if (stepMap.has(step.id)) errors.push(`duplicate step id: ${step.id}`); else stepMap.set(step.id, step);
     if (step.kind === 'upload' && step.files.length < 1) errors.push(`upload step ${step.id} requires at least one file`);
     if (step.kind === 'press-key') { if (!step.key.trim()) errors.push(`press-key step ${step.id} key must be non-empty`); if (step.maxSamples !== undefined && (!Number.isInteger(step.maxSamples) || step.maxSamples < 1)) errors.push(`press-key step ${step.id} maxSamples must be a positive integer`); if (step.pollIntervalMs !== undefined && (!Number.isFinite(step.pollIntervalMs) || step.pollIntervalMs < 0)) errors.push(`press-key step ${step.id} pollIntervalMs must be non-negative`); if (step.timeoutMs !== undefined && (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1)) errors.push(`press-key step ${step.id} timeoutMs must be positive`); }
+    if (step.kind === 'wait-network-idle') {
+      if (step.quietMs !== undefined && (!Number.isFinite(step.quietMs) || step.quietMs < 0)) errors.push(`wait-network-idle step ${step.id} quietMs must be non-negative`);
+      if (step.maxInflight !== undefined && (!Number.isInteger(step.maxInflight) || step.maxInflight < 0)) errors.push(`wait-network-idle step ${step.id} maxInflight must be a non-negative integer`);
+      if (step.timeoutMs !== undefined && (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 0)) errors.push(`wait-network-idle step ${step.id} timeoutMs must be non-negative`);
+      if (step.pollIntervalMs !== undefined && (!Number.isFinite(step.pollIntervalMs) || step.pollIntervalMs < 0)) errors.push(`wait-network-idle step ${step.id} pollIntervalMs must be non-negative`);
+    }
     if (step.kind === 'wait' || step.kind === 'navigate' || step.kind === 'history') validatePollFields(step.id, step.maxPolls, step.pollIntervalMs, errors);
     if ((step.kind === 'navigate' || step.kind === 'history') && step.timeoutMs !== undefined && (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1)) errors.push(`${step.kind} step ${step.id} timeoutMs must be positive`);
     if (step.kind === 'type' && step.delayMs !== undefined && (!Number.isFinite(step.delayMs) || step.delayMs < 0)) errors.push(`type step ${step.id} delayMs must be non-negative`);
