@@ -1,7 +1,16 @@
 import type { BrowserInteractionObserver } from '../browser/cdpObserver.js';
 import type { BrowserInput } from '../input/browserInput.js';
-import { InteractionModel, type InteractionModelPlanOptions } from '../model/interactionModel.js';
-import { resolveInteractionTarget, type TargetQuery } from '../model/targetResolver.js';
+import {
+  InteractionModel,
+  type ExplainedInteractionPlan,
+  type InteractionModelPlanOptions,
+} from '../model/interactionModel.js';
+import {
+  resolveInteractionTarget,
+  resolveInteractionTargetDetailed,
+  type TargetQuery,
+  type TargetResolution,
+} from '../model/targetResolver.js';
 import { VirtualTouchpad, type VirtualTouchpadOptions } from '../motor/virtualTouchpad.js';
 import { PointerController, type PointerControllerOptions } from '../controller/pointerController.js';
 import { BrowserEdgeDispatcher } from '../controller/browserEdgeDispatcher.js';
@@ -118,8 +127,12 @@ export class InteractionEngine {
   }
 
   async resolve(query: TargetQuery | string): Promise<InteractionNode | null> {
+    return (await this.resolveDetailed(query)).target;
+  }
+
+  async resolveDetailed(query: TargetQuery | string): Promise<TargetResolution> {
     const nodes = await this.refresh();
-    return resolveInteractionTarget(nodes, query);
+    return resolveInteractionTargetDetailed(nodes, query);
   }
 
   async acquire(query: TargetQuery | string, options: AcquireOptions = {}): Promise<AcquireResult> {
@@ -130,11 +143,12 @@ export class InteractionEngine {
 
     let reveal: ScrollRevealResult | undefined;
     if (options.autoReveal !== false && shouldAutoReveal(target) && this.observer.viewportRect) {
+      const targetIdBeforeReveal = target.id;
       reveal = await this.revealController.reveal(target, options.revealOptions);
       if (reveal.status === 'revealed' || reveal.status === 'already-visible') {
         nodes = await this.planningSnapshot();
         this.model.refresh(nodes);
-        target = nodes.find((node) => node.id === target!.id) ?? resolveInteractionTarget(nodes, query);
+        target = nodes.find((node) => node.id === targetIdBeforeReveal) ?? resolveInteractionTarget(nodes, query);
         if (!target) {
           return { status: 'target-not-found', target: null, execution: null, reveal };
         }
@@ -189,5 +203,13 @@ export class InteractionEngine {
 
   planTo(startId: string, targetId: string, options: InteractionModelPlanOptions = {}) {
     return this.model.plan(startId, targetId, options);
+  }
+
+  explainPlanTo(
+    startId: string,
+    targetId: string,
+    options: InteractionModelPlanOptions = {},
+  ): ExplainedInteractionPlan | null {
+    return this.model.explainPlan(startId, targetId, options);
   }
 }
