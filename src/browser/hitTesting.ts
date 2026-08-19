@@ -18,8 +18,11 @@ interface HitTestRequest {
 }
 
 function localNodePath(node: InteractionNode): string {
+  const structuralIdentity = node.structuralId ?? node.id;
   const prefix = `${node.frameId}:`;
-  return node.id.startsWith(prefix) ? node.id.slice(prefix.length) : node.id;
+  return structuralIdentity.startsWith(prefix)
+    ? structuralIdentity.slice(prefix.length)
+    : structuralIdentity;
 }
 
 /**
