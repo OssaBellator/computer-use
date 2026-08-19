@@ -125,7 +125,7 @@ export class SemanticActionController {
       activationHasEvidence,
       options,
     );
-    return this.observationResult(current, observed, method);
+    return this.observationResult(current, before, observed, method);
   }
 
   async typeInto(
@@ -178,11 +178,12 @@ export class SemanticActionController {
       (delta) => valueChangeSucceeded(delta, current.id, options.expectedValue),
       options,
     );
-    return this.observationResult(current, typed, undefined);
+    return this.observationResult(current, before, typed, undefined);
   }
 
   private observationResult(
     target: InteractionNode,
+    before: readonly InteractionNode[],
     observed: ObservationWaitResult,
     method?: Exclude<ActivationMethod, 'auto'>,
   ): SemanticActionResult {
@@ -190,7 +191,7 @@ export class SemanticActionController {
       status: observed.matched ? 'verified' : 'unverified',
       verified: observed.matched,
       target,
-      before: [],
+      before,
       after: observed.after,
       delta: observed.delta,
       method,
