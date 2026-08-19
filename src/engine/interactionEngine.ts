@@ -24,6 +24,7 @@ import { ReplanningExecutor, type ReplanningOptions, type ReplanningResult } fro
 import {
   SemanticActionController,
   type ActivateTargetOptions,
+  type HoverTargetOptions,
   type SemanticActionResult,
   type SemanticActionStatus,
   type TypeIntoTargetOptions,
@@ -64,11 +65,24 @@ export interface AcquireResult {
 
 export interface EngineActivateOptions extends AcquireOptions, ActivateTargetOptions {}
 export interface EngineTypeIntoOptions extends AcquireOptions, TypeIntoTargetOptions {}
+export interface EngineHoverOptions extends HoverTargetOptions {
+  autoReveal?: boolean;
+  revealOptions?: ScrollRevealOptions;
+  requireUnambiguous?: boolean;
+}
 
 export interface EngineSemanticActionResult {
   status: AcquireResult['status'] | SemanticActionStatus;
   target: InteractionNode | null;
   acquisition: AcquireResult;
+  action: SemanticActionResult | null;
+}
+
+export interface EngineHoverActionResult {
+  status: SemanticActionStatus | 'target-not-found' | 'target-ambiguous';
+  target: InteractionNode | null;
+  resolution: TargetResolution;
+  reveal?: ScrollRevealResult;
   action: SemanticActionResult | null;
 }
 
@@ -178,6 +192,42 @@ export class InteractionEngine {
     options: Parameters<KeyboardActionController['press']>[1] = {},
   ): Promise<KeyboardActionResult> {
     return this.keyboard.press(key, options);
+  }
+
+  /** Resolve/reveal without pre-hover pointer acquisition, then verify hover evidence. */
+  async hover(
+    query: TargetQuery | string,
+    options: EngineHoverOptions = {},
+  ): Promise<EngineHoverActionResult> {
+    let nodes = await this.refresh();
+    let resolution = resolveInteractionTargetDetailed(nodes, query);
+    let target = resolution.target;
+    if (!target) {
+      return { status: 'target-not-found', target: null, resolution, action: null };
+    }
+    if (options.requireUnambiguous && resolution.ambiguous) {
+      return { status: 'target-ambiguous', target, resolution, action: null };
+    }
+
+    let reveal: ScrollRevealResult | undefined;
+    if (options.autoReveal !== false && shouldAutoReveal(target)) {
+      const targetIdBeforeReveal = target.id;
+      reveal = await this.revealController.reveal(target, options.revealOptions);
+      if (reveal.status === 'revealed' || reveal.status === 'already-visible') {
+        nodes = await this.refresh();
+        resolution = resolveInteractionTargetDetailed(nodes, query);
+        target = nodes.find((node) => node.id === targetIdBeforeReveal) ?? resolution.target;
+        if (!target) {
+          return { status: 'target-not-found', target: null, resolution, reveal, action: null };
+        }
+        if (options.requireUnambiguous && resolution.ambiguous) {
+          return { status: 'target-ambiguous', target, resolution, reveal, action: null };
+        }
+      }
+    }
+
+    const action = await this.actions.hover(target, options);
+    return { status: action.status, target: action.target, resolution, ...(reveal ? { reveal } : {}), action };
   }
 
   async acquire(query: TargetQuery | string, options: AcquireOptions = {}): Promise<AcquireResult> {
