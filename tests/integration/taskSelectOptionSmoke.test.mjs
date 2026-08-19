@@ -82,7 +82,7 @@ test('static select-option task changes a real native Chromium select', async (t
 
   await client.send('Runtime.evaluate', {
     expression: `(() => {
-      document.body.innerHTML = '<label>Fruit <select id="fruit"><option value="a">Apple</option><option value="b">Banana</option></select></label>';
+      document.body.innerHTML = '<label for="fruit">Fruit</label><select id="fruit"><option value="a">Apple</option><option value="b">Banana</option></select>';
       window.__selectEvents = { input: 0, change: 0 };
       const select = document.querySelector('#fruit');
       select.addEventListener('input', () => window.__selectEvents.input += 1);
