@@ -6,6 +6,7 @@ export * from './browser/domSnapshot.js';
 export * from './browser/hitTesting.js';
 export * from './focus/focusTopology.js';
 export * from './planner/actionPlanner.js';
+export * from './model/edgePerformance.js';
 export * from './model/interactionModel.js';
 export * from './verification/actionVerifier.js';
 export * from './input/browserInput.js';
