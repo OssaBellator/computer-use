@@ -6,6 +6,11 @@ interface RawNode {
   role?: string;
   name?: string;
   value?: string;
+  expanded?: boolean;
+  checked?: boolean | 'mixed';
+  selected?: boolean;
+  pressed?: boolean | 'mixed';
+  activeDescendantId?: string;
   focused: boolean;
   disabled: boolean;
   rect?: Rect;
@@ -26,7 +31,8 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
       '[contenteditable="true"]', '[tabindex]', '[role="button"]',
       '[role="link"]', '[role="textbox"]', '[role="checkbox"]',
       '[role="radio"]', '[role="menuitem"]', 'nav', 'header', 'form',
-      '[aria-expanded]',
+      '[aria-expanded]', '[aria-checked]', '[aria-selected]', '[aria-pressed]',
+      '[aria-activedescendant]',
     ];
 
     function elementSegment(element: Element): string {
@@ -39,7 +45,6 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
       return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
     }
 
-    /** Includes explicit shadow-boundary markers to avoid light/shadow ID collisions. */
     function domPath(element: Element): string {
       const parts: string[] = [];
       let current: Element | null = element;
@@ -111,10 +116,11 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
         if (!visible) continue;
 
         const html = element as HTMLElement;
-        const disabled =
+        const nativeDisabled =
           (element instanceof HTMLButtonElement || element instanceof HTMLInputElement ||
             element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) &&
           element.disabled;
+        const disabled = nativeDisabled || element.getAttribute('aria-disabled') === 'true';
         const editable = element instanceof HTMLInputElement ||
           element instanceof HTMLTextAreaElement || html.isContentEditable;
         const focusable = !disabled && html.tabIndex >= 0;
@@ -136,6 +142,23 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
         if (scrollable) capabilities.push('scroll');
         if (element.hasAttribute('aria-expanded')) capabilities.push('expand');
 
+        const ariaChecked = element.getAttribute('aria-checked');
+        const ariaPressed = element.getAttribute('aria-pressed');
+        const expanded = element.hasAttribute('aria-expanded')
+          ? element.getAttribute('aria-expanded') === 'true'
+          : undefined;
+        const checked = element instanceof HTMLInputElement &&
+          (element.type === 'checkbox' || element.type === 'radio')
+          ? element.checked
+          : ariaChecked === 'mixed' ? 'mixed' :
+            ariaChecked === 'true' ? true : ariaChecked === 'false' ? false : undefined;
+        const selected = element.hasAttribute('aria-selected')
+          ? element.getAttribute('aria-selected') === 'true'
+          : undefined;
+        const pressed = ariaPressed === 'mixed' ? 'mixed' :
+          ariaPressed === 'true' ? true : ariaPressed === 'false' ? false : undefined;
+        const activeDescendantId = element.getAttribute('aria-activedescendant') ?? undefined;
+
         const name = accessibleName(element);
         const confidence = Math.max(0.25, Math.min(1,
           0.35 + (focusable ? 0.2 : 0) + (clickable || editable ? 0.25 : 0) +
@@ -143,7 +166,7 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
         ));
 
         results.push({
-          path: domPath(element), role, name,
+          path: domPath(element), role, name, expanded, checked, selected, pressed, activeDescendantId,
           value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ||
             element instanceof HTMLSelectElement ? element.value : undefined,
           focused: deepActiveElement() === element,
@@ -165,8 +188,6 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
 }
 
 function framePath(frame: Frame, allFrames: readonly Frame[]): string {
-  // Playwright Frame lacks a public stable ID. Use a deterministic structural path
-  // for now; CDP backend/frame IDs will replace this in the identity-fusion layer.
   const index = allFrames.indexOf(frame);
   return index === 0 ? 'main' : `frame-${index}`;
 }
