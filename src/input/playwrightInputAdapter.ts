@@ -1,17 +1,32 @@
-import type { Page } from 'playwright-core';
 import type { BrowserInput, MouseButton } from './browserInput.js';
 import type { Point } from '../types.js';
 
+export interface PlaywrightMouseLike {
+  move(x: number, y: number): Promise<void>;
+  down(options?: { button?: MouseButton }): Promise<void>;
+  up(options?: { button?: MouseButton }): Promise<void>;
+  wheel(deltaX: number, deltaY: number): Promise<void>;
+}
+
+export interface PlaywrightKeyboardLike {
+  press(key: string): Promise<void>;
+  down(key: string): Promise<void>;
+  up(key: string): Promise<void>;
+  type(text: string, options?: { delay?: number }): Promise<void>;
+}
+
+export interface PlaywrightPageInputLike {
+  mouse: PlaywrightMouseLike;
+  keyboard: PlaywrightKeyboardLike;
+}
+
 /**
- * Browser input adapter backed by Playwright's pointer/keyboard primitives.
- *
- * These APIs route input through the browser automation stack rather than
- * calling element.dispatchEvent() in page JavaScript. They are suitable for
- * reproducible testing, but this project does not claim hardware provenance
- * or indistinguishability from physical user input.
+ * Adapter for the public mouse/keyboard surface exposed by Playwright Page.
+ * Structural typing keeps the interaction core independent of a hard runtime
+ * dependency on a particular Playwright package version.
  */
 export class PlaywrightInputAdapter implements BrowserInput {
-  constructor(private readonly page: Page) {}
+  constructor(private readonly page: PlaywrightPageInputLike) {}
 
   async movePointer(point: Point): Promise<void> {
     await this.page.mouse.move(point.x, point.y);
