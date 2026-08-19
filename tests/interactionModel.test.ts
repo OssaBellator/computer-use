@@ -63,3 +63,19 @@ test('model routes around an edge that learned repeated failures', () => {
   const plan = model.plan('a', 'c', { includeDirectional: false, includePointer: false });
   assert.deepEqual(plan?.edges.map((edge) => edge.to), ['d', 'c']);
 });
+
+test('model explanation cumulative cost matches the selected plan', () => {
+  const model = new InteractionModel();
+  model.refresh([node('a', 0), node('b', 100), node('c', 200)]);
+  for (let i = 0; i < 10; i += 1) {
+    model.focusTopology.observe({ fromId: 'a', toId: 'b', direction: 'forward', observedAtMs: i });
+    model.focusTopology.observe({ fromId: 'b', toId: 'c', direction: 'forward', observedAtMs: i });
+  }
+  const explained = model.explainPlan('a', 'c', {
+    includeDirectional: false,
+    includePointer: false,
+  });
+  assert.ok(explained);
+  assert.equal(explained.steps.length, explained.plan.edges.length);
+  assert.equal(explained.steps.at(-1)?.cumulativeTotal, explained.plan.totalCost);
+});
