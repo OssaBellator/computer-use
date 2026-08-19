@@ -1,4 +1,4 @@
-import type { InteractionNode, Point } from '../types.js';
+import type { InteractionNode, Point, Rect } from '../types.js';
 import { snapshotInteractiveDom, type SnapshotPageLike } from './domSnapshot.js';
 import {
   buildInteractionFrameIdMap,
@@ -10,6 +10,7 @@ import {
   type CdpSessionLike,
 } from './cdpIdentity.js';
 import {
+  captureCdpViewportGeometry,
   enrichInteractionNodesWithCdpGeometry,
   findCdpHitTestedTargetPoint,
   pointHitsCdpInteractionNode,
@@ -19,6 +20,7 @@ export interface BrowserInteractionObserver {
   snapshot(): Promise<readonly InteractionNode[]>;
   targetPoint(node: InteractionNode): Promise<Point | null>;
   pointStillTargets(node: InteractionNode, point: Point): Promise<boolean>;
+  viewportRect?(): Promise<Rect>;
 }
 
 /**
@@ -62,5 +64,9 @@ export class CdpInteractionObserver implements BrowserInteractionObserver {
     this.identities = await captureCdpIdentityIndex(this.session);
     result = await pointHitsCdpInteractionNode(this.session, this.identities, node, point);
     return result.hit;
+  }
+
+  async viewportRect(): Promise<Rect> {
+    return (await captureCdpViewportGeometry(this.session)).viewportRect;
   }
 }
