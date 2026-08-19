@@ -82,6 +82,7 @@ export class BrowserEdgeDispatcher {
     return {
       succeeded,
       arrivedNodeId: succeeded ? context.target.id : context.source.id,
+      observedSnapshot: after,
       reason: succeeded
         ? undefined
         : `Composite logical state no longer bridges ${context.source.id} -> ${context.target.id}`,
@@ -121,6 +122,7 @@ export class BrowserEdgeDispatcher {
     return {
       succeeded,
       arrivedNodeId: arrivedNodeId ?? context.source.id,
+      observedSnapshot: after,
       reason: succeeded
         ? undefined
         : `Observed navigation state ${arrivedNodeId ?? '<none>'}, expected ${context.target.id}`,
