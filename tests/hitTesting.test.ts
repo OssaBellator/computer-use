@@ -68,3 +68,27 @@ test('point hit request strips the frame prefix from node identity', async () =>
     targetPath: 'button:nth-of-type(1)',
   });
 });
+
+test('stable backend IDs retain structural path for local paint-order validation', async () => {
+  let request: unknown;
+  const frame: HitTestFrameLike = {
+    async evaluate<R, A>(_fn: (arg: A) => R | Promise<R>, arg: A): Promise<R> {
+      request = arg;
+      return { hit: true } as R;
+    },
+  };
+  await pointHitsInteractionNode(
+    frame,
+    {
+      ...target,
+      id: 'backend:7',
+      structuralId: 'main:body:nth-of-type(1) > button:nth-of-type(1)',
+      backendNodeId: 7,
+    },
+    { x: 10, y: 10 },
+  );
+  assert.deepEqual(request, {
+    point: { x: 10, y: 10 },
+    targetPath: 'body:nth-of-type(1) > button:nth-of-type(1)',
+  });
+});
