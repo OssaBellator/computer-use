@@ -1,4 +1,9 @@
-import { diffSnapshots, type SnapshotDelta, valueChangeSucceeded } from '../verification/actionVerifier.js';
+import {
+  diffSnapshots,
+  snapshotDeltaHasObservableChange,
+  type SnapshotDelta,
+  valueChangeSucceeded,
+} from '../verification/actionVerifier.js';
 import type { BrowserInput, MouseButton } from '../input/browserInput.js';
 import type { Point, InteractionNode } from '../types.js';
 import type { SnapshotProvider } from './focusController.js';
@@ -14,11 +19,7 @@ export interface TypeActionResult extends ObservedActionResult {
   verified: boolean | null;
 }
 
-export function hasObservableChange(delta: SnapshotDelta): boolean {
-  return delta.added.length > 0 || delta.removed.length > 0 ||
-    delta.focusedBefore !== delta.focusedAfter || delta.changedValues.length > 0 ||
-    delta.changedStates.length > 0;
-}
+export const hasObservableChange = snapshotDeltaHasObservableChange;
 
 /**
  * Executes browser input with before/after observations. A command is not
