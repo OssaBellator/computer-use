@@ -33,6 +33,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
   const raw = await frame.evaluate((): RawNode[] => {
     const results: RawNode[] = [];
     const visited = new Set<Element>();
+    const visitedRoots = new Set<Document | ShadowRoot>();
     const selectors = [
       'a[href]', 'button', 'input', 'select', 'textarea',
       '[contenteditable="true"]', '[tabindex]', '[role="button"]',
@@ -110,6 +111,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
     }
 
     function collect(root: Document | ShadowRoot): void {
+      if (visitedRoots.has(root)) return;
+      visitedRoots.add(root);
+
       for (const element of root.querySelectorAll(selectors.join(','))) {
         if (visited.has(element)) continue;
         visited.add(element);
@@ -181,6 +185,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           focusable, clickable, editable, scrollable, capabilities,
           interactionConfidence: confidence,
         });
+      }
+
+      for (const element of root.querySelectorAll('*')) {
         if (element.shadowRoot) collect(element.shadowRoot);
       }
     }
