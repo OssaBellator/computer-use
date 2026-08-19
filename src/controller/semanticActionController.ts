@@ -20,7 +20,8 @@ export type SemanticActionStatus =
   | 'not-actionable'
   | 'not-editable'
   | 'focus-failed'
-  | 'target-point-unavailable';
+  | 'target-point-unavailable'
+  | 'target-moved';
 
 export type ActivationMethod = 'auto' | 'keyboard' | 'pointer';
 
@@ -44,6 +45,19 @@ export interface TypeIntoTargetOptions extends ObservationWaitOptions {
   delayMs?: number;
   expectedValue?: string;
 }
+
+interface PositionedTarget {
+  status: 'positioned';
+  target: InteractionNode;
+  point: Point;
+}
+
+interface PositionFailure {
+  status: 'target-point-unavailable' | 'target-moved';
+  target: InteractionNode;
+}
+
+type PositionResult = PositionedTarget | PositionFailure;
 
 function targetRect(node: InteractionNode): Rect | undefined {
   return node.mainViewportVisibleRect ?? node.visibleRect ?? node.mainViewportRect ?? node.rect;
@@ -90,12 +104,40 @@ export class SemanticActionController {
     private readonly pointer: PointerController,
   ) {}
 
+  private async positionOnLiveTarget(target: InteractionNode, maxAttempts = 2): Promise<PositionResult> {
+    let current = target;
+    for (let attempt = 0; attempt < Math.max(1, maxAttempts); attempt += 1) {
+      const point = await this.observer.targetPoint(current);
+      if (!point) {
+        return {
+          status: attempt === 0 ? 'target-point-unavailable' : 'target-moved',
+          target: current,
+        };
+      }
+      const rect = targetRect(current);
+      const movement: Point = {
+        x: point.x - this.pointer.touchpad.cursor.x,
+        y: point.y - this.pointer.touchpad.cursor.y,
+      };
+      await this.pointer.moveTo(point, rect ? effectiveTargetWidth(rect, movement) : 20);
+      if (await this.observer.pointStillTargets(current, point)) {
+        return { status: 'positioned', target: current, point };
+      }
+
+      const refreshed = await this.observer.snapshot();
+      const next = refreshed.find((node) => node.id === current.id);
+      if (!next) return { status: 'target-moved', target: current };
+      current = next;
+    }
+    return { status: 'target-moved', target: current };
+  }
+
   async activate(
     target: InteractionNode,
     options: ActivateTargetOptions = {},
   ): Promise<SemanticActionResult> {
-    const before = await this.observer.snapshot();
-    const current = before.find((node) => node.id === target.id) ?? target;
+    let before = await this.observer.snapshot();
+    let current = before.find((node) => node.id === target.id) ?? target;
     if (current.disabled || (!current.clickable && !current.capabilities.includes('activate'))) {
       return emptyResult('not-actionable', current, before);
     }
@@ -108,15 +150,19 @@ export class SemanticActionController {
     if (method === 'keyboard') {
       await this.input.pressKey(options.key ?? defaultActivationKey(current));
     } else {
-      const point = await this.observer.targetPoint(current);
-      if (!point) return emptyResult('target-point-unavailable', current, before);
-      const rect = targetRect(current);
-      const movement: Point = {
-        x: point.x - this.pointer.touchpad.cursor.x,
-        y: point.y - this.pointer.touchpad.cursor.y,
-      };
-      const width = rect ? effectiveTargetWidth(rect, movement) : 20;
-      await this.pointer.click(point, width);
+      const positioned = await this.positionOnLiveTarget(current);
+      if (positioned.status !== 'positioned') {
+        return emptyResult(positioned.status, positioned.target, before);
+      }
+      // Cursor travel can trigger hover/layout changes. Re-baseline immediately
+      // before the click so those changes cannot count as activation evidence.
+      before = await this.observer.snapshot();
+      current = before.find((node) => node.id === positioned.target.id) ?? positioned.target;
+      if (!(await this.observer.pointStillTargets(current, positioned.point))) {
+        return emptyResult('target-moved', current, before);
+      }
+      await this.input.pointerDown('left');
+      await this.input.pointerUp('left');
     }
 
     const observed = await waitForObservation(
@@ -140,14 +186,17 @@ export class SemanticActionController {
     }
 
     if (!current.focused) {
-      const point = await this.observer.targetPoint(current);
-      if (!point) return emptyResult('target-point-unavailable', current, before);
-      const rect = targetRect(current);
-      const movement: Point = {
-        x: point.x - this.pointer.touchpad.cursor.x,
-        y: point.y - this.pointer.touchpad.cursor.y,
-      };
-      await this.pointer.click(point, rect ? effectiveTargetWidth(rect, movement) : 20);
+      const positioned = await this.positionOnLiveTarget(current);
+      if (positioned.status !== 'positioned') {
+        return emptyResult(positioned.status, positioned.target, before);
+      }
+      before = await this.observer.snapshot();
+      current = before.find((node) => node.id === positioned.target.id) ?? positioned.target;
+      if (!(await this.observer.pointStillTargets(current, positioned.point))) {
+        return emptyResult('target-moved', current, before);
+      }
+      await this.input.pointerDown('left');
+      await this.input.pointerUp('left');
 
       const focusObserved = await waitForObservation(
         () => this.observer.snapshot(),
