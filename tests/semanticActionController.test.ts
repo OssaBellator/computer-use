@@ -43,10 +43,13 @@ class Observer implements BrowserInteractionObserver {
   constructor(
     readonly snapshots: InteractionNode[][],
     readonly point: Point | null = { x: 30, y: 20 },
+    readonly hitResults: boolean[] = [],
   ) {}
   async snapshot() { return this.snapshots.shift() ?? []; }
   async targetPoint(_node: InteractionNode) { return this.point; }
-  async pointStillTargets(_node: InteractionNode, _point: Point) { return true; }
+  async pointStillTargets(_node: InteractionNode, _point: Point) {
+    return this.hitResults.length ? this.hitResults.shift()! : true;
+  }
 }
 
 function controller(observer: Observer, input: Input) {
@@ -82,15 +85,29 @@ test('focused checkbox activation uses Space and verifies checked state', async 
   assert.equal(result.delta.changedStates[0].field, 'checked');
 });
 
-test('pointer activation uses the observer-validated point and ordered click', async () => {
+test('pointer activation re-baselines after travel and uses an ordered click', async () => {
   const before = [node('button')];
   const after = [node('button', { expanded: true })];
   const input = new Input();
-  const result = await controller(new Observer([before, after], { x: 40, y: 25 }), input)
-    .activate(before[0], { method: 'pointer', maxSamples: 1 });
+  const result = await controller(
+    new Observer([before, before, after], { x: 40, y: 25 }),
+    input,
+  ).activate(before[0], { method: 'pointer', maxSamples: 1 });
   assert.equal(result.verified, true);
   assert.deepEqual(input.moves.at(-1), { x: 40, y: 25 });
   assert.deepEqual(input.buttons, ['down:left', 'up:left']);
+});
+
+test('pointer activation aborts before mouse-down when target moved during cursor travel', async () => {
+  const before = [node('button')];
+  const input = new Input();
+  const result = await controller(
+    new Observer([before, before, before], { x: 40, y: 25 }, [false, false]),
+    input,
+  ).activate(before[0], { method: 'pointer', maxSamples: 1 });
+  assert.equal(result.status, 'target-moved');
+  assert.deepEqual(input.buttons, []);
+  assert.equal(input.moves.length > 0, true);
 });
 
 test('typeInto rejects non-editable targets without sending text', async () => {
@@ -102,7 +119,7 @@ test('typeInto rejects non-editable targets without sending text', async () => {
   assert.deepEqual(input.typed, []);
 });
 
-test('typeInto focuses an editable target by pointer then verifies expected value', async () => {
+test('typeInto focuses an editable target by revalidated pointer click then verifies value', async () => {
   const initial = node('input', {
     clickable: false,
     editable: true,
@@ -113,7 +130,7 @@ test('typeInto focuses an editable target by pointer then verifies expected valu
   const typed = { ...focused, value: 'abc' };
   const input = new Input();
   const result = await controller(
-    new Observer([[initial], [focused], [typed]], { x: 20, y: 20 }),
+    new Observer([[initial], [initial], [focused], [typed]], { x: 20, y: 20 }),
     input,
   ).typeInto(initial, 'bc', { expectedValue: 'abc', maxSamples: 1 });
 
