@@ -83,12 +83,13 @@ test('unfocused composite does not expose active-descendant anchor state', () =>
   assert.deepEqual(buildCompositeAnchorEdges(nodes), []);
 });
 
-test('active-descendant owner is not a speculative geometric Arrow source', () => {
+test('active-descendant owner is outside speculative geometric Arrow space', () => {
   const first = option('backend:2', 1);
   const second = option('backend:3', 2);
   const nodes = [owner(first.structuralId!), first, second];
   const edges = buildDirectionalEdges(nodes);
   assert.equal(edges.some((edge) => edge.from === 'owner-stable'), false);
+  assert.equal(edges.some((edge) => edge.to === 'owner-stable'), false);
   assert.equal(
     edges.some((edge) => edge.from === first.id && edge.to === second.id && edge.kind === 'spatial-down'),
     true,
