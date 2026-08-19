@@ -1,4 +1,5 @@
 import { FocusTopology } from '../focus/focusTopology.js';
+import { EdgePerformanceModel } from './edgePerformance.js';
 import { buildDirectionalEdges, createPointerMoveEdge } from '../graphBuilder.js';
 import {
   planInteractionPath,
@@ -6,8 +7,7 @@ import {
   type InputModality,
   type PlanResult,
 } from '../planner/actionPlanner.js';
-import type { InteractionEdge, InteractionNode, PathCostWeights } from '../types.js';
-import { EdgePerformanceModel } from './edgePerformance.js';
+import type { InteractionEdge, InteractionNode, PathCostWeights, Point } from '../types.js';
 
 export interface InteractionModelPlanOptions {
   includeDirectional?: boolean;
@@ -17,15 +17,11 @@ export interface InteractionModelPlanOptions {
   initialModality?: InputModality;
 }
 
-/**
- * In-memory composition of the current page snapshot and learned interaction
- * topology. Refresh replaces volatile node geometry/state while preserving
- * learned focus and empirical edge-performance observations across snapshots.
- */
 export class InteractionModel {
   readonly focusTopology = new FocusTopology();
   readonly edgePerformance = new EdgePerformanceModel();
   private nodesById = new Map<string, InteractionNode>();
+  private pointerPosition?: Point;
 
   refresh(nodes: readonly InteractionNode[]): void {
     this.nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -37,6 +33,14 @@ export class InteractionModel {
 
   getNode(id: string): InteractionNode | undefined {
     return this.nodesById.get(id);
+  }
+
+  setPointerPosition(point: Point | undefined): void {
+    this.pointerPosition = point ? { ...point } : undefined;
+  }
+
+  getPointerPosition(): Point | undefined {
+    return this.pointerPosition ? { ...this.pointerPosition } : undefined;
   }
 
   edgesForTarget(
@@ -51,7 +55,7 @@ export class InteractionModel {
     if (options.includePointer ?? true) {
       for (const node of nodes) {
         if (node.id === targetId) continue;
-        const edge = createPointerMoveEdge(node, target);
+        const edge = createPointerMoveEdge(node, target, 4, this.pointerPosition);
         if (edge) edges.push(edge);
       }
     }
