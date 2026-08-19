@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import { snapshotInteractiveDom } from '../../dist/src/browser/domSnapshot.js';
+import { captureCdpIdentityIndex, enrichInteractionNodesWithCdpIdentity } from '../../dist/src/browser/cdpIdentity.js';
 import { findHitTestedTargetPoint, pointHitsInteractionNode } from '../../dist/src/browser/hitTesting.js';
 
 async function freePort() {
@@ -72,28 +73,14 @@ class CdpClient {
   }
 }
 
-async function stopChromium(child, profile) {
-  if (child.exitCode === null && child.signalCode === null) {
-    const exited = new Promise((resolve) => child.once('exit', resolve));
-    child.kill('SIGKILL');
-    await exited;
-  }
-  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
-}
-
 async function launchChromium() {
   const chromium = process.env.CHROMIUM_BIN || '/usr/bin/chromium';
   const port = await freePort();
   const profile = await mkdtemp(join(tmpdir(), 'browser-automation-chromium-'));
   const child = spawn(chromium, [
-    '--headless=new',
-    '--no-sandbox',
-    '--disable-gpu',
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profile}`,
-    'about:blank',
+    '--headless=new', '--no-sandbox', '--disable-gpu',
+    `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank',
   ], { stdio: 'ignore' });
-
   try {
     await waitForJson(`http://127.0.0.1:${port}/json/version`);
     const pages = await waitForJson(`http://127.0.0.1:${port}/json/list`);
@@ -106,6 +93,15 @@ async function launchChromium() {
     await stopChromium(child, profile);
     throw error;
   }
+}
+
+async function stopChromium(child, profile) {
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill('SIGKILL');
+    await exited;
+  }
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
 }
 
 function snapshotPage(client) {
@@ -128,7 +124,7 @@ function snapshotPage(client) {
   return { frames: () => [frame] };
 }
 
-test('live Chromium snapshot handles shadow focus, ARIA state, and occlusion', async (t) => {
+test('live Chromium snapshot handles shadow focus, stable identity, ARIA state, and occlusion', async (t) => {
   const { client, child, profile } = await launchChromium();
   t.after(async () => {
     client.close();
@@ -153,18 +149,28 @@ test('live Chromium snapshot handles shadow focus, ARIA state, and occlusion', a
   assert.equal(inside.focused, true);
   assert.equal(outer?.expanded, false);
 
+  const identitiesBefore = await captureCdpIdentityIndex(client);
+  const [stableInside] = enrichInteractionNodesWithCdpIdentity([inside], identitiesBefore);
+  assert.equal(typeof stableInside.backendNodeId, 'number');
+  assert.ok(stableInside.axNodeId);
+  assert.equal(stableInside.role, 'button');
+  assert.equal(stableInside.name, 'Shadow action');
+  const stableBackendNodeId = stableInside.backendNodeId;
+
   await client.send('Runtime.evaluate', {
     expression: `document.querySelector('#outer').setAttribute('aria-expanded', 'true')`,
   });
   const after = await snapshotInteractiveDom(page);
   assert.equal(after.find((node) => node.name === 'Outer')?.expanded, true);
+  const identitiesAfter = await captureCdpIdentityIndex(client);
+  const [stableInsideAfter] = enrichInteractionNodesWithCdpIdentity([inside], identitiesAfter);
+  assert.equal(stableInsideAfter.backendNodeId, stableBackendNodeId);
 
   await client.send('Runtime.evaluate', {
     expression: `(() => {
       document.body.innerHTML = '<button id="target" style="position:absolute;left:10px;top:10px;width:120px;height:40px">Target</button><div style="position:absolute;left:50px;top:10px;width:50px;height:40px;z-index:10;background:black"></div>';
     })()`,
   });
-
   const occluded = await snapshotInteractiveDom(page);
   const target = occluded.find((node) => node.name === 'Target');
   assert.ok(target);
