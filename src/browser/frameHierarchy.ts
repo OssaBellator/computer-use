@@ -7,11 +7,11 @@ import type { CdpIdentityIndex } from './cdpIdentity.js';
  */
 export function enrichInteractionNodesWithFrameHierarchy(
   nodes: readonly InteractionNode[],
-  identities: Pick<CdpIdentityIndex, 'frameToParentFrame'>,
+  identities: Pick<CdpIdentityIndex, 'frames'>,
 ): InteractionNode[] {
   return nodes.map((node) => ({
     ...node,
-    parentFrameId: identities.frameToParentFrame.get(node.frameId),
+    parentFrameId: identities.frames.get(node.frameId)?.parentFrameId,
   }));
 }
 
