@@ -32,6 +32,10 @@ export interface InteractionNode {
   role?: string;
   name?: string;
   value?: string;
+  /** Browser-computed tab index. Negative values remain useful for roving-tabindex members. */
+  tabIndex?: number;
+  /** Structural identity of the nearest owning ARIA composite for keyboard navigation. */
+  compositeOwnerStructuralId?: string;
   expanded?: boolean;
   checked?: boolean | 'mixed';
   selected?: boolean;
