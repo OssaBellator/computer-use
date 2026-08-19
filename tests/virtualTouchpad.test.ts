@@ -73,3 +73,20 @@ test('pointer controller performs lift/recenter for long travel on a small pad',
   assert.ok(liftSleeps > 0);
   assert.deepEqual(input.moves.at(-1), { x: 100, y: 0 });
 });
+
+test('pointer controller splits a single oversized sample into bounded strokes', async () => {
+  const input = new RecordingInput();
+  const pad = new VirtualTouchpad({ widthMm: 10, heightMm: 10, initialCursor: { x: 0, y: 0 } });
+  let liftSleeps = 0;
+  const controller = new PointerController(input, pad, {
+    pixelsPerMm: 1,
+    sampleIntervalMs: 10_000,
+    liftDelayMs: 7,
+    sleep: async (ms) => { if (ms === 7) liftSleeps += 1; },
+  });
+  await controller.moveTo({ x: 100, y: 0 }, 10);
+  assert.ok(input.moves.length > 2);
+  assert.ok(liftSleeps > 0);
+  assert.deepEqual(input.moves.at(-1), { x: 100, y: 0 });
+  assert.ok(Math.abs(pad.finger.x) <= pad.widthMm / 2);
+});
