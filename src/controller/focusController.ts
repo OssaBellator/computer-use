@@ -1,8 +1,8 @@
+import { describeSnapshotFrames } from '../browser/cdpIdentity.js';
 import {
-  describeSnapshotFrames,
+  snapshotInteractiveDom,
   type SnapshotPageLike,
-} from '../browser/cdpIdentity.js';
-import { snapshotInteractiveDom } from '../browser/domSnapshot.js';
+} from '../browser/domSnapshot.js';
 import {
   buildInteractionFrameHierarchy,
   enrichInteractionNodesWithFrameHierarchy,
