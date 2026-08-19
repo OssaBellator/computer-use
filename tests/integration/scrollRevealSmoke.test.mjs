@@ -123,13 +123,21 @@ test('engine reveals and acquires a target below the fold using wheel input', as
   const engine = createCdpInteractionEngine(pageFor(client), client, {
     touchpadOptions: { initialCursor: { x: 10, y: 10 } },
     pointerOptions: { sleep: async () => {}, sampleIntervalMs: 100 },
-    scrollSettleMs: 20,
   });
-  const result = await engine.acquire({ name: 'Below fold', role: 'button' }, {
-    includeDirectional: false,
-  });
+  const result = await engine.acquire(
+    { name: 'Below fold', role: 'button' },
+    {
+      includeDirectional: false,
+      revealOptions: {
+        timeoutMs: 300,
+        pollIntervalMs: 10,
+        maxSamples: 10,
+      },
+    },
+  );
 
   assert.equal(result.status, 'reached');
+  assert.equal(result.reveal?.status, 'revealed');
   assert.ok((await value(client, 'window.scrollY')) > 0);
   assert.equal(result.target?.mainViewportVisible, true);
   assert.equal(await engine.observer.pointStillTargets(result.target, engine.touchpad.cursor), true);
