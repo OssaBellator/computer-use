@@ -40,11 +40,18 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       'button', 'checkbox', 'color', 'file', 'hidden', 'image',
       'radio', 'range', 'reset', 'submit',
     ]);
+    const activatableInputTypes = new Set([
+      'button', 'checkbox', 'image', 'radio', 'range', 'reset', 'submit',
+    ]);
+    const activatableRoles = new Set([
+      'button', 'link', 'checkbox', 'radio', 'switch', 'menuitem', 'option', 'tab',
+    ]);
     const selectors = [
       'a[href]', 'button', 'input', 'select', 'textarea',
       '[contenteditable="true"]', '[tabindex]', '[role="button"]',
       '[role="link"]', '[role="textbox"]', '[role="checkbox"]',
-      '[role="radio"]', '[role="menuitem"]', 'nav', 'header', 'form',
+      '[role="radio"]', '[role="switch"]', '[role="menuitem"]',
+      '[role="option"]', '[role="tab"]', 'nav', 'header', 'form',
       '[aria-expanded]', '[aria-checked]', '[aria-selected]', '[aria-pressed]',
       '[aria-activedescendant]',
     ];
@@ -145,9 +152,12 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           element instanceof HTMLTextAreaElement || html.isContentEditable;
         const focusable = !disabled && html.tabIndex >= 0;
         const role = element.getAttribute('role') ?? element.tagName.toLowerCase();
+        const nativeActivatableInput = element instanceof HTMLInputElement &&
+          activatableInputTypes.has(element.type.toLowerCase());
         const clickable = !disabled && (
           element instanceof HTMLButtonElement || element instanceof HTMLAnchorElement ||
-          role === 'button' || role === 'link' ||
+          element instanceof HTMLSelectElement || nativeActivatableInput ||
+          activatableRoles.has(role.toLowerCase()) ||
           typeof (html as HTMLElement & { onclick?: unknown }).onclick === 'function'
         );
         const scrollable =
