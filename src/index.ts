@@ -10,6 +10,7 @@ export * from './browser/coalescingObserver.js';
 export * from './browser/frameHierarchy.js';
 export * from './browser/hitTesting.js';
 export * from './browser/browserState.js';
+export * from './browser/dialogController.js';
 export * from './browser/navigationController.js';
 export * from './focus/focusTopology.js';
 export * from './focus/directionalTopology.js';

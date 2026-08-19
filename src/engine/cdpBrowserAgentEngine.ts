@@ -1,6 +1,13 @@
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
 import {
+  CdpDialogController,
+  isCdpEventSessionLike,
+  type BrowserDialogController,
+  type BrowserDialogHandleResult,
+  type BrowserDialogState,
+} from '../browser/dialogController.js';
+import {
   CdpNavigationController,
   type BrowserNavigationOptions,
   type BrowserNavigationResult,
@@ -25,7 +32,12 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly interaction: InteractionEngine,
     private readonly session: CdpSessionLike,
     readonly navigator: BrowserNavigator = new CdpNavigationController(session),
+    readonly dialogs?: BrowserDialogController,
   ) {}
+
+  async prepare(): Promise<void> {
+    await this.dialogs?.start();
+  }
 
   refresh(): Promise<InteractionNode[]> {
     return this.interaction.refresh();
@@ -33,6 +45,10 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   browserState(): Promise<BrowserStateSnapshot> {
     return captureCdpBrowserState(this.session);
+  }
+
+  dialogState(): BrowserDialogState | undefined {
+    return this.dialogs?.state();
   }
 
   activate(
@@ -53,6 +69,17 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> {
     return this.navigator.navigate(url, options);
   }
+
+  handleDialog(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult> {
+    if (!this.dialogs) {
+      return Promise.resolve({
+        status: 'protocol-error',
+        accepted: accept,
+        errorText: 'CDP session does not expose event subscriptions for dialog monitoring',
+      });
+    }
+    return this.dialogs.handle(accept, promptText);
+  }
 }
 
 export function createCdpBrowserAgentEngine(
@@ -63,5 +90,7 @@ export function createCdpBrowserAgentEngine(
   return new CdpBrowserAgentEngine(
     createCdpInteractionEngine(page, session, options),
     session,
+    new CdpNavigationController(session),
+    isCdpEventSessionLike(session) ? new CdpDialogController(session) : undefined,
   );
 }

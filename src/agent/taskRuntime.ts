@@ -1,5 +1,9 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type {
+  BrowserDialogHandleResult,
+  BrowserDialogState,
+} from '../browser/dialogController.js';
+import type {
   BrowserNavigationOptions,
   BrowserNavigationResult,
 } from '../browser/navigationController.js';
@@ -8,6 +12,7 @@ import { resolveInteractionTargetDetailed, type TargetQuery } from '../model/tar
 import {
   validateTaskProgram,
   type ActivateTaskStep,
+  type HandleDialogTaskStep,
   type NavigateTaskStep,
   type ProgramText,
   type TaskPredicate,
@@ -24,8 +29,10 @@ export interface TaskEngineActionResult {
 
 /** Minimal structural contract implemented by InteractionEngine-compatible facades. */
 export interface TaskRuntimeEngine {
+  prepare?(): Promise<void>;
   refresh(): Promise<InteractionNode[]>;
   browserState?(): Promise<BrowserStateSnapshot | undefined>;
+  dialogState?(): BrowserDialogState | undefined;
   activate(
     query: TargetQuery | string,
     options?: {
@@ -46,6 +53,7 @@ export interface TaskRuntimeEngine {
     },
   ): Promise<TaskEngineActionResult>;
   navigate?(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult>;
+  handleDialog?(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult>;
 }
 
 export type TaskRunStatus =
@@ -61,6 +69,7 @@ export type TaskRunStatus =
 export type TaskTraceOutcome =
   | 'verified'
   | 'navigated'
+  | 'dialog-handled'
   | 'failed'
   | 'exception'
   | 'asserted'
@@ -90,7 +99,7 @@ export interface TaskTraceEntry {
 export interface TaskApprovalContext {
   programName?: string;
   stepId: string;
-  kind: 'activate' | 'type' | 'navigate';
+  kind: 'activate' | 'type' | 'navigate' | 'handle-dialog';
   risk: Exclude<TaskRisk, 'observe'>;
   visit: number;
 }
@@ -122,6 +131,7 @@ export interface TaskRunResult {
 interface TaskObservation {
   nodes: InteractionNode[];
   browser?: BrowserStateSnapshot;
+  dialog?: BrowserDialogState;
   fingerprint: string;
 }
 
@@ -174,11 +184,22 @@ function matchesBrowserExpectation(
   return true;
 }
 
+function matchesDialogExpectation(
+  state: Extract<TaskPredicate, { kind: 'dialog' }>['state'],
+  dialog: BrowserDialogState | undefined,
+): boolean {
+  const open = dialog !== undefined;
+  if (state.open !== undefined && open !== state.open) return false;
+  if (state.type !== undefined && dialog?.type !== state.type) return false;
+  return state.open === false || dialog !== undefined;
+}
+
 export function evaluateTaskPredicate(
   predicate: TaskPredicate,
   nodes: readonly InteractionNode[],
   inputs: Readonly<Record<string, string>> = {},
   browserState?: BrowserStateSnapshot,
+  dialogState?: BrowserDialogState,
 ): boolean {
   switch (predicate.kind) {
     case 'exists': {
@@ -192,14 +213,16 @@ export function evaluateTaskPredicate(
     }
     case 'browser':
       return matchesBrowserExpectation(predicate.state, browserState, inputs);
+    case 'dialog':
+      return matchesDialogExpectation(predicate.state, dialogState);
     case 'all':
       return predicate.predicates.every((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState));
+        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState));
     case 'any':
       return predicate.predicates.some((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState));
+        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState));
     case 'not':
-      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState);
+      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState, dialogState);
   }
 }
 
@@ -246,6 +269,7 @@ export function interactionSnapshotFingerprint(nodes: readonly InteractionNode[]
 export function taskObservationFingerprint(
   nodes: readonly InteractionNode[],
   browserState?: BrowserStateSnapshot,
+  dialogState?: BrowserDialogState,
 ): string {
   const browser = browserState
     ? [
@@ -257,11 +281,14 @@ export function taskObservationFingerprint(
         String(browserState.timeOrigin),
       ].join('\u001f')
     : '';
-  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browser}`);
+  const dialog = dialogState
+    ? `${dialogState.type}\u001f${dialogState.sequence}`
+    : '';
+  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browser}\u001d${dialog}`);
 }
 
 function actionRisk(
-  step: ActivateTaskStep | TypeTaskStep | NavigateTaskStep,
+  step: ActivateTaskStep | TypeTaskStep | NavigateTaskStep | HandleDialogTaskStep,
 ): Exclude<TaskRisk, 'observe'> {
   return step.risk ?? 'interaction';
 }
@@ -285,14 +312,34 @@ export class TaskRuntime {
   constructor(private readonly engine: TaskRuntimeEngine) {}
 
   private async observe(): Promise<TaskObservation> {
-    const nodes = await this.engine.refresh();
+    let nodes: InteractionNode[] | undefined;
     let browser: BrowserStateSnapshot | undefined;
+    let dialog: BrowserDialogState | undefined;
+    try {
+      nodes = await this.engine.refresh();
+    } catch {
+      // Modal dialogs can temporarily make semantic observation unavailable.
+    }
     try {
       browser = await this.engine.browserState?.();
     } catch {
-      // Browser-level state is optional for semantic-only runtimes.
+      // Navigation/dialog transitions can transiently destroy execution contexts.
     }
-    return { nodes, browser, fingerprint: taskObservationFingerprint(nodes, browser) };
+    try {
+      dialog = this.engine.dialogState?.();
+    } catch {
+      // Optional browser signal; preserve any other observation channel.
+    }
+    if (nodes === undefined && browser === undefined && dialog === undefined) {
+      throw new Error('No browser observation channel is currently available');
+    }
+    const normalizedNodes = nodes ?? [];
+    return {
+      nodes: normalizedNodes,
+      browser,
+      dialog,
+      fingerprint: taskObservationFingerprint(normalizedNodes, browser, dialog),
+    };
   }
 
   async run(
@@ -321,6 +368,18 @@ export class TaskRuntime {
         trace: [],
         validationWarnings: validation.warnings,
         missingInputs,
+      };
+    }
+
+    try {
+      await this.engine.prepare?.();
+    } catch {
+      return {
+        status: 'failed',
+        completed: false,
+        stepsExecuted: 0,
+        trace: [],
+        validationWarnings: validation.warnings,
       };
     }
 
@@ -365,7 +424,8 @@ export class TaskRuntime {
         return failed('failed', index);
       }
 
-      if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'navigate') {
+      if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'navigate' ||
+          step.kind === 'handle-dialog') {
         const risk = actionRisk(step);
         const overRiskBudget = RISK_RANK[risk] > RISK_RANK[maxRisk];
         const needsApproval = overRiskBudget || step.requiresApproval === true;
@@ -397,7 +457,7 @@ export class TaskRuntime {
           return failed('policy-blocked', index + 1);
         }
 
-        let action: TaskEngineActionResult | BrowserNavigationResult | undefined;
+        let action: TaskEngineActionResult | BrowserNavigationResult | BrowserDialogHandleResult | undefined;
         let threw = false;
         try {
           if (step.kind === 'activate') {
@@ -416,13 +476,20 @@ export class TaskRuntime {
                 ? undefined
                 : resolveProgramText(step.expectedValue, inputs),
             });
-          } else if (this.engine.navigate) {
-            action = await this.engine.navigate(resolveProgramText(step.url, inputs), {
-              waitUntil: step.waitUntil,
-              timeoutMs: step.timeoutMs,
-              maxPolls: step.maxPolls,
-              pollIntervalMs: step.pollIntervalMs,
-            });
+          } else if (step.kind === 'navigate') {
+            if (this.engine.navigate) {
+              action = await this.engine.navigate(resolveProgramText(step.url, inputs), {
+                waitUntil: step.waitUntil,
+                timeoutMs: step.timeoutMs,
+                maxPolls: step.maxPolls,
+                pollIntervalMs: step.pollIntervalMs,
+              });
+            }
+          } else if (this.engine.handleDialog) {
+            action = await this.engine.handleDialog(
+              step.accept,
+              step.promptText === undefined ? undefined : resolveProgramText(step.promptText, inputs),
+            );
           }
         } catch {
           threw = true;
@@ -438,7 +505,9 @@ export class TaskRuntime {
         consecutiveNoProgress = changed ? 0 : consecutiveNoProgress + 1;
         const succeeded = step.kind === 'navigate'
           ? action?.status === 'navigated'
-          : action?.status === 'verified';
+          : step.kind === 'handle-dialog'
+            ? action?.status === 'handled'
+            : action?.status === 'verified';
         const nextId = succeeded ? step.next : step.onFailure;
         const target = action && 'target' in action ? action.target : null;
         await emit({
@@ -448,7 +517,9 @@ export class TaskRuntime {
           outcome: threw
             ? 'exception'
             : succeeded
-              ? (step.kind === 'navigate' ? 'navigated' : 'verified')
+              ? (step.kind === 'navigate'
+                  ? 'navigated'
+                  : step.kind === 'handle-dialog' ? 'dialog-handled' : 'verified')
               : 'failed',
           ...(nextId ? { nextStepId: nextId } : {}),
           ...(target?.id ? { targetId: target.id } : {}),
@@ -466,7 +537,7 @@ export class TaskRuntime {
       }
 
       if (step.kind === 'assert') {
-        const passed = evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser);
+        const passed = evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser, before.dialog);
         const nextId = passed ? step.next : step.onFailure;
         await emit({
           index,
@@ -485,7 +556,7 @@ export class TaskRuntime {
       }
 
       if (step.kind === 'branch') {
-        const passed = evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser);
+        const passed = evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser, before.dialog);
         const nextId = passed ? step.then : step.else;
         await emit({
           index,
@@ -509,7 +580,7 @@ export class TaskRuntime {
         );
         const pollIntervalMs = Math.max(0, step.pollIntervalMs ?? options.waitPollIntervalMs ?? 100);
         let observed = before;
-        let passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser);
+        let passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog);
         for (let poll = 1; !passed && poll < maxPolls; poll += 1) {
           await sleep(pollIntervalMs);
           try {
@@ -517,7 +588,7 @@ export class TaskRuntime {
           } catch {
             break;
           }
-          passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser);
+          passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog);
         }
         const nextId = passed ? step.next : step.onTimeout;
         await emit({
@@ -551,7 +622,7 @@ export class TaskRuntime {
       }
 
       const passed = step.condition
-        ? evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser)
+        ? evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser, before.dialog)
         : true;
       const nextId = passed ? undefined : step.onFailure;
       await emit({

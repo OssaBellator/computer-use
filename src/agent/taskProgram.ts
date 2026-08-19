@@ -1,4 +1,5 @@
 import type { BrowserDocumentReadyState } from '../browser/browserState.js';
+import type { BrowserDialogType } from '../browser/dialogController.js';
 import type { NavigationWaitUntil } from '../browser/navigationController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 
@@ -19,6 +20,11 @@ export interface TaskNodeExpectation {
   valueIncludes?: ProgramText;
 }
 
+export interface TaskDialogExpectation {
+  open?: boolean;
+  type?: BrowserDialogType;
+}
+
 export interface TaskBrowserExpectation {
   url?: ProgramText;
   urlIncludes?: ProgramText;
@@ -34,6 +40,7 @@ export type TaskPredicate =
   | { kind: 'exists'; target: TaskTarget; unambiguous?: boolean }
   | { kind: 'state'; target: TaskTarget; state: TaskNodeExpectation; unambiguous?: boolean }
   | { kind: 'browser'; state: TaskBrowserExpectation }
+  | { kind: 'dialog'; state: TaskDialogExpectation }
   | { kind: 'all'; predicates: readonly TaskPredicate[] }
   | { kind: 'any'; predicates: readonly TaskPredicate[] }
   | { kind: 'not'; predicate: TaskPredicate };
@@ -64,6 +71,12 @@ export interface TypeTaskStep extends SemanticTaskActionStepBase {
   text: ProgramText;
   expectedValue?: ProgramText;
   delayMs?: number;
+}
+
+export interface HandleDialogTaskStep extends TaskActionStepBase {
+  kind: 'handle-dialog';
+  accept: boolean;
+  promptText?: ProgramText;
 }
 
 export interface NavigateTaskStep extends TaskActionStepBase {
@@ -122,6 +135,7 @@ export type TaskStep =
   | ActivateTaskStep
   | TypeTaskStep
   | NavigateTaskStep
+  | HandleDialogTaskStep
   | AssertTaskStep
   | BranchTaskStep
   | WaitTaskStep
@@ -168,6 +182,8 @@ function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): vo
     case 'browser':
       collectBrowserExpectationInputs(predicate.state, into);
       return;
+    case 'dialog':
+      return;
     case 'all':
     case 'any':
       for (const nested of predicate.predicates) collectPredicateInputs(nested, into);
@@ -185,6 +201,7 @@ function referencedStepIds(step: TaskStep): string[] {
     case 'activate':
     case 'type':
     case 'navigate':
+    case 'handle-dialog':
     case 'assert':
       return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch':
@@ -205,6 +222,7 @@ function stepInputs(step: TaskStep): Set<string> {
     collectProgramTextInput(step.expectedValue, inputs);
   }
   if (step.kind === 'navigate') collectProgramTextInput(step.url, inputs);
+  if (step.kind === 'handle-dialog') collectProgramTextInput(step.promptText, inputs);
   if (step.kind === 'assert' || step.kind === 'branch' || step.kind === 'wait') {
     collectPredicateInputs(step.condition, inputs);
   }
@@ -248,6 +266,7 @@ function validatePredicate(predicate: TaskPredicate, stepId: string, errors: str
       return;
     case 'exists':
     case 'state':
+    case 'dialog':
       return;
   }
 }
