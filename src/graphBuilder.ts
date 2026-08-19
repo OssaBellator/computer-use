@@ -4,7 +4,11 @@ import { fittsDurationMs } from './motor/minimumJerk.js';
 import type { InteractionEdge, InteractionEdgeKind, InteractionNode, Point, Rect } from './types.js';
 
 function rectFor(node: InteractionNode): Rect | undefined {
-  return node.visibleRect ?? node.rect;
+  return node.mainViewportVisibleRect ?? node.visibleRect ?? node.mainViewportRect ?? node.rect;
+}
+
+function viewportEligible(node: InteractionNode): boolean {
+  return node.viewportVisible !== false && node.mainViewportVisible !== false;
 }
 
 function center(rect: Rect): Point {
@@ -24,7 +28,7 @@ export function buildDirectionalEdges(
   nodes: readonly InteractionNode[],
   estimatedTimeMs = 90,
 ): InteractionEdge[] {
-  const eligible = nodes.filter((node) => !node.disabled && node.viewportVisible !== false &&
+  const eligible = nodes.filter((node) => !node.disabled && viewportEligible(node) &&
     !!rectFor(node) && (node.focusable || node.clickable || node.editable));
   const edges: InteractionEdge[] = [];
   const directions: Direction[] = ['up', 'down', 'left', 'right'];
@@ -56,7 +60,7 @@ export function createPointerMoveEdge(
 ): InteractionEdge | null {
   const a = rectFor(from);
   const b = rectFor(to);
-  if (!a || !b || from.frameId !== to.frameId || to.disabled || to.viewportVisible === false) return null;
+  if (!a || !b || from.frameId !== to.frameId || to.disabled || !viewportEligible(to)) return null;
   const start = center(a);
   const target = center(b);
   const movement = { x: target.x - start.x, y: target.y - start.y };
