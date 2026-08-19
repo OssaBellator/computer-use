@@ -16,7 +16,8 @@ export interface TypeActionResult extends ObservedActionResult {
 
 export function hasObservableChange(delta: SnapshotDelta): boolean {
   return delta.added.length > 0 || delta.removed.length > 0 ||
-    delta.focusedBefore !== delta.focusedAfter || delta.changedValues.length > 0;
+    delta.focusedBefore !== delta.focusedAfter || delta.changedValues.length > 0 ||
+    delta.changedStates.length > 0;
 }
 
 /**
