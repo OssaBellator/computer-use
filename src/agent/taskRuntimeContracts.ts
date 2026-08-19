@@ -7,7 +7,7 @@ import type { NetworkIdleOptions, NetworkIdleResult } from '../browser/networkAc
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type { BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
-import type { InteractionNode } from '../types.js';
+import type { InteractionNode, Point } from '../types.js';
 import type { TaskPageSelection, TaskRisk, TaskStep } from './taskProgram.js';
 
 export interface TaskEngineActionResult { status: string; target: InteractionNode | null; }
@@ -25,6 +25,7 @@ export interface TaskRuntimeEngine {
   hover?(query: TargetQuery | string, options?: { requireUnambiguous?: boolean; autoReveal?: boolean; timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number }): Promise<TaskEngineActionResult>;
   typeInto(query: TargetQuery | string, text: string, options?: { requireUnambiguous?: boolean; autoReveal?: boolean; delayMs?: number; expectedValue?: string }): Promise<TaskEngineActionResult>;
   pressKey?(key: string, options?: { timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number }): Promise<TaskKeyActionResult>;
+  scrollViewport?(delta: Point, options?: { timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number }): Promise<TaskKeyActionResult>;
   uploadFiles?(query: TargetQuery | string, paths: readonly string[], options?: { requireUnambiguous?: boolean }): Promise<BrowserFileUploadResult>;
   switchPage?(target: TaskPageSelection): Promise<TaskPageSwitchResult>;
   waitForNetworkIdle?(options?: NetworkIdleOptions): Promise<NetworkIdleResult>;
@@ -39,6 +40,6 @@ export type TaskRunStatus = 'completed' | 'failed' | 'invalid-program' | 'missin
 export type TaskTraceOutcome = 'verified' | 'uploaded' | 'page-switched' | 'navigated' | 'history-navigated' | 'dialog-handled' | 'target-created' | 'target-closed' | 'failed' | 'exception' | 'asserted' | 'assertion-failed' | 'branch-then' | 'branch-else' | 'wait-satisfied' | 'wait-timeout' | 'completed' | 'completion-condition-failed' | 'policy-blocked';
 
 export interface TaskTraceEntry { index: number; stepId: string; kind: TaskStep['kind']; outcome: TaskTraceOutcome; nextStepId?: string; targetId?: string; actionStatus?: string; beforeFingerprint: string; afterFingerprint: string; browserStateChanged: boolean; visit: number; }
-export interface TaskApprovalContext { programName?: string; stepId: string; kind: 'activate' | 'hover' | 'type' | 'upload' | 'press-key' | 'switch-page' | 'navigate' | 'history' | 'handle-dialog' | 'open-tab' | 'close-latest-tab'; risk: Exclude<TaskRisk, 'observe'>; visit: number; }
+export interface TaskApprovalContext { programName?: string; stepId: string; kind: 'activate' | 'hover' | 'type' | 'upload' | 'press-key' | 'scroll-viewport' | 'switch-page' | 'navigate' | 'history' | 'handle-dialog' | 'open-tab' | 'close-latest-tab'; risk: Exclude<TaskRisk, 'observe'>; visit: number; }
 export interface TaskRuntimeOptions { maxSteps?: number; maxVisitsPerStep?: number; maxConsecutiveNoProgress?: number; requireUnambiguousTargets?: boolean; maxRisk?: TaskRisk; approve?: (context: TaskApprovalContext) => boolean | Promise<boolean>; onTrace?: (entry: TaskTraceEntry) => void | Promise<void>; waitPollIntervalMs?: number; waitMaxPolls?: number; }
 export interface TaskRunResult { status: TaskRunStatus; completed: boolean; finalStepId?: string; stepsExecuted: number; trace: TaskTraceEntry[]; validationErrors?: string[]; validationWarnings?: string[]; missingInputs?: string[]; }
