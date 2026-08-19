@@ -7,6 +7,7 @@ import {
   type ObservationWaitOptions,
 } from '../verification/observationSettler.js';
 import type { PointerController } from './pointerController.js';
+import { chooseViewportWheelAnchor } from './scrollWheelRouting.js';
 
 export type ScrollRevealStatus =
   | 'already-visible'
@@ -15,6 +16,7 @@ export type ScrollRevealStatus =
   | 'target-missing'
   | 'geometry-unavailable'
   | 'scroll-scope-unavailable'
+  | 'viewport-wheel-anchor-unavailable'
   | 'scope-cycle'
   | 'scope-depth-exceeded'
   | 'stalled'
@@ -146,9 +148,9 @@ function resultFromBudget(
 
 /**
  * Reveals targets using browser wheel input and observation feedback. Nested
- * overflow scopes are handled outside-in: an off-screen scroll container is
- * first revealed through its own ancestor, then the pointer is moved over that
- * container before wheel input is issued for the original target.
+ * overflow scopes are handled outside-in. Top-level document scrolling first
+ * places the pointer at a deterministic point outside visible scrollable scopes
+ * so wheel input cannot be silently captured by an unrelated panel.
  */
 export class ScrollRevealController {
   constructor(
@@ -288,6 +290,28 @@ export class ScrollRevealController {
         viewport = await this.observer.viewportRect!();
         context = makeContext(snapshot, current, viewport, settings.marginPx);
         if (!context) return resultFromBudget('geometry-unavailable', current, budget, null);
+      } else if (this.pointer) {
+        const anchor = chooseViewportWheelAnchor(
+          viewport,
+          snapshot,
+          this.pointer.touchpad.cursor,
+        );
+        if (!anchor) {
+          return resultFromBudget('viewport-wheel-anchor-unavailable', current, budget, context.remaining);
+        }
+        if (anchor.x !== this.pointer.touchpad.cursor.x || anchor.y !== this.pointer.touchpad.cursor.y) {
+          await this.pointer.moveTo(anchor, Math.max(20, Math.min(viewport.width, viewport.height) / 4));
+          snapshot = [...await this.observer.snapshot()];
+          current = snapshot.find((node) => node.id === target.id) ?? null;
+          if (!current) return resultFromBudget('target-missing', null, budget, null);
+          if (isReachablyVisible(current)) {
+            return resultFromBudget('revealed', current, budget, { x: 0, y: 0 });
+          }
+          viewport = await this.observer.viewportRect!();
+          context = makeContext(snapshot, current, viewport, settings.marginPx);
+          if (!context) return resultFromBudget('geometry-unavailable', current, budget, null);
+          if (context.scopeNode) continue;
+        }
       }
 
       const requested = { ...context.remaining };
