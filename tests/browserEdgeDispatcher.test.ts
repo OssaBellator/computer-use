@@ -15,10 +15,31 @@ const node = (id: string, focused = false, frameId = 'main'): InteractionNode =>
   capabilities: ['focus', 'activate'], interactionConfidence: 1,
 });
 
+function compositeOwner(activeStructuralId: string): InteractionNode {
+  return {
+    ...node('owner', true),
+    structuralId: 'main:body > div:nth-of-type(1)',
+    role: 'listbox',
+    activeDescendantId: activeStructuralId.endsWith('(1)') ? 'o1' : 'o2',
+    activeDescendantStructuralId: activeStructuralId,
+  };
+}
+
+function option(id: string, index: number): InteractionNode {
+  return {
+    ...node(id),
+    structuralId: `main:body > div:nth-of-type(1) > div:nth-of-type(${index})`,
+    role: 'option',
+    focusable: false,
+    rect: { x: 20, y: 20 + index * 30, width: 80, height: 24 },
+    mainViewportRect: { x: 20, y: 20 + index * 30, width: 80, height: 24 },
+  };
+}
+
 class Input implements BrowserInput {
   keys: string[] = [];
   moves: Point[] = [];
-  async movePointer(point: Point) { this.moves.push({ ...point }); }
+  async movePointer(point: Point) { this.moves.push({ x: point.x, y: point.y }); }
   async pointerDown(_button?: MouseButton) {}
   async pointerUp(_button?: MouseButton) {}
   async pressKey(key: string) { this.keys.push(key); }
@@ -60,6 +81,45 @@ test('keyboard dispatcher verifies observed focus and learns unexpected transiti
   assert.equal(result.succeeded, false);
   assert.equal(result.arrivedNodeId, 'c');
   assert.equal(ctx.model.focusTopology.mostLikelyNext('a', 'forward'), 'c');
+});
+
+test('state-anchor validates composite logical state without dispatching input', async () => {
+  const input = new Input();
+  const observer = new Observer();
+  const active = option('o1-stable', 1);
+  const owner = compositeOwner(active.structuralId!);
+  observer.snapshots.push([owner, active]);
+  const pointer = new PointerController(input, new VirtualTouchpad(), { sleep: async () => {} });
+  const dispatcher = new BrowserEdgeDispatcher(input, pointer, observer);
+  const result = await dispatcher.dispatch(
+    { from: owner.id, to: active.id, kind: 'state-anchor', estimatedTimeMs: 0 },
+    context(owner, active),
+  );
+  assert.equal(result.succeeded, true);
+  assert.equal(result.arrivedNodeId, active.id);
+  assert.deepEqual(input.keys, []);
+  assert.deepEqual(input.moves, []);
+});
+
+test('Arrow navigation uses active descendant as logical arrival and learns option transition', async () => {
+  const input = new Input();
+  const observer = new Observer();
+  const first = option('o1-stable', 1);
+  const second = option('o2-stable', 2);
+  const ownerAfter = compositeOwner(second.structuralId!);
+  observer.snapshots.push([ownerAfter, first, second]);
+  const pointer = new PointerController(input, new VirtualTouchpad(), { sleep: async () => {} });
+  const dispatcher = new BrowserEdgeDispatcher(input, pointer, observer);
+  const ctx = context(first, second);
+  ctx.model.refresh([compositeOwner(first.structuralId!), first, second]);
+  const result = await dispatcher.dispatch(
+    { from: first.id, to: second.id, kind: 'spatial-down', estimatedTimeMs: 90 },
+    ctx,
+  );
+  assert.deepEqual(input.keys, ['ArrowDown']);
+  assert.equal(result.succeeded, true);
+  assert.equal(result.arrivedNodeId, second.id);
+  assert.equal(ctx.model.directionalTopology.mostLikelyNext(first.id, 'down'), second.id);
 });
 
 test('pointer dispatcher moves to a validated point and verifies it after movement', async () => {
