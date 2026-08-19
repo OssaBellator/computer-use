@@ -6,7 +6,7 @@ import type { NetworkIdleOptions, NetworkIdleResult } from '../browser/networkAc
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type { BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
-import type { InteractionNode } from '../types.js';
+import type { InteractionNode, Point } from '../types.js';
 import type { TaskPageSelection } from '../agent/taskProgram.js';
 import type {
   TaskEngineActionResult,
@@ -38,7 +38,7 @@ interface SemanticTypeOptions {
   expectedValue?: string;
 }
 
-interface PressKeyOptions {
+interface ObservationActionOptions {
   timeoutMs?: number;
   maxSamples?: number;
   pollIntervalMs?: number;
@@ -101,8 +101,13 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
       Promise.resolve({ status: 'target-not-found', target: null });
   }
 
-  pressKey(key: string, options?: PressKeyOptions): Promise<TaskKeyActionResult> {
+  pressKey(key: string, options?: ObservationActionOptions): Promise<TaskKeyActionResult> {
     return this.pages.activeEngine?.pressKey(key, options) ??
+      Promise.resolve({ status: 'unverified' });
+  }
+
+  scrollViewport(delta: Point, options?: ObservationActionOptions): Promise<TaskKeyActionResult> {
+    return this.pages.activeEngine?.scrollViewport(delta, options) ??
       Promise.resolve({ status: 'unverified' });
   }
 
