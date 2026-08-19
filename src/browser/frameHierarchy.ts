@@ -1,17 +1,30 @@
 import type { InteractionNode } from '../types.js';
-import type { CdpIdentityIndex } from './cdpIdentity.js';
+import type { SnapshotFrameDescriptor } from './cdpIdentity.js';
 
-/**
- * Attaches stable CDP parent-frame ownership after interaction frame ids have
- * already been mapped into CDP frame ids. Main-frame nodes have no parent.
- */
+export interface InteractionFrameHierarchy {
+  frameToParentFrame: ReadonlyMap<string, string>;
+}
+
+export function buildInteractionFrameHierarchy(
+  frames: readonly SnapshotFrameDescriptor[],
+): InteractionFrameHierarchy {
+  const frameToParentFrame = new Map<string, string>();
+  for (const frame of frames) {
+    if (frame.parentInteractionFrameId) {
+      frameToParentFrame.set(frame.interactionFrameId, frame.parentInteractionFrameId);
+    }
+  }
+  return { frameToParentFrame };
+}
+
+/** Attaches parent ownership in the same interaction-frame id space as node.frameId. */
 export function enrichInteractionNodesWithFrameHierarchy(
   nodes: readonly InteractionNode[],
-  identities: Pick<CdpIdentityIndex, 'frames'>,
+  hierarchy: InteractionFrameHierarchy,
 ): InteractionNode[] {
   return nodes.map((node) => ({
     ...node,
-    parentFrameId: identities.frames.get(node.frameId)?.parentFrameId,
+    parentFrameId: hierarchy.frameToParentFrame.get(node.frameId),
   }));
 }
 
