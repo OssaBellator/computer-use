@@ -5,6 +5,7 @@ import {
   compositeAnchorIsCurrent,
   focusedCompositeState,
 } from '../focus/compositeState.js';
+import type { FocusDirection } from '../focus/focusTopology.js';
 import type { BrowserInput } from '../input/browserInput.js';
 import type { InteractionEdge, InteractionNode, Point, Rect } from '../types.js';
 import type { EdgeDispatchContext, EdgeDispatchResult } from './replanningExecutor.js';
@@ -40,6 +41,15 @@ function navigationArrival(
   return focusedId(nodes);
 }
 
+function focusDirection(edge: InteractionEdge, key: string): FocusDirection | undefined {
+  if (edge.kind === 'focus-next') return 'forward';
+  if (edge.kind === 'focus-previous') return 'backward';
+  if (edge.kind === 'enter-frame' || edge.kind === 'exit-frame') {
+    return key === 'Shift+Tab' ? 'backward' : 'forward';
+  }
+  return undefined;
+}
+
 function targetRect(node: InteractionNode): Rect | undefined {
   return node.mainViewportVisibleRect ?? node.visibleRect ?? node.mainViewportRect ?? node.rect;
 }
@@ -56,7 +66,7 @@ export class BrowserEdgeDispatcher {
     context: EdgeDispatchContext,
   ): Promise<EdgeDispatchResult> => {
     if (edge.kind === 'state-anchor') return this.dispatchStateAnchor(context);
-    const key = KEY_FOR_KIND[edge.kind];
+    const key = edge.keyboardKey ?? KEY_FOR_KIND[edge.kind];
     if (key) return this.dispatchKeyboardNavigation(edge, context, key);
     if (edge.kind === 'pointer-move') return this.dispatchPointerMove(context);
     return {
@@ -89,11 +99,12 @@ export class BrowserEdgeDispatcher {
     const succeeded = arrivedNodeId === context.target.id;
 
     if (arrivedNodeId && arrivedNodeId !== context.source.id) {
-      if (edge.kind === 'focus-next' || edge.kind === 'focus-previous') {
+      const learnedFocusDirection = focusDirection(edge, key);
+      if (learnedFocusDirection) {
         context.model.focusTopology.observe({
           fromId: context.source.id,
           toId: arrivedNodeId,
-          direction: edge.kind === 'focus-next' ? 'forward' : 'backward',
+          direction: learnedFocusDirection,
         });
       } else {
         const direction = DIRECTION_FOR_KIND[edge.kind];
