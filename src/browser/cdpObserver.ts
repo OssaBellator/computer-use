@@ -15,6 +15,10 @@ import {
   findCdpHitTestedTargetPoint,
   pointHitsCdpInteractionNode,
 } from './cdpGeometry.js';
+import {
+  buildInteractionFrameHierarchy,
+  enrichInteractionNodesWithFrameHierarchy,
+} from './frameHierarchy.js';
 
 export interface BrowserInteractionObserver {
   snapshot(): Promise<readonly InteractionNode[]>;
@@ -25,7 +29,7 @@ export interface BrowserInteractionObserver {
 
 /**
  * Stateful CDP-backed observer that composes DOM semantics, stable backend/AX
- * identity, frame disambiguation, normalized geometry, and paint-order hit tests.
+ * identity, frame ownership, normalized geometry, and paint-order hit tests.
  */
 export class CdpInteractionObserver implements BrowserInteractionObserver {
   private identities?: CdpIdentityIndex;
@@ -40,14 +44,19 @@ export class CdpInteractionObserver implements BrowserInteractionObserver {
   }
 
   async snapshot(): Promise<InteractionNode[]> {
+    const frameDescriptors = describeSnapshotFrames(this.page);
     const [raw, identities] = await Promise.all([
       snapshotInteractiveDom(this.page),
       captureCdpIdentityIndex(this.session),
     ]);
-    const frameIdMap = buildInteractionFrameIdMap(describeSnapshotFrames(this.page), identities);
+    const frameIdMap = buildInteractionFrameIdMap(frameDescriptors, identities);
     const enriched = enrichInteractionNodesWithCdpIdentity(raw, identities, { frameIdMap });
     const stable = stabilizeInteractionNodeIds(enriched);
-    const normalized = await enrichInteractionNodesWithCdpGeometry(stable, this.session);
+    const withHierarchy = enrichInteractionNodesWithFrameHierarchy(
+      stable,
+      buildInteractionFrameHierarchy(frameDescriptors),
+    );
+    const normalized = await enrichInteractionNodesWithCdpGeometry(withHierarchy, this.session);
     this.identities = identities;
     return normalized;
   }
