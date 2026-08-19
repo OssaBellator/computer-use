@@ -62,6 +62,12 @@ export function diffSnapshots(
   };
 }
 
+export function snapshotDeltaHasObservableChange(delta: SnapshotDelta): boolean {
+  return delta.added.length > 0 || delta.removed.length > 0 ||
+    delta.focusedBefore !== delta.focusedAfter || delta.changedValues.length > 0 ||
+    delta.changedStates.length > 0;
+}
+
 export function focusTransitionSucceeded(delta: SnapshotDelta, expectedTargetId: string): boolean {
   return delta.focusedAfter === expectedTargetId && delta.focusedAfter !== delta.focusedBefore;
 }
