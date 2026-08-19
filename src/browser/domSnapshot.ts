@@ -212,6 +212,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
             element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) &&
           element.disabled;
         const disabled = nativeDisabled || element.getAttribute('aria-disabled') === 'true';
+        const fileInput = element instanceof HTMLInputElement && element.type.toLowerCase() === 'file';
         const editable = isTextEntryInput(element) ||
           element instanceof HTMLTextAreaElement || html.isContentEditable;
         const focusable = !disabled && html.tabIndex >= 0;
@@ -229,6 +230,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         if (focusable) capabilities.push('focus');
         if (clickable) capabilities.push('activate');
         if (editable) capabilities.push('type');
+        if (fileInput) capabilities.push('upload');
         if (scrollable) capabilities.push('scroll');
         if (element.hasAttribute('aria-expanded')) capabilities.push('expand');
 
@@ -256,7 +258,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
 
         const name = accessibleName(element);
         const confidence = Math.max(0.25, Math.min(1,
-          0.35 + (focusable ? 0.2 : 0) + (clickable || editable ? 0.25 : 0) +
+          0.35 + (focusable ? 0.2 : 0) + (clickable || editable || fileInput ? 0.25 : 0) +
           (element.hasAttribute('role') ? 0.1 : 0) + (name ? 0.1 : 0),
         ));
 

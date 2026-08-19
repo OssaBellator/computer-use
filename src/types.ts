@@ -12,6 +12,7 @@ export type InteractionCapability =
   | 'focus'
   | 'activate'
   | 'type'
+  | 'upload'
   | 'scroll'
   | 'expand'
   | 'dismiss';
