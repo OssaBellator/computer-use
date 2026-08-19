@@ -9,6 +9,7 @@ export * from './browser/cdpObserver.js';
 export * from './browser/hitTesting.js';
 export * from './focus/focusTopology.js';
 export * from './focus/directionalTopology.js';
+export * from './focus/compositeState.js';
 export * from './planner/actionPlanner.js';
 export * from './model/edgePerformance.js';
 export * from './model/interactionModel.js';
