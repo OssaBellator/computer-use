@@ -16,8 +16,8 @@ const EPSILON = 1e-9;
 /**
  * Closed-loop-friendly pointer executor. Browser coordinates are the commanded
  * output while the bounded finger model constrains how each segment is broken
- * into touchpad strokes. Oversized deltas are split rather than teleporting the
- * virtual finger beyond the modeled surface.
+ * into touchpad strokes. PointerController owns the finger-to-cursor calibration
+ * through pixelsPerMm; VirtualTouchpad only tracks finger bounds here.
  */
 export class PointerController {
   private readonly pixelsPerMm: number;
@@ -86,11 +86,7 @@ export class PointerController {
       const fractionOfOriginal = Math.hypot(fingerStep.x, fingerStep.y) /
         Math.max(EPSILON, Math.hypot(totalFingerDelta.x, totalFingerDelta.y));
       const stepDurationMs = durationMs * fractionOfOriginal;
-      const dtSeconds = Math.max(0.001, stepDurationMs / 1000);
-      const result = this.touchpad.applyFingerDelta(fingerStep, {
-        x: fingerStep.x / dtSeconds,
-        y: fingerStep.y / dtSeconds,
-      });
+      const result = this.touchpad.trackFingerDelta(fingerStep);
       if (result.boundaryReached) {
         await this.liftAndRecenter();
         continue;
