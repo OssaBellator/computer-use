@@ -102,8 +102,8 @@ test('roving tablist metadata constrains Arrow planning to the owning composite 
       document.body.innerHTML = \`
         <style>
           body { margin: 0; position: relative; width: 600px; height: 200px; }
-          #outside { position: absolute; left: 45px; top: 20px; }
-          #tabs { position: absolute; left: 10px; top: 80px; display: flex; gap: 140px; }
+          #outside { position: absolute; left: 80px; top: 80px; }
+          #tabs { position: absolute; left: 10px; top: 80px; display: flex; gap: 180px; }
         </style>
         <button id="outside">Outside</button>
         <div id="tabs" role="tablist" aria-label="Workspace tabs">
