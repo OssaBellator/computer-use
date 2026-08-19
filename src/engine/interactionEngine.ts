@@ -18,6 +18,7 @@ import { VirtualTouchpad, type VirtualTouchpadOptions } from '../motor/virtualTo
 import { PointerController, type PointerControllerOptions } from '../controller/pointerController.js';
 import { BrowserEdgeDispatcher } from '../controller/browserEdgeDispatcher.js';
 import { FocusController, type FocusStepResult } from '../controller/focusController.js';
+import { KeyboardActionController, type KeyboardActionResult } from '../controller/keyboardActionController.js';
 import type { FocusDirection } from '../focus/focusTopology.js';
 import { ReplanningExecutor, type ReplanningOptions, type ReplanningResult } from '../controller/replanningExecutor.js';
 import {
@@ -107,6 +108,7 @@ export class InteractionEngine {
   readonly dispatcher: BrowserEdgeDispatcher;
   readonly replanner: ReplanningExecutor;
   readonly actions: SemanticActionController;
+  readonly keyboard: KeyboardActionController;
   readonly revealController: ScrollRevealController;
   readonly focusController: FocusController;
 
@@ -132,6 +134,7 @@ export class InteractionEngine {
     this.dispatcher = new BrowserEdgeDispatcher(input, this.pointer, observer);
     this.replanner = new ReplanningExecutor(this.model, () => this.planningSnapshot(), this.dispatcher.dispatch);
     this.actions = new SemanticActionController(observer, input, this.pointer);
+    this.keyboard = new KeyboardActionController(observer, input);
     this.revealController = new ScrollRevealController(observer, input, this.pointer);
     this.focusController = new FocusController(
       input,
@@ -167,6 +170,14 @@ export class InteractionEngine {
     const result = await this.focusController.step(direction);
     this.model.refresh(result.after);
     return result;
+  }
+
+  /** Dispatch a static key/chord and verify an observable semantic browser-state change. */
+  async pressKey(
+    key: string,
+    options: Parameters<KeyboardActionController['press']>[1] = {},
+  ): Promise<KeyboardActionResult> {
+    return this.keyboard.press(key, options);
   }
 
   async acquire(query: TargetQuery | string, options: AcquireOptions = {}): Promise<AcquireResult> {
