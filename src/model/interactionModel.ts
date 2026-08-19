@@ -1,5 +1,6 @@
 import { FocusTopology } from '../focus/focusTopology.js';
 import { DirectionalTopology } from '../focus/directionalTopology.js';
+import { buildCompositeAnchorEdges } from '../focus/compositeState.js';
 import { EdgePerformanceModel } from './edgePerformance.js';
 import { buildDirectionalEdges, createPointerMoveEdge } from '../graphBuilder.js';
 import {
@@ -64,7 +65,10 @@ export class InteractionModel {
     const target = this.nodesById.get(targetId);
     if (!target) return [];
 
-    const edges: InteractionEdge[] = [...this.focusTopology.toEdges(nodes)];
+    const edges: InteractionEdge[] = [
+      ...buildCompositeAnchorEdges(nodes),
+      ...this.focusTopology.toEdges(nodes),
+    ];
     if (options.includeDirectional ?? true) {
       const observed = this.directionalTopology.toEdges(nodes);
       const observedSlots = new Set(observed.map(directionalSlot).filter((slot): slot is string => slot !== null));
