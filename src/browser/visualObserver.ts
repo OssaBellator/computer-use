@@ -10,6 +10,8 @@ export interface VisualCaptureOptions {
   quality?: number;
   /** Main-viewport CSS-pixel crop. */
   clip?: Rect;
+  /** Downscale a clipped capture in Chromium. Must be in (0,1]. */
+  scale?: number;
   captureBeyondViewport?: boolean;
   /** Fail closed before returning unexpectedly large image payloads. */
   maxBytes?: number;
@@ -61,6 +63,12 @@ function validateCaptureOptions(options: VisualCaptureOptions): void {
       options.clip.width <= 0 || options.clip.height <= 0)) {
     throw new Error('clip must contain finite coordinates and positive dimensions');
   }
+  if (options.scale !== undefined) {
+    if (!options.clip) throw new Error('scale requires clip');
+    if (!Number.isFinite(options.scale) || options.scale <= 0 || options.scale > 1) {
+      throw new Error('scale must be in (0,1]');
+    }
+  }
   normalizedMaxBytes(options.maxBytes);
 }
 
@@ -89,7 +97,7 @@ export class CdpVisualObserver {
     };
     if (format !== 'png' && options.quality !== undefined) params.quality = options.quality;
     if (options.clip) {
-      params.clip = { ...options.clip, scale: 1 };
+      params.clip = { ...options.clip, scale: options.scale ?? 1 };
     }
     const result = await this.session.send('Page.captureScreenshot', params) as { data?: string };
     if (typeof result.data !== 'string' || !result.data) throw new Error('Page.captureScreenshot returned no image data');
