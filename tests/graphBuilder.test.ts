@@ -36,6 +36,67 @@ test('directional edge builder stays within frame and picks aligned neighbor', (
   assert.ok(!edges.some((edge) => edge.from === 'a' && edge.to === 'other'));
 });
 
+test('roving composite geometry cannot escape to a visually closer outside control', () => {
+  const owner = 'main:div:nth-of-type(1)';
+  const current = {
+    ...node('current-tab', 0, 0),
+    role: 'tab',
+    tabIndex: 0,
+    compositeOwnerStructuralId: owner,
+  };
+  const next = {
+    ...node('next-tab', 100, 0),
+    role: 'tab',
+    tabIndex: -1,
+    focusable: false,
+    capabilities: ['activate'] as InteractionNode['capabilities'],
+    compositeOwnerStructuralId: owner,
+  };
+  const outside = node('outside-button', 30, 0);
+
+  const edges = buildDirectionalEdges([current, next, outside]);
+  const right = edges.find((edge) => edge.from === current.id && edge.kind === 'spatial-right');
+  assert.equal(right?.to, next.id);
+  assert.ok(!edges.some((edge) => edge.from === current.id && edge.to === outside.id));
+});
+
+test('ordinary directional space does not speculate into a roving composite', () => {
+  const start = node('plain-start', 0, 0);
+  const compositeMember = {
+    ...node('menu-item', 30, 0),
+    role: 'menuitem',
+    tabIndex: -1,
+    compositeOwnerStructuralId: 'main:nav:nth-of-type(1)',
+  };
+  const plainTarget = node('plain-target', 100, 0);
+
+  const edges = buildDirectionalEdges([start, compositeMember, plainTarget]);
+  const right = edges.find((edge) => edge.from === start.id && edge.kind === 'spatial-right');
+  assert.equal(right?.to, plainTarget.id);
+  assert.ok(!edges.some((edge) => edge.from === start.id && edge.to === compositeMember.id));
+});
+
+test('tabindex-negative non-clickable grid cells remain Arrow destinations inside their grid', () => {
+  const owner = 'main:div:nth-of-type(1)';
+  const gridCell = (id: string, x: number, tabIndex: number): InteractionNode => ({
+    ...node(id, x, 0),
+    role: 'gridcell',
+    tabIndex,
+    compositeOwnerStructuralId: owner,
+    focusable: tabIndex >= 0,
+    clickable: false,
+    capabilities: tabIndex >= 0 ? ['focus'] : [],
+  });
+  const first = gridCell('grid-a', 0, 0);
+  const second = gridCell('grid-b', 80, -1);
+
+  const edges = buildDirectionalEdges([first, second]);
+  assert.equal(
+    edges.find((edge) => edge.from === first.id && edge.kind === 'spatial-right')?.to,
+    second.id,
+  );
+});
+
 test('pointer edge uses target confidence as uncertainty and refuses cross-frame motion', () => {
   const a = node('a', 0, 0);
   const b = node('b', 100, 0, 'main', 0.5);
