@@ -9,7 +9,7 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/tests/*.test.js",
-    "test:chromium": "npm run build && node --test tests/integration/chromiumSmoke.test.mjs"
+    "test:chromium": "npm run build && node --test tests/integration/*.test.mjs"
   },
   "engines": {
     "node": ">=20"
