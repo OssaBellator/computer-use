@@ -14,6 +14,7 @@ export type InteractionCapability =
   | 'type'
   | 'upload'
   | 'select'
+  | 'set-range'
   | 'scroll'
   | 'expand'
   | 'dismiss';
