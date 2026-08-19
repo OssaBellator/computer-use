@@ -29,6 +29,7 @@ export type TaskPredicate =
 export interface TaskActionStepBase { id: string; description?: string; risk?: Exclude<TaskRisk, 'observe'>; requiresApproval?: boolean; next: string; onFailure?: string; }
 export interface SemanticTaskActionStepBase extends TaskActionStepBase { autoReveal?: boolean; }
 export interface ActivateTaskStep extends SemanticTaskActionStepBase { kind: 'activate'; target: TaskTarget; method?: 'auto' | 'keyboard' | 'pointer'; key?: string; }
+export interface HoverTaskStep extends SemanticTaskActionStepBase { kind: 'hover'; target: TaskTarget; timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number; }
 export interface TypeTaskStep extends SemanticTaskActionStepBase { kind: 'type'; target: TaskTarget; text: ProgramText; expectedValue?: ProgramText; delayMs?: number; }
 export interface UploadTaskStep extends Omit<TaskActionStepBase, 'risk'> { kind: 'upload'; risk?: 'external-side-effect'; target: TaskTarget; files: readonly ProgramText[]; }
 /** Key/chord is static program data; browser content cannot synthesize it at runtime. */
@@ -47,7 +48,7 @@ export interface WaitNetworkIdleTaskStep { id: string; kind: 'wait-network-idle'
 export interface FailTaskStep { id: string; kind: 'fail'; description?: string; }
 export interface CompleteTaskStep { id: string; kind: 'complete'; description?: string; condition?: TaskPredicate; onFailure?: string; }
 
-export type TaskStep = ActivateTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
+export type TaskStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
 export interface TaskProgram { version: 1; name?: string; entry: string; inputs?: readonly string[]; steps: readonly TaskStep[]; }
 export interface TaskProgramValidation { valid: boolean; errors: string[]; warnings: string[]; }
 
@@ -64,7 +65,7 @@ function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): vo
 }
 function referencedStepIds(step: TaskStep): string[] {
   switch (step.kind) {
-    case 'activate': case 'type': case 'upload': case 'press-key': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
+    case 'activate': case 'hover': case 'type': case 'upload': case 'press-key': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch': return [step.then, step.else];
     case 'wait': case 'wait-network-idle': return [step.next, ...(step.onTimeout ? [step.onTimeout] : [])];
     case 'fail': return [];
@@ -83,6 +84,11 @@ function stepInputs(step: TaskStep): Set<string> {
   return inputs;
 }
 function validatePollFields(id: string, maxPolls: number | undefined, pollIntervalMs: number | undefined, errors: string[]): void { if (maxPolls !== undefined && (!Number.isInteger(maxPolls) || maxPolls < 1)) errors.push(`step ${id} maxPolls must be a positive integer`); if (pollIntervalMs !== undefined && (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0)) errors.push(`step ${id} pollIntervalMs must be non-negative`); }
+function validateObservationFields(kind: 'press-key' | 'hover', id: string, maxSamples: number | undefined, pollIntervalMs: number | undefined, timeoutMs: number | undefined, errors: string[]): void {
+  if (maxSamples !== undefined && (!Number.isInteger(maxSamples) || maxSamples < 1)) errors.push(`${kind} step ${id} maxSamples must be a positive integer`);
+  if (pollIntervalMs !== undefined && (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0)) errors.push(`${kind} step ${id} pollIntervalMs must be non-negative`);
+  if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 1)) errors.push(`${kind} step ${id} timeoutMs must be positive`);
+}
 function validatePredicate(predicate: TaskPredicate, stepId: string, errors: string[]): void {
   switch (predicate.kind) {
     case 'browser': { const { historyLength, historyLengthAtLeast } = predicate.state; if (historyLength !== undefined && (!Number.isInteger(historyLength) || historyLength < 0)) errors.push(`step ${stepId} browser historyLength must be a non-negative integer`); if (historyLengthAtLeast !== undefined && (!Number.isInteger(historyLengthAtLeast) || historyLengthAtLeast < 0)) errors.push(`step ${stepId} browser historyLengthAtLeast must be a non-negative integer`); return; }
@@ -104,7 +110,11 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
     if (!step.id.trim()) { errors.push('step ids must be non-empty'); continue; }
     if (stepMap.has(step.id)) errors.push(`duplicate step id: ${step.id}`); else stepMap.set(step.id, step);
     if (step.kind === 'upload' && step.files.length < 1) errors.push(`upload step ${step.id} requires at least one file`);
-    if (step.kind === 'press-key') { if (!step.key.trim()) errors.push(`press-key step ${step.id} key must be non-empty`); if (step.maxSamples !== undefined && (!Number.isInteger(step.maxSamples) || step.maxSamples < 1)) errors.push(`press-key step ${step.id} maxSamples must be a positive integer`); if (step.pollIntervalMs !== undefined && (!Number.isFinite(step.pollIntervalMs) || step.pollIntervalMs < 0)) errors.push(`press-key step ${step.id} pollIntervalMs must be non-negative`); if (step.timeoutMs !== undefined && (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1)) errors.push(`press-key step ${step.id} timeoutMs must be positive`); }
+    if (step.kind === 'press-key') {
+      if (!step.key.trim()) errors.push(`press-key step ${step.id} key must be non-empty`);
+      validateObservationFields('press-key', step.id, step.maxSamples, step.pollIntervalMs, step.timeoutMs, errors);
+    }
+    if (step.kind === 'hover') validateObservationFields('hover', step.id, step.maxSamples, step.pollIntervalMs, step.timeoutMs, errors);
     if (step.kind === 'wait-network-idle') {
       if (step.quietMs !== undefined && (!Number.isFinite(step.quietMs) || step.quietMs < 0)) errors.push(`wait-network-idle step ${step.id} quietMs must be non-negative`);
       if (step.maxInflight !== undefined && (!Number.isInteger(step.maxInflight) || step.maxInflight < 0)) errors.push(`wait-network-idle step ${step.id} maxInflight must be a non-negative integer`);
