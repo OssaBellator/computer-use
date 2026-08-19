@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { findInteractionTargets, resolveInteractionTarget } from '../src/model/targetResolver.js';
+import {
+  findInteractionTargets,
+  resolveInteractionTarget,
+  resolveInteractionTargetDetailed,
+} from '../src/model/targetResolver.js';
 import type { InteractionNode } from '../src/types.js';
 
 const node = (id: string, name: string, confidence = 1): InteractionNode => ({
@@ -24,4 +28,25 @@ test('resolver ranks visible enabled high-confidence matches deterministically',
   const low = node('b', 'Go', 0.2);
   const high = node('c', 'Go', 0.9);
   assert.deepEqual(findInteractionTargets([hidden, low, high], { name: 'Go' }).map((item) => item.id), ['c', 'b', 'a']);
+});
+
+test('detailed resolution surfaces equally preferred semantic matches', () => {
+  const first = node('backend:1', 'Delete', 0.9);
+  const second = node('backend:2', 'Delete', 0.9);
+  const resolution = resolveInteractionTargetDetailed([second, first], {
+    name: 'Delete', role: 'button', visible: true, enabled: true,
+  });
+  assert.equal(resolution.target?.id, 'backend:1');
+  assert.equal(resolution.ambiguous, true);
+  assert.deepEqual(resolution.equallyPreferred.map((item) => item.id), ['backend:1', 'backend:2']);
+});
+
+test('detailed resolution is not ambiguous when semantic rank clearly prefers one match', () => {
+  const resolution = resolveInteractionTargetDetailed([
+    node('low', 'Open', 0.5),
+    node('high', 'Open', 0.95),
+  ], { name: 'Open' });
+  assert.equal(resolution.target?.id, 'high');
+  assert.equal(resolution.ambiguous, false);
+  assert.deepEqual(resolution.equallyPreferred.map((item) => item.id), ['high']);
 });
