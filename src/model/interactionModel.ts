@@ -7,6 +7,7 @@ import {
   type PlanResult,
 } from '../planner/actionPlanner.js';
 import type { InteractionEdge, InteractionNode, PathCostWeights } from '../types.js';
+import { EdgePerformanceModel } from './edgePerformance.js';
 
 export interface InteractionModelPlanOptions {
   includeDirectional?: boolean;
@@ -19,10 +20,11 @@ export interface InteractionModelPlanOptions {
 /**
  * In-memory composition of the current page snapshot and learned interaction
  * topology. Refresh replaces volatile node geometry/state while preserving
- * learned focus observations across snapshots.
+ * learned focus and empirical edge-performance observations across snapshots.
  */
 export class InteractionModel {
   readonly focusTopology = new FocusTopology();
+  readonly edgePerformance = new EdgePerformanceModel();
   private nodesById = new Map<string, InteractionNode>();
 
   refresh(nodes: readonly InteractionNode[]): void {
@@ -53,7 +55,7 @@ export class InteractionModel {
         if (edge) edges.push(edge);
       }
     }
-    return edges;
+    return edges.map((edge) => this.edgePerformance.adjust(edge));
   }
 
   plan(
