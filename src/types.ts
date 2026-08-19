@@ -31,11 +31,13 @@ export interface InteractionNode {
   selected?: boolean;
   pressed?: boolean | 'mixed';
   activeDescendantId?: string;
+  /** Structural identity of the nearest independently scrollable ancestor. */
+  scrollAncestorStructuralId?: string;
   focused: boolean;
   disabled: boolean;
   rect?: Rect;
   visibleRect?: Rect;
-  /** Explicit viewport intersection state in the node's owning frame. */
+  /** Explicit visibility after frame viewport and overflow-ancestor clipping. */
   viewportVisible?: boolean;
   /** Browser-authoritative border box normalized into the main viewport. */
   mainViewportRect?: Rect;
