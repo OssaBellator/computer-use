@@ -24,6 +24,7 @@ export * from './controller/pointerController.js';
 export * from './controller/focusController.js';
 export * from './controller/actionExecutor.js';
 export * from './controller/semanticActionController.js';
+export * from './controller/scrollRevealController.js';
 export * from './controller/replanningExecutor.js';
 export * from './controller/browserEdgeDispatcher.js';
 export * from './engine/interactionEngine.js';
