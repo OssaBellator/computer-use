@@ -1,3 +1,5 @@
+import type { BrowserDocumentReadyState } from '../browser/browserState.js';
+import type { NavigationWaitUntil } from '../browser/navigationController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 
 export type TaskTarget = TargetQuery | string;
@@ -17,9 +19,21 @@ export interface TaskNodeExpectation {
   valueIncludes?: ProgramText;
 }
 
+export interface TaskBrowserExpectation {
+  url?: ProgramText;
+  urlIncludes?: ProgramText;
+  origin?: ProgramText;
+  title?: ProgramText;
+  titleIncludes?: ProgramText;
+  readyState?: BrowserDocumentReadyState;
+  historyLength?: number;
+  historyLengthAtLeast?: number;
+}
+
 export type TaskPredicate =
   | { kind: 'exists'; target: TaskTarget; unambiguous?: boolean }
   | { kind: 'state'; target: TaskTarget; state: TaskNodeExpectation; unambiguous?: boolean }
+  | { kind: 'browser'; state: TaskBrowserExpectation }
   | { kind: 'all'; predicates: readonly TaskPredicate[] }
   | { kind: 'any'; predicates: readonly TaskPredicate[] }
   | { kind: 'not'; predicate: TaskPredicate };
@@ -31,22 +45,34 @@ export interface TaskActionStepBase {
   requiresApproval?: boolean;
   next: string;
   onFailure?: string;
+}
+
+export interface SemanticTaskActionStepBase extends TaskActionStepBase {
   autoReveal?: boolean;
 }
 
-export interface ActivateTaskStep extends TaskActionStepBase {
+export interface ActivateTaskStep extends SemanticTaskActionStepBase {
   kind: 'activate';
   target: TaskTarget;
   method?: 'auto' | 'keyboard' | 'pointer';
   key?: string;
 }
 
-export interface TypeTaskStep extends TaskActionStepBase {
+export interface TypeTaskStep extends SemanticTaskActionStepBase {
   kind: 'type';
   target: TaskTarget;
   text: ProgramText;
   expectedValue?: ProgramText;
   delayMs?: number;
+}
+
+export interface NavigateTaskStep extends TaskActionStepBase {
+  kind: 'navigate';
+  url: ProgramText;
+  waitUntil?: NavigationWaitUntil;
+  timeoutMs?: number;
+  maxPolls?: number;
+  pollIntervalMs?: number;
 }
 
 export interface AssertTaskStep {
@@ -95,6 +121,7 @@ export interface CompleteTaskStep {
 export type TaskStep =
   | ActivateTaskStep
   | TypeTaskStep
+  | NavigateTaskStep
   | AssertTaskStep
   | BranchTaskStep
   | WaitTaskStep
@@ -124,11 +151,22 @@ function collectProgramTextInput(text: ProgramText | undefined, into: Set<string
   if (text && typeof text !== 'string') into.add(text.input);
 }
 
+function collectBrowserExpectationInputs(state: TaskBrowserExpectation, into: Set<string>): void {
+  collectProgramTextInput(state.url, into);
+  collectProgramTextInput(state.urlIncludes, into);
+  collectProgramTextInput(state.origin, into);
+  collectProgramTextInput(state.title, into);
+  collectProgramTextInput(state.titleIncludes, into);
+}
+
 function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): void {
   switch (predicate.kind) {
     case 'state':
       collectProgramTextInput(predicate.state.value, into);
       collectProgramTextInput(predicate.state.valueIncludes, into);
+      return;
+    case 'browser':
+      collectBrowserExpectationInputs(predicate.state, into);
       return;
     case 'all':
     case 'any':
@@ -146,6 +184,7 @@ function referencedStepIds(step: TaskStep): string[] {
   switch (step.kind) {
     case 'activate':
     case 'type':
+    case 'navigate':
     case 'assert':
       return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch':
@@ -165,11 +204,52 @@ function stepInputs(step: TaskStep): Set<string> {
     collectProgramTextInput(step.text, inputs);
     collectProgramTextInput(step.expectedValue, inputs);
   }
+  if (step.kind === 'navigate') collectProgramTextInput(step.url, inputs);
   if (step.kind === 'assert' || step.kind === 'branch' || step.kind === 'wait') {
     collectPredicateInputs(step.condition, inputs);
   }
   if (step.kind === 'complete' && step.condition) collectPredicateInputs(step.condition, inputs);
   return inputs;
+}
+
+function validatePollFields(
+  id: string,
+  maxPolls: number | undefined,
+  pollIntervalMs: number | undefined,
+  errors: string[],
+): void {
+  if (maxPolls !== undefined && (!Number.isInteger(maxPolls) || maxPolls < 1)) {
+    errors.push(`step ${id} maxPolls must be a positive integer`);
+  }
+  if (pollIntervalMs !== undefined && (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0)) {
+    errors.push(`step ${id} pollIntervalMs must be non-negative`);
+  }
+}
+
+function validatePredicate(predicate: TaskPredicate, stepId: string, errors: string[]): void {
+  switch (predicate.kind) {
+    case 'browser': {
+      const { historyLength, historyLengthAtLeast } = predicate.state;
+      if (historyLength !== undefined && (!Number.isInteger(historyLength) || historyLength < 0)) {
+        errors.push(`step ${stepId} browser historyLength must be a non-negative integer`);
+      }
+      if (historyLengthAtLeast !== undefined &&
+          (!Number.isInteger(historyLengthAtLeast) || historyLengthAtLeast < 0)) {
+        errors.push(`step ${stepId} browser historyLengthAtLeast must be a non-negative integer`);
+      }
+      return;
+    }
+    case 'all':
+    case 'any':
+      for (const nested of predicate.predicates) validatePredicate(nested, stepId, errors);
+      return;
+    case 'not':
+      validatePredicate(predicate.predicate, stepId, errors);
+      return;
+    case 'exists':
+    case 'state':
+      return;
+  }
 }
 
 export function validateTaskProgram(program: TaskProgram): TaskProgramValidation {
@@ -194,17 +274,21 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
     if (stepMap.has(step.id)) errors.push(`duplicate step id: ${step.id}`);
     else stepMap.set(step.id, step);
 
-    if (step.kind === 'wait') {
-      if (step.maxPolls !== undefined && (!Number.isInteger(step.maxPolls) || step.maxPolls < 1)) {
-        errors.push(`wait step ${step.id} maxPolls must be a positive integer`);
-      }
-      if (step.pollIntervalMs !== undefined && (!Number.isFinite(step.pollIntervalMs) || step.pollIntervalMs < 0)) {
-        errors.push(`wait step ${step.id} pollIntervalMs must be non-negative`);
-      }
+    if (step.kind === 'wait' || step.kind === 'navigate') {
+      validatePollFields(step.id, step.maxPolls, step.pollIntervalMs, errors);
     }
-    if (step.kind === 'type' && step.delayMs !== undefined && (!Number.isFinite(step.delayMs) || step.delayMs < 0)) {
+    if (step.kind === 'navigate' && step.timeoutMs !== undefined &&
+        (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1)) {
+      errors.push(`navigate step ${step.id} timeoutMs must be positive`);
+    }
+    if (step.kind === 'type' && step.delayMs !== undefined &&
+        (!Number.isFinite(step.delayMs) || step.delayMs < 0)) {
       errors.push(`type step ${step.id} delayMs must be non-negative`);
     }
+    if (step.kind === 'assert' || step.kind === 'branch' || step.kind === 'wait') {
+      validatePredicate(step.condition, step.id, errors);
+    }
+    if (step.kind === 'complete' && step.condition) validatePredicate(step.condition, step.id, errors);
   }
 
   if (!stepMap.has(program.entry)) errors.push(`entry step does not exist: ${program.entry}`);
