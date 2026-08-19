@@ -15,11 +15,16 @@ import type {
 } from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
-import type { TaskRisk, TaskStep } from './taskProgram.js';
+import type { TaskPageSelection, TaskRisk, TaskStep } from './taskProgram.js';
 
 export interface TaskEngineActionResult {
   status: string;
   target: InteractionNode | null;
+}
+
+export interface TaskPageSwitchResult {
+  status: string;
+  targetId?: string;
 }
 
 /** Minimal structural contract implemented by InteractionEngine-compatible facades. */
@@ -54,6 +59,7 @@ export interface TaskRuntimeEngine {
     paths: readonly string[],
     options?: { requireUnambiguous?: boolean },
   ): Promise<BrowserFileUploadResult>;
+  switchPage?(target: TaskPageSelection): Promise<TaskPageSwitchResult>;
   navigate?(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult>;
   history?(action: BrowserHistoryAction, options?: BrowserHistoryOptions): Promise<BrowserHistoryResult>;
   handleDialog?(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult>;
@@ -74,6 +80,7 @@ export type TaskRunStatus =
 export type TaskTraceOutcome =
   | 'verified'
   | 'uploaded'
+  | 'page-switched'
   | 'navigated'
   | 'history-navigated'
   | 'dialog-handled'
@@ -108,7 +115,7 @@ export interface TaskTraceEntry {
 export interface TaskApprovalContext {
   programName?: string;
   stepId: string;
-  kind: 'activate' | 'type' | 'upload' | 'navigate' | 'history' |
+  kind: 'activate' | 'type' | 'upload' | 'switch-page' | 'navigate' | 'history' |
     'handle-dialog' | 'open-tab' | 'close-latest-tab';
   risk: Exclude<TaskRisk, 'observe'>;
   visit: number;

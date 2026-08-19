@@ -11,6 +11,7 @@ import {
   type HistoryTaskStep,
   type NavigateTaskStep,
   type OpenTabTaskStep,
+  type SwitchPageTaskStep,
   type TaskProgram,
   type TaskRisk,
   type TypeTaskStep,
@@ -23,6 +24,7 @@ import {
 } from './taskObservation.js';
 import type {
   TaskEngineActionResult,
+  TaskPageSwitchResult,
   TaskRunResult,
   TaskRunStatus,
   TaskRuntimeEngine,
@@ -48,6 +50,7 @@ type ActionStep =
   | ActivateTaskStep
   | TypeTaskStep
   | UploadTaskStep
+  | SwitchPageTaskStep
   | NavigateTaskStep
   | HistoryTaskStep
   | HandleDialogTaskStep
@@ -57,6 +60,7 @@ type ActionStep =
 type RuntimeActionResult =
   | TaskEngineActionResult
   | BrowserFileUploadResult
+  | TaskPageSwitchResult
   | BrowserNavigationResult
   | BrowserHistoryResult
   | BrowserDialogHandleResult
@@ -79,6 +83,7 @@ function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefin
   if (!result) return false;
   switch (step.kind) {
     case 'upload': return result.status === 'uploaded';
+    case 'switch-page': return result.status === 'switched';
     case 'navigate':
     case 'history':
       return result.status === 'navigated';
@@ -92,6 +97,7 @@ function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefin
 function successOutcome(step: ActionStep): TaskTraceOutcome {
   switch (step.kind) {
     case 'upload': return 'uploaded';
+    case 'switch-page': return 'page-switched';
     case 'navigate': return 'navigated';
     case 'history': return 'history-navigated';
     case 'handle-dialog': return 'dialog-handled';
@@ -130,6 +136,8 @@ async function performAction(
         step.files.map((file) => resolveProgramText(file, inputs)),
         { requireUnambiguous: options.requireUnambiguousTargets ?? true },
       );
+    case 'switch-page':
+      return engine.switchPage?.(step.target);
     case 'navigate':
       return engine.navigate?.(resolveProgramText(step.url, inputs), {
         waitUntil: step.waitUntil,
@@ -213,8 +221,9 @@ export class TaskRuntime {
       try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
 
       if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'upload' ||
-          step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' ||
-          step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
+          step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' ||
+          step.kind === 'handle-dialog' || step.kind === 'open-tab' ||
+          step.kind === 'close-latest-tab') {
         const risk = riskOf(step);
         const needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
         let approved = !needsApproval;

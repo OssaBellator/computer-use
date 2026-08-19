@@ -37,6 +37,47 @@ Convenience methods include `switchToLatestPage()`, `switchToLatestUnattachedPag
 
 The controller does not own the underlying browser-root transport, so shutdown does not close a connection that may be shared by other components.
 
+## Task-program integration
+
+`MultiPageTaskEngine` adapts the multi-page controller to `TaskRuntimeEngine`. Importantly, it can start with **no active page**: `refresh()` yields no semantic nodes while `targetState()` still exposes root target topology. This lets a compiled task begin with a bounded page-selection step.
+
+`switch-page` has only two static selectors:
+
+- `latest-page`
+- `latest-unattached-page`
+
+Browser/page content cannot synthesize a target ID, URL, title, or arbitrary tab-selection command at runtime.
+
+```ts
+const pages = new MultiPageCdpAgent(router);
+const runtime = new TaskRuntime(new MultiPageTaskEngine(pages));
+
+const result = await runtime.run({
+  version: 1,
+  entry: 'popup',
+  steps: [
+    {
+      id: 'popup',
+      kind: 'switch-page',
+      target: 'latest-unattached-page',
+      next: 'check',
+      onFailure: 'failed',
+    },
+    {
+      id: 'check',
+      kind: 'assert',
+      condition: { kind: 'exists', target: { role: 'button', name: 'Continue' } },
+      next: 'done',
+      onFailure: 'failed',
+    },
+    { id: 'done', kind: 'complete' },
+    { id: 'failed', kind: 'fail' },
+  ],
+});
+```
+
+A successful switch records `page-switched`, the selected target ID, action status, and observation fingerprints. Page text and page URLs are not copied into the trace.
+
 ## Example
 
 ```ts
@@ -54,4 +95,4 @@ await engine?.activate({ role: 'button', name: 'Continue' });
 
 ## Regression coverage
 
-Unit regressions cover lazy attach, engine reuse, non-page rejection, metadata redaction, policy-checked create-and-switch, detach-before-close, and active-state cleanup. The Chromium regression seeds two real tabs with different semantic controls, switches between their routed pure-CDP engines, and verifies each active engine observes only its own tab's DOM state.
+Unit regressions cover lazy attach, engine reuse, non-page rejection, metadata redaction, policy-checked create-and-switch, detach-before-close, active-state cleanup, task observation before any page is active, static page-selection modes, missing-switch failure, and active-engine delegation. Chromium regressions seed two real tabs with different semantic controls, switch between their routed pure-CDP engines, and exercise a `TaskRuntime` program that starts with no active page, switches to the newest page, verifies a semantic control there, and completes without copying that control text into its trace.

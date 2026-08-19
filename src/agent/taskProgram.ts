@@ -6,6 +6,7 @@ import type { TargetQuery } from '../model/targetResolver.js';
 
 export type TaskTarget = TargetQuery | string;
 export type TaskRisk = 'observe' | 'interaction' | 'external-side-effect';
+export type TaskPageSelection = 'latest-page' | 'latest-unattached-page';
 
 /** Text may come only from the static program or explicit trusted task inputs. */
 export type ProgramText = string | { input: string };
@@ -95,6 +96,11 @@ export interface UploadTaskStep extends Omit<TaskActionStepBase, 'risk'> {
   files: readonly ProgramText[];
 }
 
+export interface SwitchPageTaskStep extends TaskActionStepBase {
+  kind: 'switch-page';
+  target: TaskPageSelection;
+}
+
 export interface OpenTabTaskStep extends TaskActionStepBase {
   kind: 'open-tab';
   url: ProgramText;
@@ -177,6 +183,7 @@ export type TaskStep =
   | ActivateTaskStep
   | TypeTaskStep
   | UploadTaskStep
+  | SwitchPageTaskStep
   | NavigateTaskStep
   | HistoryTaskStep
   | HandleDialogTaskStep
@@ -249,6 +256,7 @@ function referencedStepIds(step: TaskStep): string[] {
     case 'activate':
     case 'type':
     case 'upload':
+    case 'switch-page':
     case 'navigate':
     case 'history':
     case 'handle-dialog':

@@ -48,3 +48,4 @@ export * from './engine/cdpInteractionEngine.js';
 export * from './engine/cdpBrowserAgentEngine.js';
 export * from './engine/pureCdpEngine.js';
 export * from './engine/multiPageCdpAgent.js';
+export * from './engine/multiPageTaskEngine.js';
