@@ -22,12 +22,24 @@ function directionKind(direction: Direction): InteractionEdgeKind {
   return `spatial-${direction}` as InteractionEdgeKind;
 }
 
+function sharesDirectionalSpace(origin: InteractionNode, candidate: InteractionNode): boolean {
+  const owner = origin.compositeOwnerStructuralId;
+  return owner
+    ? candidate.compositeOwnerStructuralId === owner
+    : candidate.compositeOwnerStructuralId === undefined;
+}
+
 /**
  * Builds geometric Arrow-key hypotheses. Geometry alone does not establish that
  * a page implements spatial keyboard navigation, so these edges intentionally
  * carry a strong failure/uncertainty prior. Active-descendant owners are kept
  * outside logical Arrow space entirely; state-anchor bridges real DOM focus to
  * the currently active descendant before option-level navigation begins.
+ *
+ * Roving-tabindex/composite members stay inside their nearest ARIA composite.
+ * This prevents a visually closer control outside a menu/grid/tablist from
+ * hijacking a speculative Arrow edge, while still allowing tabindex=-1 members
+ * to participate as valid Arrow destinations.
  */
 export function buildDirectionalEdges(
   nodes: readonly InteractionNode[],
@@ -35,14 +47,17 @@ export function buildDirectionalEdges(
   speculativeFailureProbability = DEFAULT_SPECULATIVE_DIRECTION_FAILURE,
 ): InteractionEdge[] {
   const interactive = nodes.filter((node) => !node.disabled && viewportEligible(node) &&
-    !!rectFor(node) && (node.focusable || node.clickable || node.editable));
+    !!rectFor(node) && (
+      node.focusable || node.clickable || node.editable || !!node.compositeOwnerStructuralId
+    ));
   const eligible = interactive.filter((node) => !node.activeDescendantStructuralId);
   const edges: InteractionEdge[] = [];
   const directions: Direction[] = ['up', 'down', 'left', 'right'];
   const speculativeFailure = Math.max(0, Math.min(1, speculativeFailureProbability));
 
   for (const origin of eligible) {
-    const local = eligible.filter((candidate) => candidate.frameId === origin.frameId);
+    const local = eligible.filter((candidate) =>
+      candidate.frameId === origin.frameId && sharesDirectionalSpace(origin, candidate));
     for (const direction of directions) {
       const target = bestDirectionalCandidate(origin, local, direction);
       if (!target) continue;
