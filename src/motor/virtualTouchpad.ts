@@ -6,9 +6,12 @@ export interface TouchpadTransferFunction {
   (deltaMm: Point, velocityMmPerSecond: Point): Point;
 }
 
-export interface TouchpadStepResult {
+export interface FingerTrackingResult {
   boundaryReached: boolean;
   finger: Point;
+}
+
+export interface TouchpadStepResult extends FingerTrackingResult {
   cursor: Point;
   cursorDelta: Point;
 }
@@ -54,16 +57,16 @@ export class VirtualTouchpad {
     });
   }
 
-  applyFingerDelta(
-    deltaMm: Point,
-    velocityMmPerSecond: Point = { x: 0, y: 0 },
-  ): TouchpadStepResult {
+  /**
+   * Advances only the modeled finger position. This is used by controllers
+   * whose cursor transfer/calibration is owned externally (for example,
+   * PointerController's pixelsPerMm calibration).
+   */
+  trackFingerDelta(deltaMm: Point): FingerTrackingResult {
     if (!this.canApplyFingerDelta(deltaMm)) {
       return {
         boundaryReached: true,
         finger: { ...this.finger },
-        cursor: { ...this.cursor },
-        cursorDelta: { x: 0, y: 0 },
       };
     }
 
@@ -72,6 +75,28 @@ export class VirtualTouchpad {
       x: this.finger.x + deltaMm.x,
       y: this.finger.y + deltaMm.y,
     };
+    return {
+      boundaryReached: false,
+      finger: { ...this.finger },
+    };
+  }
+
+  /**
+   * Standalone touchpad simulation step. Unlike trackFingerDelta(), this also
+   * applies the configured transfer curve to viewport cursor state.
+   */
+  applyFingerDelta(
+    deltaMm: Point,
+    velocityMmPerSecond: Point = { x: 0, y: 0 },
+  ): TouchpadStepResult {
+    const tracked = this.trackFingerDelta(deltaMm);
+    if (tracked.boundaryReached) {
+      return {
+        ...tracked,
+        cursor: { ...this.cursor },
+        cursorDelta: { x: 0, y: 0 },
+      };
+    }
 
     const cursorDelta = this.transferFunction(deltaMm, velocityMmPerSecond);
     this.cursor = {
@@ -80,8 +105,7 @@ export class VirtualTouchpad {
     };
 
     return {
-      boundaryReached: false,
-      finger: { ...this.finger },
+      ...tracked,
       cursor: { ...this.cursor },
       cursorDelta,
     };
@@ -107,7 +131,7 @@ export class VirtualTouchpad {
   }
 
   setCursor(point: Point): void {
-    this.cursor = { ...point };
+    this.cursor = { x: point.x, y: point.y };
   }
 
   private insidePad(point: Point): boolean {
@@ -119,9 +143,9 @@ export class VirtualTouchpad {
 }
 
 /**
- * Simple deterministic transfer curve useful for tests and calibration.
- * It deliberately models cursor gain without pretending to reproduce a
- * particular operating system's private pointer-acceleration implementation.
+ * Simple deterministic transfer curve useful for standalone simulation and
+ * calibration experiments. PointerController intentionally owns its own
+ * pixelsPerMm output calibration and therefore only uses finger tracking.
  */
 export function createVelocityGainTransfer(
   basePixelsPerMm = 8,
