@@ -9,6 +9,7 @@ import type { InteractionNode } from '../types.js';
 import type { TaskPageSelection } from '../agent/taskProgram.js';
 import type {
   TaskEngineActionResult,
+  TaskKeyActionResult,
   TaskPageSwitchResult,
   TaskRuntimeEngine,
 } from '../agent/taskRuntime.js';
@@ -26,6 +27,12 @@ interface SemanticTypeOptions {
   autoReveal?: boolean;
   delayMs?: number;
   expectedValue?: string;
+}
+
+interface PressKeyOptions {
+  timeoutMs?: number;
+  maxSamples?: number;
+  pollIntervalMs?: number;
 }
 
 /**
@@ -75,6 +82,11 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
   ): Promise<TaskEngineActionResult> {
     return this.pages.activeEngine?.typeInto(query, text, options) ??
       Promise.resolve({ status: 'target-not-found', target: null });
+  }
+
+  pressKey(key: string, options?: PressKeyOptions): Promise<TaskKeyActionResult> {
+    return this.pages.activeEngine?.pressKey(key, options) ??
+      Promise.resolve({ status: 'unverified' });
   }
 
   uploadFiles(
