@@ -22,7 +22,6 @@ function targetRect(node: InteractionNode): Rect | undefined {
   return node.mainViewportVisibleRect ?? node.visibleRect ?? node.mainViewportRect ?? node.rect;
 }
 
-/** Concrete dispatcher for focus-navigation and pointer-acquisition graph edges. */
 export class BrowserEdgeDispatcher {
   constructor(
     private readonly input: BrowserInput,
@@ -36,7 +35,7 @@ export class BrowserEdgeDispatcher {
   ): Promise<EdgeDispatchResult> => {
     const key = KEY_FOR_KIND[edge.kind];
     if (key) return this.dispatchKeyboardNavigation(edge, context, key);
-    if (edge.kind === 'pointer-move') return this.dispatchPointerMove(context.target);
+    if (edge.kind === 'pointer-move') return this.dispatchPointerMove(context);
     return { succeeded: false, arrivedNodeId: context.source.id, reason: `Unsupported edge kind: ${edge.kind}` };
   };
 
@@ -66,7 +65,8 @@ export class BrowserEdgeDispatcher {
     };
   }
 
-  private async dispatchPointerMove(target: InteractionNode): Promise<EdgeDispatchResult> {
+  private async dispatchPointerMove(context: EdgeDispatchContext): Promise<EdgeDispatchResult> {
+    const target = context.target;
     const point = await this.observer.targetPoint(target);
     if (!point) return { succeeded: false, reason: `No hit-tested point for ${target.id}` };
     const rect = targetRect(target);
@@ -76,6 +76,7 @@ export class BrowserEdgeDispatcher {
     };
     const width = rect ? effectiveTargetWidth(rect, movement) : 20;
     await this.pointer.moveTo(point, width);
+    context.model.setPointerPosition(this.pointer.touchpad.cursor);
     const succeeded = await this.observer.pointStillTargets(target, point);
     return {
       succeeded,
