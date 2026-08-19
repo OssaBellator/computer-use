@@ -1,4 +1,5 @@
 import { FocusTopology } from '../focus/focusTopology.js';
+import { DirectionalTopology } from '../focus/directionalTopology.js';
 import { EdgePerformanceModel } from './edgePerformance.js';
 import { buildDirectionalEdges, createPointerMoveEdge } from '../graphBuilder.js';
 import {
@@ -17,8 +18,13 @@ export interface InteractionModelPlanOptions {
   initialModality?: InputModality;
 }
 
+function directionalSlot(edge: InteractionEdge): string | null {
+  return edge.kind.startsWith('spatial-') ? `${edge.from}\u0000${edge.kind}` : null;
+}
+
 export class InteractionModel {
   readonly focusTopology = new FocusTopology();
+  readonly directionalTopology = new DirectionalTopology();
   readonly edgePerformance = new EdgePerformanceModel();
   private nodesById = new Map<string, InteractionNode>();
   private pointerPosition?: Point;
@@ -50,8 +56,18 @@ export class InteractionModel {
     const nodes = this.nodes();
     const target = this.nodesById.get(targetId);
     if (!target) return [];
+
     const edges: InteractionEdge[] = [...this.focusTopology.toEdges(nodes)];
-    if (options.includeDirectional ?? true) edges.push(...buildDirectionalEdges(nodes));
+    if (options.includeDirectional ?? true) {
+      const observed = this.directionalTopology.toEdges(nodes);
+      const observedSlots = new Set(observed.map(directionalSlot).filter((slot): slot is string => slot !== null));
+      edges.push(...observed);
+      edges.push(...buildDirectionalEdges(nodes).filter((edge) => {
+        const slot = directionalSlot(edge);
+        return slot === null || !observedSlots.has(slot);
+      }));
+    }
+
     if (options.includePointer ?? true) {
       for (const node of nodes) {
         if (node.id === targetId) continue;
