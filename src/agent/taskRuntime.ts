@@ -9,6 +9,7 @@ import {
   type CloseLatestTabTaskStep,
   type HandleDialogTaskStep,
   type HistoryTaskStep,
+  type HoverTaskStep,
   type NavigateTaskStep,
   type OpenTabTaskStep,
   type PressKeyTaskStep,
@@ -35,7 +36,7 @@ export * from './taskRuntimeContracts.js';
 export { evaluateTaskPredicate, interactionSnapshotFingerprint, taskObservationFingerprint } from './taskObservation.js';
 
 const RISK_RANK: Record<TaskRisk, number> = { observe: 0, interaction: 1, 'external-side-effect': 2 };
-type ActionStep = ActivateTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep;
+type ActionStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep;
 type RuntimeActionResult = TaskEngineActionResult | TaskKeyActionResult | BrowserFileUploadResult | TaskPageSwitchResult | BrowserNavigationResult | BrowserHistoryResult | BrowserDialogHandleResult | CreateBrowserTargetResult | CloseBrowserTargetResult;
 
 const positiveInt = (value: number | undefined, fallback: number) => value === undefined || !Number.isFinite(value) ? fallback : Math.max(1, Math.floor(value));
@@ -47,6 +48,7 @@ function successOutcome(step: ActionStep): TaskTraceOutcome { switch (step.kind)
 async function performAction(engine: TaskRuntimeEngine, step: ActionStep, inputs: Readonly<Record<string, string>>, options: TaskRuntimeOptions): Promise<RuntimeActionResult | undefined> {
   switch (step.kind) {
     case 'activate': return engine.activate(step.target, { requireUnambiguous: options.requireUnambiguousTargets ?? true, autoReveal: step.autoReveal, method: step.method, key: step.key });
+    case 'hover': return engine.hover?.(step.target, { requireUnambiguous: options.requireUnambiguousTargets ?? true, autoReveal: step.autoReveal, timeoutMs: step.timeoutMs, maxSamples: step.maxSamples, pollIntervalMs: step.pollIntervalMs });
     case 'type': return engine.typeInto(step.target, resolveProgramText(step.text, inputs), { requireUnambiguous: options.requireUnambiguousTargets ?? true, autoReveal: step.autoReveal, delayMs: step.delayMs, expectedValue: step.expectedValue === undefined ? undefined : resolveProgramText(step.expectedValue, inputs) });
     case 'upload': return engine.uploadFiles?.(step.target, step.files.map((file) => resolveProgramText(file, inputs)), { requireUnambiguous: options.requireUnambiguousTargets ?? true });
     case 'press-key': return engine.pressKey?.(step.key, { timeoutMs: step.timeoutMs, maxSamples: step.maxSamples, pollIntervalMs: step.pollIntervalMs });
@@ -81,7 +83,7 @@ export class TaskRuntime {
       if (visit > maxVisits) return failed('loop-detected', index);
       let before; try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
 
-      if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'upload' || step.kind === 'press-key' || step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
+      if (step.kind === 'activate' || step.kind === 'hover' || step.kind === 'type' || step.kind === 'upload' || step.kind === 'press-key' || step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
         const risk = riskOf(step), needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
         let approved = !needsApproval;
         if (needsApproval && options.approve) { try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk, visit }); } catch { approved = false; } }
