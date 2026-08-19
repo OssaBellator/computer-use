@@ -4,6 +4,8 @@ import type { BrowserHistoryAction } from '../browser/historyController.js';
 import type { NavigationWaitUntil } from '../browser/navigationController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 
+export const MAX_TASK_VIEWPORT_SCROLL_DELTA_PX = 4000;
+
 export type TaskTarget = TargetQuery | string;
 export type TaskRisk = 'observe' | 'interaction' | 'external-side-effect';
 export type TaskPageSelection = 'latest-page' | 'latest-unattached-page';
@@ -34,6 +36,8 @@ export interface TypeTaskStep extends SemanticTaskActionStepBase { kind: 'type';
 export interface UploadTaskStep extends Omit<TaskActionStepBase, 'risk'> { kind: 'upload'; risk?: 'external-side-effect'; target: TaskTarget; files: readonly ProgramText[]; }
 /** Key/chord is static program data; browser content cannot synthesize it at runtime. */
 export interface PressKeyTaskStep extends TaskActionStepBase { kind: 'press-key'; key: string; timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number; }
+/** Static top-level wheel delta; each axis is capped to MAX_TASK_VIEWPORT_SCROLL_DELTA_PX. */
+export interface ScrollViewportTaskStep extends TaskActionStepBase { kind: 'scroll-viewport'; deltaX?: number; deltaY?: number; timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number; }
 export interface SwitchPageTaskStep extends TaskActionStepBase { kind: 'switch-page'; target: TaskPageSelection; }
 export interface OpenTabTaskStep extends TaskActionStepBase { kind: 'open-tab'; url: ProgramText; }
 export interface CloseLatestTabTaskStep extends TaskActionStepBase { kind: 'close-latest-tab'; }
@@ -48,7 +52,7 @@ export interface WaitNetworkIdleTaskStep { id: string; kind: 'wait-network-idle'
 export interface FailTaskStep { id: string; kind: 'fail'; description?: string; }
 export interface CompleteTaskStep { id: string; kind: 'complete'; description?: string; condition?: TaskPredicate; onFailure?: string; }
 
-export type TaskStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
+export type TaskStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | ScrollViewportTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
 export interface TaskProgram { version: 1; name?: string; entry: string; inputs?: readonly string[]; steps: readonly TaskStep[]; }
 export interface TaskProgramValidation { valid: boolean; errors: string[]; warnings: string[]; }
 
@@ -65,7 +69,7 @@ function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): vo
 }
 function referencedStepIds(step: TaskStep): string[] {
   switch (step.kind) {
-    case 'activate': case 'hover': case 'type': case 'upload': case 'press-key': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
+    case 'activate': case 'hover': case 'type': case 'upload': case 'press-key': case 'scroll-viewport': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch': return [step.then, step.else];
     case 'wait': case 'wait-network-idle': return [step.next, ...(step.onTimeout ? [step.onTimeout] : [])];
     case 'fail': return [];
@@ -84,7 +88,7 @@ function stepInputs(step: TaskStep): Set<string> {
   return inputs;
 }
 function validatePollFields(id: string, maxPolls: number | undefined, pollIntervalMs: number | undefined, errors: string[]): void { if (maxPolls !== undefined && (!Number.isInteger(maxPolls) || maxPolls < 1)) errors.push(`step ${id} maxPolls must be a positive integer`); if (pollIntervalMs !== undefined && (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0)) errors.push(`step ${id} pollIntervalMs must be non-negative`); }
-function validateObservationFields(kind: 'press-key' | 'hover', id: string, maxSamples: number | undefined, pollIntervalMs: number | undefined, timeoutMs: number | undefined, errors: string[]): void {
+function validateObservationFields(kind: 'press-key' | 'hover' | 'scroll-viewport', id: string, maxSamples: number | undefined, pollIntervalMs: number | undefined, timeoutMs: number | undefined, errors: string[]): void {
   if (maxSamples !== undefined && (!Number.isInteger(maxSamples) || maxSamples < 1)) errors.push(`${kind} step ${id} maxSamples must be a positive integer`);
   if (pollIntervalMs !== undefined && (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0)) errors.push(`${kind} step ${id} pollIntervalMs must be non-negative`);
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 1)) errors.push(`${kind} step ${id} timeoutMs must be positive`);
@@ -115,6 +119,13 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
       validateObservationFields('press-key', step.id, step.maxSamples, step.pollIntervalMs, step.timeoutMs, errors);
     }
     if (step.kind === 'hover') validateObservationFields('hover', step.id, step.maxSamples, step.pollIntervalMs, step.timeoutMs, errors);
+    if (step.kind === 'scroll-viewport') {
+      const deltaX = step.deltaX ?? 0, deltaY = step.deltaY ?? 0;
+      if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) errors.push(`scroll-viewport step ${step.id} deltas must be finite`);
+      if (deltaX === 0 && deltaY === 0) errors.push(`scroll-viewport step ${step.id} requires a non-zero delta`);
+      if (Math.abs(deltaX) > MAX_TASK_VIEWPORT_SCROLL_DELTA_PX || Math.abs(deltaY) > MAX_TASK_VIEWPORT_SCROLL_DELTA_PX) errors.push(`scroll-viewport step ${step.id} deltas must not exceed ${MAX_TASK_VIEWPORT_SCROLL_DELTA_PX}px per axis`);
+      validateObservationFields('scroll-viewport', step.id, step.maxSamples, step.pollIntervalMs, step.timeoutMs, errors);
+    }
     if (step.kind === 'wait-network-idle') {
       if (step.quietMs !== undefined && (!Number.isFinite(step.quietMs) || step.quietMs < 0)) errors.push(`wait-network-idle step ${step.id} quietMs must be non-negative`);
       if (step.maxInflight !== undefined && (!Number.isInteger(step.maxInflight) || step.maxInflight < 0)) errors.push(`wait-network-idle step ${step.id} maxInflight must be a non-negative integer`);
