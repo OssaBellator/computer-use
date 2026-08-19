@@ -18,6 +18,7 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - deep focus observation inside open shadow roots
 - accessible-name heuristics and common ARIA widget state
 - `aria-activedescendant` resolution into structural interaction identity
+- browser-computed `tabIndex` plus nearest ARIA composite ownership for roving members
 - native-control capability inference that distinguishes text entry from activation controls
 - plain overflow containers represented as scroll-capable interaction nodes
 - visibility clipped through overflow ancestors as well as the browser viewport
@@ -36,6 +37,8 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - active-descendant logical option-space with zero-input `state-anchor` bridges
 - geometric directional neighbors retained only as conservative speculative priors
 - composite owners excluded from speculative Arrow source/candidate space
+- roving/composite speculative Arrow edges constrained to siblings with the same composite owner
+- negative-tabindex composite members retained as Arrow destinations even when not directly tabbable
 - empirical edge-performance learning from real execution outcomes
 - direct pointer-edge estimates using target geometry and a Fitts-style duration prior
 - per-step planner cost explanations matching actual path cost semantics
@@ -90,7 +93,7 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not at `/usr/bin/chromium`.
 
-The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, and `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner.
+The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner, and roving-tabindex ownership that keeps speculative Arrow planning inside the widget.
 
 ## Architecture
 
@@ -132,11 +135,11 @@ snapshot diff / action verification
 
 ## Regression coverage
 
-The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, modifier semantics, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
+The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, modifier semantics, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
 
 ## Current limitations / next slices
 
-1. **Roving-tabindex and grid/menu composites:** active-descendant listboxes now have logical state anchors; model roving tabindex and richer grid/menu-specific transitions explicitly.
+1. **Composite key semantics:** ownership and roving tabindex now bound speculative Arrow space; model orientation, wrapping, Home/End, PageUp/PageDown, and richer grid/menu/tree-specific transitions explicitly.
 2. **Explicit frame traversal edges:** pointer geometry is normalized across frames, but keyboard/frame ownership should be represented as first-class enter/exit-frame graph transitions.
 3. **Snapshot efficiency:** reduce full-tree observation cost through incremental invalidation and targeted refresh while preserving stable backend/AX identity.
 4. **Calibration profiles:** make touchpad size, pointer gain, keyboard layout, and deterministic device/test profiles explicit configuration objects.
