@@ -71,6 +71,15 @@ class CdpClient {
   }
 }
 
+async function stopChromium(child, profile) {
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((resolve) => child.once('exit', resolve));
+    child.kill('SIGKILL');
+    await exited;
+  }
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
+}
+
 async function launchChromium() {
   const chromium = process.env.CHROMIUM_BIN || '/usr/bin/chromium';
   const port = await freePort();
@@ -93,8 +102,7 @@ async function launchChromium() {
     await client.ready();
     return { client, child, profile };
   } catch (error) {
-    child.kill('SIGKILL');
-    await rm(profile, { recursive: true, force: true });
+    await stopChromium(child, profile);
     throw error;
   }
 }
@@ -120,8 +128,7 @@ test('live Chromium snapshot handles shadow focus and ARIA state', async (t) => 
   const { client, child, profile } = await launchChromium();
   t.after(async () => {
     client.close();
-    child.kill('SIGKILL');
-    await rm(profile, { recursive: true, force: true });
+    await stopChromium(child, profile);
   });
 
   await client.send('Runtime.evaluate', {
