@@ -105,8 +105,8 @@ export class PointerController {
 
       const finalStep = Math.abs(remaining.x) <= EPSILON && Math.abs(remaining.y) <= EPSILON;
       if (finalStep) commanded = { x: to.x, y: to.y };
-      this.touchpad.setCursor(commanded);
-      await this.input.movePointer(commanded);
+      this.touchpad.setCursor({ x: commanded.x, y: commanded.y });
+      await this.input.movePointer({ x: commanded.x, y: commanded.y });
       if (stepDurationMs > 0) await this.sleep(stepDurationMs);
 
       if (!finalStep && this.maximumStepScale(remaining) <= EPSILON) {
@@ -118,7 +118,7 @@ export class PointerController {
   }
 
   async moveTo(target: Point, effectiveTargetWidthPx = 20): Promise<void> {
-    const start = { ...this.touchpad.cursor };
+    const start = { x: this.touchpad.cursor.x, y: this.touchpad.cursor.y };
     const distance = Math.hypot(target.x - start.x, target.y - start.y);
     const durationMs = fittsDurationMs(distance, effectiveTargetWidthPx);
     const trajectory = minimumJerkTrajectory(start, target, {
@@ -130,7 +130,7 @@ export class PointerController {
     let previousTimeMs = 0;
     for (const sample of trajectory.slice(1)) {
       const segmentDuration = Math.max(0, sample.tMs - previousTimeMs);
-      await this.executeSegment(previous, sample, segmentDuration);
+      await this.executeSegment(previous, { x: sample.x, y: sample.y }, segmentDuration);
       previous = { x: sample.x, y: sample.y };
       previousTimeMs = sample.tMs;
     }
