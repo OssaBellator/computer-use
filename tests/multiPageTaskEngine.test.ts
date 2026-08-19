@@ -42,6 +42,7 @@ test('multi-page task adapter exposes root target topology before a page is acti
   assert.equal(engine.targetState().pages, 2);
   assert.equal((await engine.hover('Active')).status, 'target-not-found');
   assert.equal((await engine.pressKey('Escape')).status, 'unverified');
+  assert.equal((await engine.scrollViewport({ x: 0, y: 100 })).status, 'unverified');
   assert.equal((await engine.waitForNetworkIdle({ quietMs: 0 })).idle, false);
   assert.equal((await engine.switchPage('latest-page')).status, 'switched');
   assert.equal((await engine.switchPage('latest-unattached-page')).targetId, 'page-2');
@@ -50,6 +51,7 @@ test('multi-page task adapter exposes root target topology before a page is acti
 test('multi-page task adapter delegates semantic actions to the active page engine', async () => {
   const node = activeNode();
   const keys: string[] = [];
+  const scrolls: Array<{ x: number; y: number }> = [];
   let hovers = 0;
   const activeEngine = {
     async refresh() { return [node]; },
@@ -57,6 +59,7 @@ test('multi-page task adapter delegates semantic actions to the active page engi
     async hover() { hovers += 1; return { status: 'verified', target: node }; },
     async typeInto() { return { status: 'verified', target: node }; },
     async pressKey(key: string) { keys.push(key); return { status: 'verified' }; },
+    async scrollViewport(delta: { x: number; y: number }) { scrolls.push(delta); return { status: 'verified' }; },
     async waitForNetworkIdle() {
       return {
         idle: true,
@@ -86,6 +89,8 @@ test('multi-page task adapter delegates semantic actions to the active page engi
   assert.equal((await engine.typeInto('active', 'x')).status, 'verified');
   assert.equal((await engine.pressKey('Tab')).status, 'verified');
   assert.deepEqual(keys, ['Tab']);
+  assert.equal((await engine.scrollViewport({ x: 0, y: 120 })).status, 'verified');
+  assert.deepEqual(scrolls, [{ x: 0, y: 120 }]);
   assert.equal((await engine.waitForNetworkIdle()).idle, true);
   assert.equal((await engine.browserState())?.url, 'about:blank');
 });
