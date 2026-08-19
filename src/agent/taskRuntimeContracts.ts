@@ -3,6 +3,7 @@ import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/d
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryAction, BrowserHistoryOptions, BrowserHistoryResult } from '../browser/historyController.js';
+import type { NetworkIdleOptions, NetworkIdleResult } from '../browser/networkActivityMonitor.js';
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type { BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
@@ -25,6 +26,7 @@ export interface TaskRuntimeEngine {
   pressKey?(key: string, options?: { timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number }): Promise<TaskKeyActionResult>;
   uploadFiles?(query: TargetQuery | string, paths: readonly string[], options?: { requireUnambiguous?: boolean }): Promise<BrowserFileUploadResult>;
   switchPage?(target: TaskPageSelection): Promise<TaskPageSwitchResult>;
+  waitForNetworkIdle?(options?: NetworkIdleOptions): Promise<NetworkIdleResult>;
   navigate?(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult>;
   history?(action: BrowserHistoryAction, options?: BrowserHistoryOptions): Promise<BrowserHistoryResult>;
   handleDialog?(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult>;
