@@ -10,6 +10,7 @@ interface RawNode {
   selected?: boolean;
   pressed?: boolean | 'mixed';
   activeDescendantId?: string;
+  activeDescendantStructuralId?: string;
   scrollAncestorStructuralId?: string;
   focused: boolean;
   disabled: boolean;
@@ -99,16 +100,15 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       return active;
     }
 
-    function idReferenceText(element: Element, ids: string): string {
+    function resolveIdReference(element: Element, id: string): Element | null {
       const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.getElementById(id) : document.getElementById(id);
+    }
+
+    function idReferenceText(element: Element, ids: string): string {
       return ids
         .split(/\s+/)
-        .map((id) => {
-          const referenced = root instanceof ShadowRoot
-            ? root.getElementById(id)
-            : document.getElementById(id);
-          return referenced?.textContent?.trim() ?? '';
-        })
+        .map((id) => resolveIdReference(element, id)?.textContent?.trim() ?? '')
         .filter(Boolean)
         .join(' ');
     }
@@ -249,6 +249,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         const pressed = ariaPressed === 'mixed' ? 'mixed' :
           ariaPressed === 'true' ? true : ariaPressed === 'false' ? false : undefined;
         const activeDescendantId = element.getAttribute('aria-activedescendant') ?? undefined;
+        const activeDescendant = activeDescendantId
+          ? resolveIdReference(element, activeDescendantId)
+          : null;
 
         const name = accessibleName(element);
         const confidence = Math.max(0.25, Math.min(1,
@@ -258,6 +261,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
 
         results.push({
           path: domPath(element), role, name, expanded, checked, selected, pressed, activeDescendantId,
+          activeDescendantStructuralId: activeDescendant ? domPath(activeDescendant) : undefined,
           scrollAncestorStructuralId: scrollAncestor ? domPath(scrollAncestor) : undefined,
           value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ||
             element instanceof HTMLSelectElement
@@ -282,6 +286,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
     ...node,
     id: `${frameId}:${node.path}`,
     frameId,
+    activeDescendantStructuralId: node.activeDescendantStructuralId
+      ? `${frameId}:${node.activeDescendantStructuralId}`
+      : undefined,
     scrollAncestorStructuralId: node.scrollAncestorStructuralId
       ? `${frameId}:${node.scrollAncestorStructuralId}`
       : undefined,
