@@ -20,7 +20,10 @@ export interface InteractionNode {
   id: string;
   /** Original structural frame/path identity when id has been stabilized. */
   structuralId?: string;
+  /** Stable owning frame id (CDP frame id after CDP enrichment). */
   frameId: string;
+  /** Stable parent frame id when the owning frame is not the top-level frame. */
+  parentFrameId?: string;
   backendNodeId?: number;
   axNodeId?: string;
   role?: string;
@@ -78,6 +81,8 @@ export interface InteractionEdge {
   kind: InteractionEdgeKind;
   /** Optional explicit modality override; planners can infer common kinds. */
   modality?: 'keyboard' | 'pointer' | 'scroll';
+  /** Exact learned keyboard command when kind alone is insufficient (for example frame crossings). */
+  keyboardKey?: string;
   estimatedTimeMs: number;
   failureProbability?: number;
   modalitySwitchCost?: number;
