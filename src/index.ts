@@ -31,6 +31,7 @@ export * from './model/interactionModel.js';
 export * from './model/targetResolver.js';
 export * from './agent/taskProgram.js';
 export * from './agent/taskRuntime.js';
+export * from './agent/realtimeControlLoop.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
 export * from './input/browserInput.js';
