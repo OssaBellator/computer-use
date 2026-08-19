@@ -4,6 +4,7 @@ export * from './geometry.js';
 export * from './graphBuilder.js';
 export * from './browser/domSnapshot.js';
 export * from './browser/cdpIdentity.js';
+export * from './browser/cdpGeometry.js';
 export * from './browser/hitTesting.js';
 export * from './focus/focusTopology.js';
 export * from './planner/actionPlanner.js';
