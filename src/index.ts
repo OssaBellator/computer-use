@@ -7,6 +7,7 @@ export * from './browser/cdpIdentity.js';
 export * from './browser/cdpGeometry.js';
 export * from './browser/cdpObserver.js';
 export * from './browser/cdpRuntimePage.js';
+export * from './browser/cdpSessionRouter.js';
 export * from './browser/coalescingObserver.js';
 export * from './browser/frameHierarchy.js';
 export * from './browser/hitTesting.js';
