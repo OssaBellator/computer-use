@@ -2,6 +2,7 @@ import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/d
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryAction, BrowserHistoryOptions, BrowserHistoryResult } from '../browser/historyController.js';
+import type { NetworkIdleOptions, NetworkIdleResult } from '../browser/networkActivityMonitor.js';
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type { BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
@@ -87,6 +88,15 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
   pressKey(key: string, options?: PressKeyOptions): Promise<TaskKeyActionResult> {
     return this.pages.activeEngine?.pressKey(key, options) ??
       Promise.resolve({ status: 'unverified' });
+  }
+
+  waitForNetworkIdle(options?: NetworkIdleOptions): Promise<NetworkIdleResult> {
+    return this.pages.activeEngine?.waitForNetworkIdle(options) ?? Promise.resolve({
+      idle: false,
+      summary: { inFlight: 0, started: 0, finished: 0, failed: 0, activitySequence: 0 },
+      elapsedMs: 0,
+      samples: 0,
+    });
   }
 
   uploadFiles(
