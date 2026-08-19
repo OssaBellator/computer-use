@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planInteractionPath } from '../src/planner/actionPlanner.js';
-import type { InteractionEdge, InteractionNode } from '../src/types.js';
+import { explainPlanCosts, planInteractionPath } from '../src/planner/actionPlanner.js';
+import { edgeCostBreakdown, type InteractionEdge, type InteractionNode } from '../src/types.js';
 
 const node = (id: string, x = 0): InteractionNode => ({
   id,
@@ -82,4 +82,31 @@ test('explicit edge modality override wins over kind inference', () => {
   );
   assert.equal(plan?.totalCost, 60);
   assert.equal(plan?.finalModality, 'pointer');
+});
+
+test('edge cost breakdown exposes every weighted component', () => {
+  const edge: InteractionEdge = {
+    from: 'a', to: 'b', kind: 'pointer-move', estimatedTimeMs: 10,
+    failureProbability: 0.25, modalitySwitchCost: 0.5, scrollCost: 2, uncertaintyCost: 0.1,
+  };
+  assert.deepEqual(
+    edgeCostBreakdown(edge, { failure: 100, modalitySwitch: 20, scroll: 30, uncertainty: 40 }),
+    { time: 10, failure: 25, modalitySwitch: 10, scroll: 60, uncertainty: 4, total: 109 },
+  );
+});
+
+test('plan explanations reproduce planner total including path-level modality switches', () => {
+  const nodes = [node('a'), node('b'), node('c')];
+  const edges: InteractionEdge[] = [
+    { from: 'a', to: 'b', kind: 'pointer-move', estimatedTimeMs: 20, failureProbability: 0.1 },
+    { from: 'b', to: 'c', kind: 'focus-next', estimatedTimeMs: 30, uncertaintyCost: 0.2 },
+  ];
+  const weights = { failure: 100, modalitySwitch: 50, scroll: 0, uncertainty: 100 };
+  const plan = planInteractionPath(nodes, edges, 'a', 'c', { weights });
+  assert.ok(plan);
+  const explanation = explainPlanCosts(plan.edges, { weights });
+  assert.equal(explanation[0].stepTotal, 30);
+  assert.equal(explanation[1].pathModalitySwitch, 50);
+  assert.equal(explanation[1].stepTotal, 100);
+  assert.equal(explanation.at(-1)?.cumulativeTotal, plan.totalCost);
 });
