@@ -62,6 +62,8 @@ export interface InteractionEdge {
   from: string;
   to: string;
   kind: InteractionEdgeKind;
+  /** Optional explicit modality override; planners infer common edge kinds. */
+  modality?: 'keyboard' | 'pointer' | 'scroll';
   estimatedTimeMs: number;
   failureProbability?: number;
   modalitySwitchCost?: number;
