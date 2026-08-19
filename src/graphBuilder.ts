@@ -19,11 +19,6 @@ function directionKind(direction: Direction): InteractionEdgeKind {
   return `spatial-${direction}` as InteractionEdgeKind;
 }
 
-/**
- * Derives one best directional neighbor per direction for each eligible node.
- * Candidates stay within a frame because arrow/spatial intent normally acts
- * on the currently perceived local surface; frame-enter/exit edges are separate.
- */
 export function buildDirectionalEdges(
   nodes: readonly InteractionNode[],
   estimatedTimeMs = 90,
@@ -52,16 +47,25 @@ export function buildDirectionalEdges(
   return edges;
 }
 
-/** Creates an on-demand pointer-move edge using target geometry and confidence. */
+/**
+ * Create an on-demand pointer edge. When a physical cursor origin is supplied,
+ * its actual position—not the source DOM element's center—drives Fitts cost.
+ */
 export function createPointerMoveEdge(
   from: InteractionNode,
   to: InteractionNode,
   minimumTargetWidthPx = 4,
+  pointerOrigin?: Point,
 ): InteractionEdge | null {
   const a = rectFor(from);
   const b = rectFor(to);
-  if (!a || !b || from.frameId !== to.frameId || to.disabled || !viewportEligible(to)) return null;
-  const start = center(a);
+  const targetHasNormalizedGeometry = !!(to.mainViewportRect || to.mainViewportVisibleRect);
+  const hasNormalizedGeometry = !!(from.mainViewportRect || from.mainViewportVisibleRect) && targetHasNormalizedGeometry;
+  if (!b || (!pointerOrigin && !a) ||
+      (!pointerOrigin && !hasNormalizedGeometry && from.frameId !== to.frameId) ||
+      (pointerOrigin && !targetHasNormalizedGeometry) ||
+      to.disabled || !viewportEligible(to)) return null;
+  const start = pointerOrigin ?? center(a!);
   const target = center(b);
   const movement = { x: target.x - start.x, y: target.y - start.y };
   const width = Math.max(minimumTargetWidthPx, effectiveTargetWidth(b, movement));
