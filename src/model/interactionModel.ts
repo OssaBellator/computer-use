@@ -3,10 +3,12 @@ import { DirectionalTopology } from '../focus/directionalTopology.js';
 import { EdgePerformanceModel } from './edgePerformance.js';
 import { buildDirectionalEdges, createPointerMoveEdge } from '../graphBuilder.js';
 import {
+  explainPlanCosts,
   planInteractionPath,
   type Heuristic,
   type InputModality,
   type PlanResult,
+  type PlanStepCostExplanation,
 } from '../planner/actionPlanner.js';
 import type { InteractionEdge, InteractionNode, PathCostWeights, Point } from '../types.js';
 
@@ -16,6 +18,11 @@ export interface InteractionModelPlanOptions {
   weights?: PathCostWeights;
   heuristic?: Heuristic;
   initialModality?: InputModality;
+}
+
+export interface ExplainedInteractionPlan {
+  plan: PlanResult;
+  steps: PlanStepCostExplanation[];
 }
 
 function directionalSlot(edge: InteractionEdge): string | null {
@@ -94,5 +101,21 @@ export class InteractionModel {
         initialModality: options.initialModality,
       },
     );
+  }
+
+  explainPlan(
+    startId: string,
+    targetId: string,
+    options: InteractionModelPlanOptions = {},
+  ): ExplainedInteractionPlan | null {
+    const plan = this.plan(startId, targetId, options);
+    if (!plan) return null;
+    return {
+      plan,
+      steps: explainPlanCosts(plan.edges, {
+        weights: options.weights,
+        initialModality: options.initialModality,
+      }),
+    };
   }
 }
