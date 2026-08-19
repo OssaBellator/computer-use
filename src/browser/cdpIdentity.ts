@@ -175,8 +175,6 @@ export async function captureCdpIdentityIndex(session: CdpSessionLike): Promise<
     if (visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
 
-    // `frameId` on an IFRAME element identifies its content frame, not the frame
-    // that owns the iframe element itself. Keep the owning frame for this node.
     const nodeFrameId = frameId;
     let nextPath = [...path];
     if (node.nodeType === 1) {
@@ -218,15 +216,15 @@ export async function captureCdpIdentityIndex(session: CdpSessionLike): Promise<
 }
 
 function localNodePath(node: InteractionNode): string {
+  const structural = node.structuralId ?? node.id;
   const prefix = `${node.frameId}:`;
-  return node.id.startsWith(prefix) ? node.id.slice(prefix.length) : node.id;
+  return structural.startsWith(prefix) ? structural.slice(prefix.length) : structural;
 }
 
 export interface CdpIdentityEnrichmentOptions {
   frameIdMap?: Readonly<Record<string, string>>;
 }
 
-/** Maps structural snapshot frame labels to CDP frame IDs without relying on DOM-path uniqueness. */
 export function buildInteractionFrameIdMap(
   interactionFrames: readonly SnapshotFrameDescriptor[],
   identities: CdpIdentityIndex,
@@ -297,7 +295,15 @@ export function enrichInteractionNodesWithCdpIdentity(
   });
 }
 
-/** One-shot semantic snapshot with structural frame resolution and stable CDP/AX identity enrichment. */
+/** Replace volatile structural IDs with stable backend-DOM IDs while preserving the original path ID. */
+export function stabilizeInteractionNodeIds(nodes: readonly InteractionNode[]): InteractionNode[] {
+  return nodes.map((node) => node.backendNodeId === undefined ? { ...node } : {
+    ...node,
+    structuralId: node.structuralId ?? node.id,
+    id: `backend:${node.backendNodeId}`,
+  });
+}
+
 export async function snapshotInteractiveDomWithCdpIdentity(
   page: SnapshotPageLike,
   session: CdpSessionLike,
