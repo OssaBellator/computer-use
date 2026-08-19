@@ -191,3 +191,60 @@ test('CDP interaction engine verifies semantic activation and text entry in Chro
   ), true);
   assert.equal(await value(client, `document.querySelector('#text').value`), 'abc');
 });
+
+test('CDP interaction engine navigates aria-activedescendant option space without moving DOM focus', async (t) => {
+  const { client, child, profile } = await launch();
+  t.after(async () => {
+    client.close();
+    await stop(child, profile);
+  });
+
+  await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      document.body.innerHTML = '<div id="list" role="listbox" tabindex="0" aria-label="Choices" aria-activedescendant="one" style="position:absolute;left:100px;top:80px;width:220px;padding:8px;border:1px solid black"><div id="one" role="option" style="height:36px">One</div><div id="two" role="option" style="height:36px">Two</div></div>';
+      const list = document.querySelector('#list');
+      list.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowDown') {
+          list.setAttribute('aria-activedescendant', 'two');
+          event.preventDefault();
+        }
+        if (event.key === 'ArrowUp') {
+          list.setAttribute('aria-activedescendant', 'one');
+          event.preventDefault();
+        }
+      });
+      list.focus();
+    })()`,
+  });
+
+  const engine = createCdpInteractionEngine(pageFor(client), client, {
+    touchpadOptions: { initialCursor: { x: 5, y: 5 } },
+    pointerOptions: { sleep: async () => {}, sampleIntervalMs: 100 },
+  });
+  const before = await engine.refresh();
+  const owner = before.find((node) => node.name === 'Choices' && node.role === 'listbox');
+  const first = before.find((node) => node.name === 'One' && node.role === 'option');
+  const second = before.find((node) => node.name === 'Two' && node.role === 'option');
+  assert.ok(owner && first && second);
+  assert.equal(owner.focused, true);
+  assert.equal(owner.activeDescendantStructuralId, first.structuralId);
+
+  const result = await engine.acquire(
+    { name: 'Two', role: 'option', visible: true },
+    {
+      includePointer: false,
+      includeDirectional: true,
+      maxReplans: 2,
+    },
+  );
+
+  assert.equal(result.status, 'reached');
+  assert.deepEqual(
+    result.execution?.executed.map((step) => step.edge.kind),
+    ['state-anchor', 'spatial-down'],
+  );
+  assert.equal(result.target?.id, second.id);
+  assert.equal(await value(client, `document.activeElement.id`), 'list');
+  assert.equal(await value(client, `document.querySelector('#list').getAttribute('aria-activedescendant')`), 'two');
+  assert.equal(engine.model.directionalTopology.mostLikelyNext(first.id, 'down'), second.id);
+});
