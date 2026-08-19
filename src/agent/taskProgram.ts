@@ -2,6 +2,7 @@ import type { BrowserDocumentReadyState } from '../browser/browserState.js';
 import type { BrowserDialogType } from '../browser/dialogController.js';
 import type { BrowserHistoryAction } from '../browser/historyController.js';
 import type { NavigationWaitUntil } from '../browser/navigationController.js';
+import type { BrowserSelectMatch } from '../browser/selectController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 
 export const MAX_TASK_VIEWPORT_SCROLL_DELTA_PX = 4000;
@@ -33,6 +34,7 @@ export interface SemanticTaskActionStepBase extends TaskActionStepBase { autoRev
 export interface ActivateTaskStep extends SemanticTaskActionStepBase { kind: 'activate'; target: TaskTarget; method?: 'auto' | 'keyboard' | 'pointer'; key?: string; }
 export interface HoverTaskStep extends SemanticTaskActionStepBase { kind: 'hover'; target: TaskTarget; timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number; }
 export interface TypeTaskStep extends SemanticTaskActionStepBase { kind: 'type'; target: TaskTarget; text: ProgramText; expectedValue?: ProgramText; delayMs?: number; }
+export interface SelectOptionTaskStep extends TaskActionStepBase { kind: 'select-option'; target: TaskTarget; option: ProgramText; by?: BrowserSelectMatch; }
 export interface UploadTaskStep extends Omit<TaskActionStepBase, 'risk'> { kind: 'upload'; risk?: 'external-side-effect'; target: TaskTarget; files: readonly ProgramText[]; }
 /** Key/chord is static program data; browser content cannot synthesize it at runtime. */
 export interface PressKeyTaskStep extends TaskActionStepBase { kind: 'press-key'; key: string; timeoutMs?: number; maxSamples?: number; pollIntervalMs?: number; }
@@ -52,7 +54,7 @@ export interface WaitNetworkIdleTaskStep { id: string; kind: 'wait-network-idle'
 export interface FailTaskStep { id: string; kind: 'fail'; description?: string; }
 export interface CompleteTaskStep { id: string; kind: 'complete'; description?: string; condition?: TaskPredicate; onFailure?: string; }
 
-export type TaskStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | ScrollViewportTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
+export type TaskStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | SelectOptionTaskStep | UploadTaskStep | PressKeyTaskStep | ScrollViewportTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep | AssertTaskStep | BranchTaskStep | WaitTaskStep | WaitNetworkIdleTaskStep | FailTaskStep | CompleteTaskStep;
 export interface TaskProgram { version: 1; name?: string; entry: string; inputs?: readonly string[]; steps: readonly TaskStep[]; }
 export interface TaskProgramValidation { valid: boolean; errors: string[]; warnings: string[]; }
 
@@ -69,7 +71,7 @@ function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): vo
 }
 function referencedStepIds(step: TaskStep): string[] {
   switch (step.kind) {
-    case 'activate': case 'hover': case 'type': case 'upload': case 'press-key': case 'scroll-viewport': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
+    case 'activate': case 'hover': case 'type': case 'select-option': case 'upload': case 'press-key': case 'scroll-viewport': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert': return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch': return [step.then, step.else];
     case 'wait': case 'wait-network-idle': return [step.next, ...(step.onTimeout ? [step.onTimeout] : [])];
     case 'fail': return [];
@@ -79,6 +81,7 @@ function referencedStepIds(step: TaskStep): string[] {
 function stepInputs(step: TaskStep): Set<string> {
   const inputs = new Set<string>();
   if (step.kind === 'type') { collectProgramTextInput(step.text, inputs); collectProgramTextInput(step.expectedValue, inputs); }
+  if (step.kind === 'select-option') collectProgramTextInput(step.option, inputs);
   if (step.kind === 'upload') for (const file of step.files) collectProgramTextInput(file, inputs);
   if (step.kind === 'navigate') collectProgramTextInput(step.url, inputs);
   if (step.kind === 'handle-dialog') collectProgramTextInput(step.promptText, inputs);
@@ -113,6 +116,7 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
   for (const step of program.steps) {
     if (!step.id.trim()) { errors.push('step ids must be non-empty'); continue; }
     if (stepMap.has(step.id)) errors.push(`duplicate step id: ${step.id}`); else stepMap.set(step.id, step);
+    if (step.kind === 'select-option' && step.by !== undefined && step.by !== 'label' && step.by !== 'value') errors.push(`select-option step ${step.id} by must be label or value`);
     if (step.kind === 'upload' && step.files.length < 1) errors.push(`upload step ${step.id} requires at least one file`);
     if (step.kind === 'press-key') {
       if (!step.key.trim()) errors.push(`press-key step ${step.id} key must be non-empty`);
