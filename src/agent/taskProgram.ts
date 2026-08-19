@@ -20,6 +20,11 @@ export interface TaskNodeExpectation {
   valueIncludes?: ProgramText;
 }
 
+export interface TaskBrowserTargetsExpectation {
+  pageCountAtLeast?: number;
+  unattachedPageCountAtLeast?: number;
+}
+
 export interface TaskDialogExpectation {
   open?: boolean;
   type?: BrowserDialogType;
@@ -41,6 +46,7 @@ export type TaskPredicate =
   | { kind: 'state'; target: TaskTarget; state: TaskNodeExpectation; unambiguous?: boolean }
   | { kind: 'browser'; state: TaskBrowserExpectation }
   | { kind: 'dialog'; state: TaskDialogExpectation }
+  | { kind: 'targets'; state: TaskBrowserTargetsExpectation }
   | { kind: 'all'; predicates: readonly TaskPredicate[] }
   | { kind: 'any'; predicates: readonly TaskPredicate[] }
   | { kind: 'not'; predicate: TaskPredicate };
@@ -71,6 +77,15 @@ export interface TypeTaskStep extends SemanticTaskActionStepBase {
   text: ProgramText;
   expectedValue?: ProgramText;
   delayMs?: number;
+}
+
+export interface OpenTabTaskStep extends TaskActionStepBase {
+  kind: 'open-tab';
+  url: ProgramText;
+}
+
+export interface CloseLatestTabTaskStep extends TaskActionStepBase {
+  kind: 'close-latest-tab';
 }
 
 export interface HandleDialogTaskStep extends TaskActionStepBase {
@@ -136,6 +151,8 @@ export type TaskStep =
   | TypeTaskStep
   | NavigateTaskStep
   | HandleDialogTaskStep
+  | OpenTabTaskStep
+  | CloseLatestTabTaskStep
   | AssertTaskStep
   | BranchTaskStep
   | WaitTaskStep
@@ -183,6 +200,7 @@ function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): vo
       collectBrowserExpectationInputs(predicate.state, into);
       return;
     case 'dialog':
+    case 'targets':
       return;
     case 'all':
     case 'any':
@@ -202,6 +220,8 @@ function referencedStepIds(step: TaskStep): string[] {
     case 'type':
     case 'navigate':
     case 'handle-dialog':
+    case 'open-tab':
+    case 'close-latest-tab':
     case 'assert':
       return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
     case 'branch':
@@ -223,6 +243,7 @@ function stepInputs(step: TaskStep): Set<string> {
   }
   if (step.kind === 'navigate') collectProgramTextInput(step.url, inputs);
   if (step.kind === 'handle-dialog') collectProgramTextInput(step.promptText, inputs);
+  if (step.kind === 'open-tab') collectProgramTextInput(step.url, inputs);
   if (step.kind === 'assert' || step.kind === 'branch' || step.kind === 'wait') {
     collectPredicateInputs(step.condition, inputs);
   }
@@ -254,6 +275,17 @@ function validatePredicate(predicate: TaskPredicate, stepId: string, errors: str
       if (historyLengthAtLeast !== undefined &&
           (!Number.isInteger(historyLengthAtLeast) || historyLengthAtLeast < 0)) {
         errors.push(`step ${stepId} browser historyLengthAtLeast must be a non-negative integer`);
+      }
+      return;
+    }
+    case 'targets': {
+      const { pageCountAtLeast, unattachedPageCountAtLeast } = predicate.state;
+      if (pageCountAtLeast !== undefined && (!Number.isInteger(pageCountAtLeast) || pageCountAtLeast < 0)) {
+        errors.push(`step ${stepId} targets pageCountAtLeast must be a non-negative integer`);
+      }
+      if (unattachedPageCountAtLeast !== undefined &&
+          (!Number.isInteger(unattachedPageCountAtLeast) || unattachedPageCountAtLeast < 0)) {
+        errors.push(`step ${stepId} targets unattachedPageCountAtLeast must be a non-negative integer`);
       }
       return;
     }

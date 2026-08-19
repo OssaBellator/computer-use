@@ -125,6 +125,15 @@ function parseAbsoluteUrl(url: string): URL {
   }
 }
 
+/** Public policy check shared by top-level navigation and new-tab creation. */
+export function navigationPolicyViolation(
+  url: string,
+  policy: NavigationPolicy = {},
+): string | undefined {
+  const parsed = parseAbsoluteUrl(url);
+  return policyReasonForUrl(parsed, policy, normalizeAllowedOrigins(policy.allowedOrigins));
+}
+
 async function sleep(ms: number): Promise<void> {
   if (ms <= 0) return;
   await new Promise<void>((resolve) => setTimeout(resolve, ms));

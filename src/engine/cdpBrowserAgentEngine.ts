@@ -15,6 +15,12 @@ import {
   type NavigationPolicy,
 } from '../browser/navigationController.js';
 import type { SnapshotPageLike } from '../browser/domSnapshot.js';
+import {
+  CdpTargetController,
+  type BrowserTargetSummary,
+  type CloseBrowserTargetResult,
+  type CreateBrowserTargetResult,
+} from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
 import type { TaskRuntimeEngine, TaskEngineActionResult } from '../agent/taskRuntime.js';
@@ -34,10 +40,11 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     private readonly session: CdpSessionLike,
     readonly navigator: BrowserNavigator = new CdpNavigationController(session),
     readonly dialogs?: BrowserDialogController,
+    readonly targets?: CdpTargetController,
   ) {}
 
   async prepare(): Promise<void> {
-    await this.dialogs?.start();
+    await Promise.all([this.dialogs?.start(), this.targets?.start()]);
   }
 
   refresh(): Promise<InteractionNode[]> {
@@ -50,6 +57,10 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   dialogState(): BrowserDialogState | undefined {
     return this.dialogs?.state();
+  }
+
+  targetState(): BrowserTargetSummary | undefined {
+    return this.targets?.summary();
   }
 
   activate(
@@ -69,6 +80,21 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> {
     return this.navigator.navigate(url, options);
+  }
+
+  createPageTarget(url: string): Promise<CreateBrowserTargetResult> {
+    if (!this.targets) {
+      return Promise.resolve({
+        status: 'protocol-error',
+        requestedUrl: url,
+        errorText: 'CDP session does not expose event subscriptions for target lifecycle monitoring',
+      });
+    }
+    return this.targets.createPage(url);
+  }
+
+  closeLatestUnattachedPage(): Promise<CloseBrowserTargetResult | undefined> {
+    return this.targets?.closeLatestUnattachedPage() ?? Promise.resolve(undefined);
   }
 
   handleDialog(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult> {
@@ -93,10 +119,12 @@ export function createCdpBrowserAgentEngine(
   options: CdpBrowserAgentEngineOptions = {},
 ): CdpBrowserAgentEngine {
   const { navigationPolicy, ...interactionOptions } = options;
+  const eventSession = isCdpEventSessionLike(session) ? session : undefined;
   return new CdpBrowserAgentEngine(
     createCdpInteractionEngine(page, session, interactionOptions),
     session,
     new CdpNavigationController(session, navigationPolicy),
-    isCdpEventSessionLike(session) ? new CdpDialogController(session) : undefined,
+    eventSession ? new CdpDialogController(eventSession) : undefined,
+    eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined,
   );
 }

@@ -1,139 +1,38 @@
-import type { BrowserStateSnapshot } from '../browser/browserState.js';
-import type {
-  BrowserDialogHandleResult,
-  BrowserDialogState,
-} from '../browser/dialogController.js';
-import type {
-  BrowserNavigationOptions,
-  BrowserNavigationResult,
-} from '../browser/navigationController.js';
-import type { InteractionNode } from '../types.js';
-import { resolveInteractionTargetDetailed, type TargetQuery } from '../model/targetResolver.js';
+import type { BrowserDialogHandleResult } from '../browser/dialogController.js';
+import type { BrowserNavigationResult } from '../browser/navigationController.js';
+import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import {
   validateTaskProgram,
   type ActivateTaskStep,
+  type CloseLatestTabTaskStep,
   type HandleDialogTaskStep,
   type NavigateTaskStep,
-  type ProgramText,
-  type TaskPredicate,
+  type OpenTabTaskStep,
   type TaskProgram,
   type TaskRisk,
-  type TaskStep,
   type TypeTaskStep,
 } from './taskProgram.js';
+import {
+  evaluateTaskPredicate,
+  observeTaskEngine,
+  resolveProgramText,
+} from './taskObservation.js';
+import type {
+  TaskEngineActionResult,
+  TaskRunResult,
+  TaskRunStatus,
+  TaskRuntimeEngine,
+  TaskRuntimeOptions,
+  TaskTraceEntry,
+  TaskTraceOutcome,
+} from './taskRuntimeContracts.js';
 
-export interface TaskEngineActionResult {
-  status: string;
-  target: InteractionNode | null;
-}
-
-/** Minimal structural contract implemented by InteractionEngine-compatible facades. */
-export interface TaskRuntimeEngine {
-  prepare?(): Promise<void>;
-  refresh(): Promise<InteractionNode[]>;
-  browserState?(): Promise<BrowserStateSnapshot | undefined>;
-  dialogState?(): BrowserDialogState | undefined;
-  activate(
-    query: TargetQuery | string,
-    options?: {
-      requireUnambiguous?: boolean;
-      autoReveal?: boolean;
-      method?: 'auto' | 'keyboard' | 'pointer';
-      key?: string;
-    },
-  ): Promise<TaskEngineActionResult>;
-  typeInto(
-    query: TargetQuery | string,
-    text: string,
-    options?: {
-      requireUnambiguous?: boolean;
-      autoReveal?: boolean;
-      delayMs?: number;
-      expectedValue?: string;
-    },
-  ): Promise<TaskEngineActionResult>;
-  navigate?(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult>;
-  handleDialog?(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult>;
-}
-
-export type TaskRunStatus =
-  | 'completed'
-  | 'failed'
-  | 'invalid-program'
-  | 'missing-input'
-  | 'budget-exhausted'
-  | 'loop-detected'
-  | 'stalled'
-  | 'policy-blocked';
-
-export type TaskTraceOutcome =
-  | 'verified'
-  | 'navigated'
-  | 'dialog-handled'
-  | 'failed'
-  | 'exception'
-  | 'asserted'
-  | 'assertion-failed'
-  | 'branch-then'
-  | 'branch-else'
-  | 'wait-satisfied'
-  | 'wait-timeout'
-  | 'completed'
-  | 'completion-condition-failed'
-  | 'policy-blocked';
-
-export interface TaskTraceEntry {
-  index: number;
-  stepId: string;
-  kind: TaskStep['kind'];
-  outcome: TaskTraceOutcome;
-  nextStepId?: string;
-  targetId?: string;
-  actionStatus?: string;
-  beforeFingerprint: string;
-  afterFingerprint: string;
-  browserStateChanged: boolean;
-  visit: number;
-}
-
-export interface TaskApprovalContext {
-  programName?: string;
-  stepId: string;
-  kind: 'activate' | 'type' | 'navigate' | 'handle-dialog';
-  risk: Exclude<TaskRisk, 'observe'>;
-  visit: number;
-}
-
-export interface TaskRuntimeOptions {
-  maxSteps?: number;
-  maxVisitsPerStep?: number;
-  maxConsecutiveNoProgress?: number;
-  requireUnambiguousTargets?: boolean;
-  /** external-side-effect is blocked by default unless explicitly allowed or approved. */
-  maxRisk?: TaskRisk;
-  approve?: (context: TaskApprovalContext) => boolean | Promise<boolean>;
-  onTrace?: (entry: TaskTraceEntry) => void | Promise<void>;
-  waitPollIntervalMs?: number;
-  waitMaxPolls?: number;
-}
-
-export interface TaskRunResult {
-  status: TaskRunStatus;
-  completed: boolean;
-  finalStepId?: string;
-  stepsExecuted: number;
-  trace: TaskTraceEntry[];
-  validationErrors?: string[];
-  validationWarnings?: string[];
-  missingInputs?: string[];
-}
-
-interface TaskObservation {
-  nodes: InteractionNode[];
-  browser?: BrowserStateSnapshot;
-  dialog?: BrowserDialogState;
-  fingerprint: string;
-}
+export * from './taskRuntimeContracts.js';
+export {
+  evaluateTaskPredicate,
+  interactionSnapshotFingerprint,
+  taskObservationFingerprint,
+} from './taskObservation.js';
 
 const RISK_RANK: Record<TaskRisk, number> = {
   observe: 0,
@@ -141,206 +40,98 @@ const RISK_RANK: Record<TaskRisk, number> = {
   'external-side-effect': 2,
 };
 
-function resolveProgramText(text: ProgramText, inputs: Readonly<Record<string, string>>): string {
-  if (typeof text === 'string') return text;
-  return inputs[text.input]!;
+type ActionStep =
+  | ActivateTaskStep
+  | TypeTaskStep
+  | NavigateTaskStep
+  | HandleDialogTaskStep
+  | OpenTabTaskStep
+  | CloseLatestTabTaskStep;
+
+type RuntimeActionResult =
+  | TaskEngineActionResult
+  | BrowserNavigationResult
+  | BrowserDialogHandleResult
+  | CreateBrowserTargetResult
+  | CloseBrowserTargetResult;
+
+const positiveInt = (value: number | undefined, fallback: number) =>
+  value === undefined || !Number.isFinite(value) ? fallback : Math.max(1, Math.floor(value));
+
+async function sleep(ms: number): Promise<void> {
+  if (ms > 0) await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function matchesExpectation(
-  node: InteractionNode,
-  state: Extract<TaskPredicate, { kind: 'state' }>['state'],
-  inputs: Readonly<Record<string, string>>,
-): boolean {
-  if (state.focused !== undefined && node.focused !== state.focused) return false;
-  if (state.disabled !== undefined && node.disabled !== state.disabled) return false;
-  if (state.expanded !== undefined && node.expanded !== state.expanded) return false;
-  if (state.checked !== undefined && node.checked !== state.checked) return false;
-  if (state.selected !== undefined && node.selected !== state.selected) return false;
-  if (state.pressed !== undefined && node.pressed !== state.pressed) return false;
-  if (state.value !== undefined && node.value !== resolveProgramText(state.value, inputs)) return false;
-  if (state.valueIncludes !== undefined &&
-      !node.value?.includes(resolveProgramText(state.valueIncludes, inputs))) return false;
-  return true;
-}
-
-function matchesBrowserExpectation(
-  state: Extract<TaskPredicate, { kind: 'browser' }>['state'],
-  browser: BrowserStateSnapshot | undefined,
-  inputs: Readonly<Record<string, string>>,
-): boolean {
-  if (!browser) return false;
-  if (state.url !== undefined && browser.url !== resolveProgramText(state.url, inputs)) return false;
-  if (state.urlIncludes !== undefined &&
-      !browser.url.includes(resolveProgramText(state.urlIncludes, inputs))) return false;
-  if (state.origin !== undefined && browser.origin !== resolveProgramText(state.origin, inputs)) return false;
-  if (state.title !== undefined && browser.title !== resolveProgramText(state.title, inputs)) return false;
-  if (state.titleIncludes !== undefined &&
-      !browser.title.includes(resolveProgramText(state.titleIncludes, inputs))) return false;
-  if (state.readyState !== undefined && browser.readyState !== state.readyState) return false;
-  if (state.historyLength !== undefined && browser.historyLength !== state.historyLength) return false;
-  if (state.historyLengthAtLeast !== undefined && browser.historyLength < state.historyLengthAtLeast) {
-    return false;
-  }
-  return true;
-}
-
-function matchesDialogExpectation(
-  state: Extract<TaskPredicate, { kind: 'dialog' }>['state'],
-  dialog: BrowserDialogState | undefined,
-): boolean {
-  const open = dialog !== undefined;
-  if (state.open !== undefined && open !== state.open) return false;
-  if (state.type !== undefined && dialog?.type !== state.type) return false;
-  return state.open === false || dialog !== undefined;
-}
-
-export function evaluateTaskPredicate(
-  predicate: TaskPredicate,
-  nodes: readonly InteractionNode[],
-  inputs: Readonly<Record<string, string>> = {},
-  browserState?: BrowserStateSnapshot,
-  dialogState?: BrowserDialogState,
-): boolean {
-  switch (predicate.kind) {
-    case 'exists': {
-      const resolution = resolveInteractionTargetDetailed(nodes, predicate.target);
-      return resolution.target !== null && (!predicate.unambiguous || !resolution.ambiguous);
-    }
-    case 'state': {
-      const resolution = resolveInteractionTargetDetailed(nodes, predicate.target);
-      if (!resolution.target || (predicate.unambiguous && resolution.ambiguous)) return false;
-      return matchesExpectation(resolution.target, predicate.state, inputs);
-    }
-    case 'browser':
-      return matchesBrowserExpectation(predicate.state, browserState, inputs);
-    case 'dialog':
-      return matchesDialogExpectation(predicate.state, dialogState);
-    case 'all':
-      return predicate.predicates.every((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState));
-    case 'any':
-      return predicate.predicates.some((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState));
-    case 'not':
-      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState, dialogState);
-  }
-}
-
-function hashString(stable: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < stable.length; i += 1) {
-    hash ^= stable.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
-}
-
-function fingerprintField(value: unknown): string {
-  if (value === undefined) return '';
-  return String(value);
-}
-
-/** Semantic fingerprint used for progress/loop detection without recording page text in traces. */
-export function interactionSnapshotFingerprint(nodes: readonly InteractionNode[]): string {
-  const stable = [...nodes]
-    .filter((node) => node.id !== '@cursor')
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map((node) => [
-      node.id,
-      node.frameId,
-      node.role ?? '',
-      node.name ?? '',
-      node.value ?? '',
-      fingerprintField(node.focused),
-      fingerprintField(node.disabled),
-      fingerprintField(node.expanded),
-      fingerprintField(node.checked),
-      fingerprintField(node.selected),
-      fingerprintField(node.pressed),
-      node.activeDescendantId ?? '',
-      fingerprintField(node.viewportVisible),
-      fingerprintField(node.mainViewportVisible),
-    ].join('\u001f'))
-    .join('\u001e');
-  return hashString(stable);
-}
-
-/** Include top-level browser identity so navigations count as progress even on semantically similar pages. */
-export function taskObservationFingerprint(
-  nodes: readonly InteractionNode[],
-  browserState?: BrowserStateSnapshot,
-  dialogState?: BrowserDialogState,
-): string {
-  const browser = browserState
-    ? [
-        browserState.url,
-        browserState.origin,
-        browserState.title,
-        browserState.readyState,
-        String(browserState.historyLength),
-        String(browserState.timeOrigin),
-      ].join('\u001f')
-    : '';
-  const dialog = dialogState
-    ? `${dialogState.type}\u001f${dialogState.sequence}`
-    : '';
-  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browser}\u001d${dialog}`);
-}
-
-function actionRisk(
-  step: ActivateTaskStep | TypeTaskStep | NavigateTaskStep | HandleDialogTaskStep,
-): Exclude<TaskRisk, 'observe'> {
+function riskOf(step: ActionStep): Exclude<TaskRisk, 'observe'> {
   return step.risk ?? 'interaction';
 }
 
-function normalizedPositiveInteger(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.floor(value));
+function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean {
+  if (!result) return false;
+  switch (step.kind) {
+    case 'navigate': return result.status === 'navigated';
+    case 'handle-dialog': return result.status === 'handled';
+    case 'open-tab': return result.status === 'created';
+    case 'close-latest-tab': return result.status === 'closed';
+    default: return result.status === 'verified';
+  }
 }
 
-async function sleep(ms: number): Promise<void> {
-  if (ms <= 0) return;
-  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+function successOutcome(step: ActionStep): TaskTraceOutcome {
+  switch (step.kind) {
+    case 'navigate': return 'navigated';
+    case 'handle-dialog': return 'dialog-handled';
+    case 'open-tab': return 'target-created';
+    case 'close-latest-tab': return 'target-closed';
+    default: return 'verified';
+  }
 }
 
-/**
- * Executes a precompiled task graph over an InteractionEngine-compatible facade.
- * Browser content can satisfy predicates and predeclared branches, but there is
- * deliberately no callback that can synthesize new runtime actions from page content.
- */
+async function performAction(
+  engine: TaskRuntimeEngine,
+  step: ActionStep,
+  inputs: Readonly<Record<string, string>>,
+  options: TaskRuntimeOptions,
+): Promise<RuntimeActionResult | undefined> {
+  switch (step.kind) {
+    case 'activate':
+      return engine.activate(step.target, {
+        requireUnambiguous: options.requireUnambiguousTargets ?? true,
+        autoReveal: step.autoReveal,
+        method: step.method,
+        key: step.key,
+      });
+    case 'type':
+      return engine.typeInto(step.target, resolveProgramText(step.text, inputs), {
+        requireUnambiguous: options.requireUnambiguousTargets ?? true,
+        autoReveal: step.autoReveal,
+        delayMs: step.delayMs,
+        expectedValue: step.expectedValue === undefined
+          ? undefined
+          : resolveProgramText(step.expectedValue, inputs),
+      });
+    case 'navigate':
+      return engine.navigate?.(resolveProgramText(step.url, inputs), {
+        waitUntil: step.waitUntil,
+        timeoutMs: step.timeoutMs,
+        maxPolls: step.maxPolls,
+        pollIntervalMs: step.pollIntervalMs,
+      });
+    case 'handle-dialog':
+      return engine.handleDialog?.(
+        step.accept,
+        step.promptText === undefined ? undefined : resolveProgramText(step.promptText, inputs),
+      );
+    case 'open-tab':
+      return engine.createPageTarget?.(resolveProgramText(step.url, inputs));
+    case 'close-latest-tab':
+      return engine.closeLatestUnattachedPage?.();
+  }
+}
+
+/** Executes a precompiled, bounded task graph over an InteractionEngine-compatible facade. */
 export class TaskRuntime {
   constructor(private readonly engine: TaskRuntimeEngine) {}
-
-  private async observe(): Promise<TaskObservation> {
-    let nodes: InteractionNode[] | undefined;
-    let browser: BrowserStateSnapshot | undefined;
-    let dialog: BrowserDialogState | undefined;
-    try {
-      nodes = await this.engine.refresh();
-    } catch {
-      // Modal dialogs can temporarily make semantic observation unavailable.
-    }
-    try {
-      browser = await this.engine.browserState?.();
-    } catch {
-      // Navigation/dialog transitions can transiently destroy execution contexts.
-    }
-    try {
-      dialog = this.engine.dialogState?.();
-    } catch {
-      // Optional browser signal; preserve any other observation channel.
-    }
-    if (nodes === undefined && browser === undefined && dialog === undefined) {
-      throw new Error('No browser observation channel is currently available');
-    }
-    const normalizedNodes = nodes ?? [];
-    return {
-      nodes: normalizedNodes,
-      browser,
-      dialog,
-      fingerprint: taskObservationFingerprint(normalizedNodes, browser, dialog),
-    };
-  }
 
   async run(
     program: TaskProgram,
@@ -350,43 +141,25 @@ export class TaskRuntime {
     const validation = validateTaskProgram(program);
     if (!validation.valid) {
       return {
-        status: 'invalid-program',
-        completed: false,
-        stepsExecuted: 0,
-        trace: [],
-        validationErrors: validation.errors,
-        validationWarnings: validation.warnings,
+        status: 'invalid-program', completed: false, stepsExecuted: 0, trace: [],
+        validationErrors: validation.errors, validationWarnings: validation.warnings,
       };
     }
-
     const missingInputs = (program.inputs ?? []).filter((name) => inputs[name] === undefined);
     if (missingInputs.length) {
       return {
-        status: 'missing-input',
-        completed: false,
-        stepsExecuted: 0,
-        trace: [],
-        validationWarnings: validation.warnings,
-        missingInputs,
+        status: 'missing-input', completed: false, stepsExecuted: 0, trace: [],
+        validationWarnings: validation.warnings, missingInputs,
       };
     }
-
-    try {
-      await this.engine.prepare?.();
-    } catch {
-      return {
-        status: 'failed',
-        completed: false,
-        stepsExecuted: 0,
-        trace: [],
-        validationWarnings: validation.warnings,
-      };
+    try { await this.engine.prepare?.(); } catch {
+      return { status: 'failed', completed: false, stepsExecuted: 0, trace: [], validationWarnings: validation.warnings };
     }
 
     const stepMap = new Map(program.steps.map((step) => [step.id, step] as const));
-    const maxSteps = normalizedPositiveInteger(options.maxSteps, 64);
-    const maxVisits = normalizedPositiveInteger(options.maxVisitsPerStep, 8);
-    const maxNoProgress = normalizedPositiveInteger(options.maxConsecutiveNoProgress, 4);
+    const maxSteps = positiveInt(options.maxSteps, 64);
+    const maxVisits = positiveInt(options.maxVisitsPerStep, 8);
+    const maxNoProgress = positiveInt(options.maxConsecutiveNoProgress, 4);
     const maxRisk = options.maxRisk ?? 'interaction';
     const trace: TaskTraceEntry[] = [];
     const visits = new Map<string, number>();
@@ -395,19 +168,10 @@ export class TaskRuntime {
 
     const emit = async (entry: TaskTraceEntry) => {
       trace.push(entry);
-      try {
-        await options.onTrace?.(entry);
-      } catch {
-        // Observability must not become a hidden browser-control dependency.
-      }
+      try { await options.onTrace?.(entry); } catch {}
     };
-
     const failed = (status: TaskRunStatus, stepsExecuted: number): TaskRunResult => ({
-      status,
-      completed: false,
-      finalStepId: currentId,
-      stepsExecuted,
-      trace,
+      status, completed: false, finalStepId: currentId, stepsExecuted, trace,
       validationWarnings: validation.warnings,
     });
 
@@ -417,138 +181,64 @@ export class TaskRuntime {
       visits.set(currentId, visit);
       if (visit > maxVisits) return failed('loop-detected', index);
 
-      let before: TaskObservation;
-      try {
-        before = await this.observe();
-      } catch {
-        return failed('failed', index);
-      }
+      let before;
+      try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
 
       if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'navigate' ||
-          step.kind === 'handle-dialog') {
-        const risk = actionRisk(step);
-        const overRiskBudget = RISK_RANK[risk] > RISK_RANK[maxRisk];
-        const needsApproval = overRiskBudget || step.requiresApproval === true;
+          step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
+        const risk = riskOf(step);
+        const needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
         let approved = !needsApproval;
         if (needsApproval && options.approve) {
-          try {
-            approved = await options.approve({
-              programName: program.name,
-              stepId: step.id,
-              kind: step.kind,
-              risk,
-              visit,
-            });
-          } catch {
-            approved = false;
-          }
+          try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk, visit }); }
+          catch { approved = false; }
         }
         if (!approved) {
           await emit({
-            index,
-            stepId: step.id,
-            kind: step.kind,
-            outcome: 'policy-blocked',
-            beforeFingerprint: before.fingerprint,
-            afterFingerprint: before.fingerprint,
-            browserStateChanged: false,
-            visit,
+            index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked',
+            beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint,
+            browserStateChanged: false, visit,
           });
           return failed('policy-blocked', index + 1);
         }
 
-        let action: TaskEngineActionResult | BrowserNavigationResult | BrowserDialogHandleResult | undefined;
+        let action: RuntimeActionResult | undefined;
         let threw = false;
-        try {
-          if (step.kind === 'activate') {
-            action = await this.engine.activate(step.target, {
-              requireUnambiguous: options.requireUnambiguousTargets ?? true,
-              autoReveal: step.autoReveal,
-              method: step.method,
-              key: step.key,
-            });
-          } else if (step.kind === 'type') {
-            action = await this.engine.typeInto(step.target, resolveProgramText(step.text, inputs), {
-              requireUnambiguous: options.requireUnambiguousTargets ?? true,
-              autoReveal: step.autoReveal,
-              delayMs: step.delayMs,
-              expectedValue: step.expectedValue === undefined
-                ? undefined
-                : resolveProgramText(step.expectedValue, inputs),
-            });
-          } else if (step.kind === 'navigate') {
-            if (this.engine.navigate) {
-              action = await this.engine.navigate(resolveProgramText(step.url, inputs), {
-                waitUntil: step.waitUntil,
-                timeoutMs: step.timeoutMs,
-                maxPolls: step.maxPolls,
-                pollIntervalMs: step.pollIntervalMs,
-              });
-            }
-          } else if (this.engine.handleDialog) {
-            action = await this.engine.handleDialog(
-              step.accept,
-              step.promptText === undefined ? undefined : resolveProgramText(step.promptText, inputs),
-            );
-          }
-        } catch {
-          threw = true;
-        }
-
+        try { action = await performAction(this.engine, step, inputs, options); } catch { threw = true; }
         let after = before;
-        try {
-          after = await this.observe();
-        } catch {
-          // Preserve the last known state and fail closed below.
-        }
+        try { after = await observeTaskEngine(this.engine); } catch {}
         const changed = before.fingerprint !== after.fingerprint;
         consecutiveNoProgress = changed ? 0 : consecutiveNoProgress + 1;
-        const succeeded = step.kind === 'navigate'
-          ? action?.status === 'navigated'
-          : step.kind === 'handle-dialog'
-            ? action?.status === 'handled'
-            : action?.status === 'verified';
+        const succeeded = actionSucceeded(step, action);
         const nextId = succeeded ? step.next : step.onFailure;
         const target = action && 'target' in action ? action.target : null;
         await emit({
-          index,
-          stepId: step.id,
-          kind: step.kind,
-          outcome: threw
-            ? 'exception'
-            : succeeded
-              ? (step.kind === 'navigate'
-                  ? 'navigated'
-                  : step.kind === 'handle-dialog' ? 'dialog-handled' : 'verified')
-              : 'failed',
+          index, stepId: step.id, kind: step.kind,
+          outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed',
           ...(nextId ? { nextStepId: nextId } : {}),
           ...(target?.id ? { targetId: target.id } : {}),
           ...(action ? { actionStatus: action.status } : {}),
-          beforeFingerprint: before.fingerprint,
-          afterFingerprint: after.fingerprint,
-          browserStateChanged: changed,
-          visit,
+          beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint,
+          browserStateChanged: changed, visit,
         });
-
         if (consecutiveNoProgress >= maxNoProgress) return failed('stalled', index + 1);
         if (!nextId) return failed('failed', index + 1);
         currentId = nextId;
         continue;
       }
 
+      const predicate = (condition: Parameters<typeof evaluateTaskPredicate>[0]) =>
+        evaluateTaskPredicate(condition, before.nodes, inputs, before.browser, before.dialog, before.targets);
+
       if (step.kind === 'assert') {
-        const passed = evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser, before.dialog);
+        const passed = predicate(step.condition);
         const nextId = passed ? step.next : step.onFailure;
         await emit({
-          index,
-          stepId: step.id,
-          kind: step.kind,
+          index, stepId: step.id, kind: step.kind,
           outcome: passed ? 'asserted' : 'assertion-failed',
           ...(nextId ? { nextStepId: nextId } : {}),
-          beforeFingerprint: before.fingerprint,
-          afterFingerprint: before.fingerprint,
-          browserStateChanged: false,
-          visit,
+          beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint,
+          browserStateChanged: false, visit,
         });
         if (!nextId) return failed('failed', index + 1);
         currentId = nextId;
@@ -556,51 +246,37 @@ export class TaskRuntime {
       }
 
       if (step.kind === 'branch') {
-        const passed = evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser, before.dialog);
+        const passed = predicate(step.condition);
         const nextId = passed ? step.then : step.else;
         await emit({
-          index,
-          stepId: step.id,
-          kind: step.kind,
-          outcome: passed ? 'branch-then' : 'branch-else',
-          nextStepId: nextId,
-          beforeFingerprint: before.fingerprint,
-          afterFingerprint: before.fingerprint,
-          browserStateChanged: false,
-          visit,
+          index, stepId: step.id, kind: step.kind,
+          outcome: passed ? 'branch-then' : 'branch-else', nextStepId: nextId,
+          beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint,
+          browserStateChanged: false, visit,
         });
         currentId = nextId;
         continue;
       }
 
       if (step.kind === 'wait') {
-        const maxPolls = normalizedPositiveInteger(
-          step.maxPolls,
-          normalizedPositiveInteger(options.waitMaxPolls, 20),
-        );
+        const maxPolls = positiveInt(step.maxPolls, positiveInt(options.waitMaxPolls, 20));
         const pollIntervalMs = Math.max(0, step.pollIntervalMs ?? options.waitPollIntervalMs ?? 100);
         let observed = before;
-        let passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog);
+        let passed = predicate(step.condition);
         for (let poll = 1; !passed && poll < maxPolls; poll += 1) {
           await sleep(pollIntervalMs);
-          try {
-            observed = await this.observe();
-          } catch {
-            break;
-          }
-          passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog);
+          try { observed = await observeTaskEngine(this.engine); } catch { break; }
+          passed = evaluateTaskPredicate(
+            step.condition, observed.nodes, inputs, observed.browser, observed.dialog, observed.targets,
+          );
         }
         const nextId = passed ? step.next : step.onTimeout;
         await emit({
-          index,
-          stepId: step.id,
-          kind: step.kind,
+          index, stepId: step.id, kind: step.kind,
           outcome: passed ? 'wait-satisfied' : 'wait-timeout',
           ...(nextId ? { nextStepId: nextId } : {}),
-          beforeFingerprint: before.fingerprint,
-          afterFingerprint: observed.fingerprint,
-          browserStateChanged: before.fingerprint !== observed.fingerprint,
-          visit,
+          beforeFingerprint: before.fingerprint, afterFingerprint: observed.fingerprint,
+          browserStateChanged: before.fingerprint !== observed.fingerprint, visit,
         });
         if (!nextId) return failed('failed', index + 1);
         currentId = nextId;
@@ -609,47 +285,31 @@ export class TaskRuntime {
 
       if (step.kind === 'fail') {
         await emit({
-          index,
-          stepId: step.id,
-          kind: step.kind,
-          outcome: 'failed',
-          beforeFingerprint: before.fingerprint,
-          afterFingerprint: before.fingerprint,
-          browserStateChanged: false,
-          visit,
+          index, stepId: step.id, kind: step.kind, outcome: 'failed',
+          beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint,
+          browserStateChanged: false, visit,
         });
         return failed('failed', index + 1);
       }
 
-      const passed = step.condition
-        ? evaluateTaskPredicate(step.condition, before.nodes, inputs, before.browser, before.dialog)
-        : true;
+      const passed = step.condition ? predicate(step.condition) : true;
       const nextId = passed ? undefined : step.onFailure;
       await emit({
-        index,
-        stepId: step.id,
-        kind: step.kind,
+        index, stepId: step.id, kind: step.kind,
         outcome: passed ? 'completed' : 'completion-condition-failed',
         ...(nextId ? { nextStepId: nextId } : {}),
-        beforeFingerprint: before.fingerprint,
-        afterFingerprint: before.fingerprint,
-        browserStateChanged: false,
-        visit,
+        beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint,
+        browserStateChanged: false, visit,
       });
       if (passed) {
         return {
-          status: 'completed',
-          completed: true,
-          finalStepId: currentId,
-          stepsExecuted: index + 1,
-          trace,
-          validationWarnings: validation.warnings,
+          status: 'completed', completed: true, finalStepId: currentId,
+          stepsExecuted: index + 1, trace, validationWarnings: validation.warnings,
         };
       }
       if (!nextId) return failed('failed', index + 1);
       currentId = nextId;
     }
-
     return failed('budget-exhausted', maxSteps);
   }
 }
