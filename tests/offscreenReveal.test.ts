@@ -57,11 +57,16 @@ test('acquire reveals an offscreen target with wheel input before pointer planni
   const input = new Input(observer);
   const engine = new InteractionEngine(observer, input, {
     pointerOptions: { sleep: async () => {}, sampleIntervalMs: 100 },
-    scrollSettleMs: 0,
-    settle: async () => {},
   });
-  const result = await engine.acquire({ name: 'Below fold' }, { includeDirectional: false });
+  const result = await engine.acquire(
+    { name: 'Below fold' },
+    {
+      includeDirectional: false,
+      revealOptions: { maxSamples: 1, sleep: async () => {} },
+    },
+  );
   assert.equal(result.status, 'reached');
+  assert.equal(result.reveal?.status, 'revealed');
   assert.ok(input.scrolls.length > 0);
   assert.equal(result.target?.id, 'backend:99');
 });
