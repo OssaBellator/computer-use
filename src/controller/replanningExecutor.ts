@@ -45,13 +45,14 @@ export interface ReplanningOptions extends InteractionModelPlanOptions {
 /**
  * Closed-loop plan runner. The dispatcher owns modality-specific mechanics and
  * success criteria; this runner owns snapshot refresh, confirmed-anchor tracking,
- * modality continuity, and replanning after failure or divergence.
+ * modality continuity, empirical edge feedback, and replanning after divergence.
  */
 export class ReplanningExecutor {
   constructor(
     readonly model: InteractionModel,
     private readonly snapshot: SnapshotProvider,
     private readonly dispatch: EdgeDispatcher,
+    private readonly now: () => number = () => performance.now(),
   ) {}
 
   async execute(
@@ -108,7 +109,13 @@ export class ReplanningExecutor {
           break;
         }
 
+        const startedAt = this.now();
         const dispatchResult = await this.dispatch(edge, { model: this.model, source, target });
+        const durationMs = Math.max(0, this.now() - startedAt);
+        this.model.edgePerformance.observe(edge, {
+          durationMs,
+          succeeded: dispatchResult.succeeded,
+        });
         executed.push({ edge, result: dispatchResult });
         currentModality = edgeModality(edge) ?? currentModality;
         this.model.refresh(await this.snapshot());
