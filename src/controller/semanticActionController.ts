@@ -1,0 +1,200 @@
+import type { BrowserInteractionObserver } from '../browser/cdpObserver.js';
+import { effectiveTargetWidth } from '../geometry.js';
+import type { BrowserInput } from '../input/browserInput.js';
+import type { InteractionNode, Point, Rect } from '../types.js';
+import {
+  diffSnapshots,
+  type SnapshotDelta,
+  valueChangeSucceeded,
+} from '../verification/actionVerifier.js';
+import {
+  waitForObservation,
+  type ObservationWaitOptions,
+  type ObservationWaitResult,
+} from '../verification/observationSettler.js';
+import { PointerController } from './pointerController.js';
+
+export type SemanticActionStatus =
+  | 'verified'
+  | 'unverified'
+  | 'not-actionable'
+  | 'not-editable'
+  | 'focus-failed'
+  | 'target-point-unavailable';
+
+export type ActivationMethod = 'auto' | 'keyboard' | 'pointer';
+
+export interface SemanticActionResult {
+  status: SemanticActionStatus;
+  verified: boolean;
+  target: InteractionNode;
+  before: readonly InteractionNode[];
+  after: readonly InteractionNode[];
+  delta: SnapshotDelta;
+  method?: Exclude<ActivationMethod, 'auto'>;
+  samples: number;
+}
+
+export interface ActivateTargetOptions extends ObservationWaitOptions {
+  method?: ActivationMethod;
+  key?: string;
+}
+
+export interface TypeIntoTargetOptions extends ObservationWaitOptions {
+  delayMs?: number;
+  expectedValue?: string;
+}
+
+function targetRect(node: InteractionNode): Rect | undefined {
+  return node.mainViewportVisibleRect ?? node.visibleRect ?? node.mainViewportRect ?? node.rect;
+}
+
+function emptyResult(
+  status: SemanticActionStatus,
+  target: InteractionNode,
+  before: readonly InteractionNode[],
+): SemanticActionResult {
+  return {
+    status,
+    verified: false,
+    target,
+    before,
+    after: before,
+    delta: diffSnapshots(before, before),
+    samples: 0,
+  };
+}
+
+function activationHasEvidence(delta: SnapshotDelta): boolean {
+  return delta.added.length > 0 || delta.removed.length > 0 ||
+    delta.changedValues.length > 0 || delta.changedStates.length > 0;
+}
+
+function defaultActivationKey(target: InteractionNode): string {
+  const role = target.role?.toLowerCase();
+  if (target.checked !== undefined || role === 'checkbox' || role === 'radio' || role === 'switch') {
+    return ' ';
+  }
+  return 'Enter';
+}
+
+/**
+ * Performs semantic actions only after a target has been resolved/acquired.
+ * Commands are reported as verified only when browser snapshots provide
+ * action-specific evidence; adapter completion alone is never treated as proof.
+ */
+export class SemanticActionController {
+  constructor(
+    private readonly observer: BrowserInteractionObserver,
+    private readonly input: BrowserInput,
+    private readonly pointer: PointerController,
+  ) {}
+
+  async activate(
+    target: InteractionNode,
+    options: ActivateTargetOptions = {},
+  ): Promise<SemanticActionResult> {
+    const before = await this.observer.snapshot();
+    const current = before.find((node) => node.id === target.id) ?? target;
+    if (current.disabled || (!current.clickable && !current.capabilities.includes('activate'))) {
+      return emptyResult('not-actionable', current, before);
+    }
+
+    const requested = options.method ?? 'auto';
+    const method: Exclude<ActivationMethod, 'auto'> = requested === 'auto'
+      ? (current.focused ? 'keyboard' : 'pointer')
+      : requested;
+
+    if (method === 'keyboard') {
+      await this.input.pressKey(options.key ?? defaultActivationKey(current));
+    } else {
+      const point = await this.observer.targetPoint(current);
+      if (!point) return emptyResult('target-point-unavailable', current, before);
+      const rect = targetRect(current);
+      const movement: Point = {
+        x: point.x - this.pointer.touchpad.cursor.x,
+        y: point.y - this.pointer.touchpad.cursor.y,
+      };
+      const width = rect ? effectiveTargetWidth(rect, movement) : 20;
+      await this.pointer.click(point, width);
+    }
+
+    const observed = await waitForObservation(
+      () => this.observer.snapshot(),
+      before,
+      activationHasEvidence,
+      options,
+    );
+    return this.observationResult(current, observed, method);
+  }
+
+  async typeInto(
+    target: InteractionNode,
+    text: string,
+    options: TypeIntoTargetOptions = {},
+  ): Promise<SemanticActionResult> {
+    let before = await this.observer.snapshot();
+    let current = before.find((node) => node.id === target.id) ?? target;
+    if (current.disabled || !current.editable || !current.capabilities.includes('type')) {
+      return emptyResult('not-editable', current, before);
+    }
+
+    if (!current.focused) {
+      const point = await this.observer.targetPoint(current);
+      if (!point) return emptyResult('target-point-unavailable', current, before);
+      const rect = targetRect(current);
+      const movement: Point = {
+        x: point.x - this.pointer.touchpad.cursor.x,
+        y: point.y - this.pointer.touchpad.cursor.y,
+      };
+      await this.pointer.click(point, rect ? effectiveTargetWidth(rect, movement) : 20);
+
+      const focusObserved = await waitForObservation(
+        () => this.observer.snapshot(),
+        before,
+        (delta) => delta.focusedAfter === current.id,
+        options,
+      );
+      if (!focusObserved.matched) {
+        return {
+          status: 'focus-failed',
+          verified: false,
+          target: current,
+          before,
+          after: focusObserved.after,
+          delta: focusObserved.delta,
+          method: 'pointer',
+          samples: focusObserved.samples,
+        };
+      }
+      before = focusObserved.after;
+      current = before.find((node) => node.id === current.id) ?? current;
+    }
+
+    await this.input.typeText(text, options.delayMs);
+    const typed = await waitForObservation(
+      () => this.observer.snapshot(),
+      before,
+      (delta) => valueChangeSucceeded(delta, current.id, options.expectedValue),
+      options,
+    );
+    return this.observationResult(current, typed, undefined);
+  }
+
+  private observationResult(
+    target: InteractionNode,
+    observed: ObservationWaitResult,
+    method?: Exclude<ActivationMethod, 'auto'>,
+  ): SemanticActionResult {
+    return {
+      status: observed.matched ? 'verified' : 'unverified',
+      verified: observed.matched,
+      target,
+      before: [],
+      after: observed.after,
+      delta: observed.delta,
+      method,
+      samples: observed.samples,
+    };
+  }
+}
