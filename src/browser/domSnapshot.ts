@@ -122,7 +122,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         const text = idReferenceText(element, labelledBy);
         if (text) return text;
       }
-      if (element instanceof HTMLInputElement && element.labels?.length) {
+      if ((element instanceof HTMLInputElement ||
+           element instanceof HTMLSelectElement ||
+           element instanceof HTMLTextAreaElement) && element.labels?.length) {
         const text = Array.from(element.labels)
           .map((label) => label.textContent?.trim() ?? '')
           .filter(Boolean)
@@ -213,6 +215,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           element.disabled;
         const disabled = nativeDisabled || element.getAttribute('aria-disabled') === 'true';
         const fileInput = element instanceof HTMLInputElement && element.type.toLowerCase() === 'file';
+        const selectInput = element instanceof HTMLSelectElement;
         const editable = isTextEntryInput(element) ||
           element instanceof HTMLTextAreaElement || html.isContentEditable;
         const focusable = !disabled && html.tabIndex >= 0;
@@ -231,6 +234,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         if (clickable) capabilities.push('activate');
         if (editable) capabilities.push('type');
         if (fileInput) capabilities.push('upload');
+        if (selectInput && !disabled) capabilities.push('select');
         if (scrollable) capabilities.push('scroll');
         if (element.hasAttribute('aria-expanded')) capabilities.push('expand');
 
@@ -258,7 +262,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
 
         const name = accessibleName(element);
         const confidence = Math.max(0.25, Math.min(1,
-          0.35 + (focusable ? 0.2 : 0) + (clickable || editable || fileInput ? 0.25 : 0) +
+          0.35 + (focusable ? 0.2 : 0) + (clickable || editable || fileInput || selectInput ? 0.25 : 0) +
           (element.hasAttribute('role') ? 0.1 : 0) + (name ? 0.1 : 0),
         ));
 
