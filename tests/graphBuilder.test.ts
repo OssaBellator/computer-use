@@ -46,3 +46,11 @@ test('pointer edge uses target confidence as uncertainty and refuses cross-frame
   assert.ok(edge.estimatedTimeMs > 0);
   assert.equal(createPointerMoveEdge(a, node('x', 0, 0, 'frame-1')), null);
 });
+
+test('pointer and spatial edges do not target explicitly offscreen nodes', () => {
+  const visible = node('visible', 0, 0);
+  const offscreen = { ...node('offscreen', 100, 0), viewportVisible: false };
+  assert.equal(createPointerMoveEdge(visible, offscreen), null);
+  const edges = buildDirectionalEdges([visible, offscreen]);
+  assert.ok(!edges.some((edge) => edge.to === 'offscreen'));
+});
