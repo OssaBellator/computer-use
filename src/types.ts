@@ -24,6 +24,11 @@ export interface InteractionNode {
   role?: string;
   name?: string;
   value?: string;
+  expanded?: boolean;
+  checked?: boolean | 'mixed';
+  selected?: boolean;
+  pressed?: boolean | 'mixed';
+  activeDescendantId?: string;
   focused: boolean;
   disabled: boolean;
   rect?: Rect;
