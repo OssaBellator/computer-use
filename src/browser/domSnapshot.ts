@@ -36,6 +36,10 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
     const results: RawNode[] = [];
     const visited = new Set<Element>();
     const visitedRoots = new Set<Document | ShadowRoot>();
+    const nonTextInputTypes = new Set([
+      'button', 'checkbox', 'color', 'file', 'hidden', 'image',
+      'radio', 'range', 'reset', 'submit',
+    ]);
     const selectors = [
       'a[href]', 'button', 'input', 'select', 'textarea',
       '[contenteditable="true"]', '[tabindex]', '[role="button"]',
@@ -112,6 +116,10 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       return text ? text.slice(0, 200) : undefined;
     }
 
+    function isTextEntryInput(element: Element): element is HTMLInputElement {
+      return element instanceof HTMLInputElement && !nonTextInputTypes.has(element.type.toLowerCase());
+    }
+
     function collect(root: Document | ShadowRoot): void {
       if (visitedRoots.has(root)) return;
       visitedRoots.add(root);
@@ -133,7 +141,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
             element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) &&
           element.disabled;
         const disabled = nativeDisabled || element.getAttribute('aria-disabled') === 'true';
-        const editable = element instanceof HTMLInputElement ||
+        const editable = isTextEntryInput(element) ||
           element instanceof HTMLTextAreaElement || html.isContentEditable;
         const focusable = !disabled && html.tabIndex >= 0;
         const role = element.getAttribute('role') ?? element.tagName.toLowerCase();
@@ -193,7 +201,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         results.push({
           path: domPath(element), role, name, expanded, checked, selected, pressed, activeDescendantId,
           value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ||
-            element instanceof HTMLSelectElement ? element.value : undefined,
+            element instanceof HTMLSelectElement
+            ? element.value
+            : html.isContentEditable ? html.innerText : undefined,
           focused: deepActiveElement() === element,
           disabled,
           rect: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
