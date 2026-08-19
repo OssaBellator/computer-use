@@ -8,7 +8,7 @@ import type { Point } from '../src/types.js';
 class RecordingInput implements BrowserInput {
   readonly moves: Point[] = [];
   readonly buttons: string[] = [];
-  async movePointer(point: Point): Promise<void> { this.moves.push({ ...point }); }
+  async movePointer(point: Point): Promise<void> { this.moves.push({ x: point.x, y: point.y }); }
   async pointerDown(button: MouseButton = 'left'): Promise<void> { this.buttons.push(`down:${button}`); }
   async pointerUp(button: MouseButton = 'left'): Promise<void> { this.buttons.push(`up:${button}`); }
   async pressKey(): Promise<void> {}
@@ -26,6 +26,32 @@ test('touchpad rejects movement outside its bounded surface without mutating sta
   assert.equal(pad.applyFingerDelta({ x: 2, y: 0 }).boundaryReached, true);
   assert.deepEqual(pad.finger, { x: 9, y: 0 });
   assert.deepEqual(pad.cursor, cursorBefore);
+});
+
+test('finger tracking advances bounded finger state without applying cursor transfer', () => {
+  let transferCalls = 0;
+  const pad = new VirtualTouchpad({
+    initialCursor: { x: 50, y: 60 },
+    transferFunction: (delta) => {
+      transferCalls += 1;
+      return { x: delta.x * 100, y: delta.y * 100 };
+    },
+  });
+  const result = pad.trackFingerDelta({ x: 3, y: -2 });
+  assert.equal(result.boundaryReached, false);
+  assert.deepEqual(pad.finger, { x: 3, y: -2 });
+  assert.deepEqual(pad.cursor, { x: 50, y: 60 });
+  assert.equal(transferCalls, 0);
+});
+
+test('standalone touchpad step still applies its configured transfer curve', () => {
+  const pad = new VirtualTouchpad({
+    initialCursor: { x: 10, y: 10 },
+    transferFunction: createVelocityGainTransfer(8, 0),
+  });
+  const result = pad.applyFingerDelta({ x: 2, y: -1 });
+  assert.deepEqual(result.cursorDelta, { x: 16, y: -8 });
+  assert.deepEqual(pad.cursor, { x: 26, y: 2 });
 });
 
 test('lift/recenter preserves viewport cursor', () => {
@@ -57,6 +83,27 @@ test('pointer controller reaches target and emits ordered click events', async (
   assert.deepEqual(input.moves.at(-1), { x: 120, y: 40 });
   assert.deepEqual(pad.cursor, { x: 120, y: 40 });
   assert.deepEqual(input.buttons, ['down:left', 'up:left']);
+});
+
+test('pointer controller does not invoke standalone touchpad transfer curve', async () => {
+  let transferCalls = 0;
+  const input = new RecordingInput();
+  const pad = new VirtualTouchpad({
+    initialCursor: { x: 0, y: 0 },
+    transferFunction: (delta) => {
+      transferCalls += 1;
+      return { x: delta.x * 1000, y: delta.y * 1000 };
+    },
+  });
+  const controller = new PointerController(input, pad, {
+    pixelsPerMm: 5,
+    sleep: async () => {},
+    sampleIntervalMs: 100,
+  });
+  await controller.moveTo({ x: 50, y: 25 }, 20);
+  assert.equal(transferCalls, 0);
+  assert.deepEqual(input.moves.at(-1), { x: 50, y: 25 });
+  assert.deepEqual(pad.cursor, { x: 50, y: 25 });
 });
 
 test('pointer controller performs lift/recenter for long travel on a small pad', async () => {
