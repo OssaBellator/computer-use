@@ -1,8 +1,42 @@
-import { describeSnapshotFrames, snapshotInteractiveDom, type SnapshotFrameDescriptor, type SnapshotPageLike } from './domSnapshot.js';
+import { snapshotInteractiveDom, type SnapshotFrameLike, type SnapshotPageLike } from './domSnapshot.js';
 import type { InteractionNode } from '../types.js';
 
 export interface CdpSessionLike {
   send(method: string, params?: Record<string, unknown>): Promise<any>;
+}
+
+export interface SnapshotFrameDescriptor {
+  interactionFrameId: string;
+  parentInteractionFrameId?: string;
+  url?: string;
+  name?: string;
+  siblingIndex: number;
+}
+
+type SnapshotFrameWithMetadata = SnapshotFrameLike & {
+  url?(): string;
+  name?(): string;
+  parentFrame?(): SnapshotFrameLike | null;
+};
+
+export function describeSnapshotFrames(page: SnapshotPageLike): SnapshotFrameDescriptor[] {
+  const frames = page.frames() as SnapshotFrameWithMetadata[];
+  const ids = new Map(frames.map((frame, index) => [frame, index === 0 ? 'main' : `frame-${index}`]));
+  const siblingCounts = new Map<string, number>();
+  return frames.map((frame) => {
+    const parent = frame.parentFrame?.() as SnapshotFrameWithMetadata | null | undefined;
+    const parentInteractionFrameId = parent ? ids.get(parent) : undefined;
+    const bucket = parentInteractionFrameId ?? '<root>';
+    const siblingIndex = siblingCounts.get(bucket) ?? 0;
+    siblingCounts.set(bucket, siblingIndex + 1);
+    return {
+      interactionFrameId: ids.get(frame)!,
+      parentInteractionFrameId,
+      url: frame.url?.(),
+      name: frame.name?.(),
+      siblingIndex,
+    };
+  });
 }
 
 interface CdpDomNode {
