@@ -1,6 +1,10 @@
 import { effectiveTargetWidth } from '../geometry.js';
 import type { Direction } from '../graph.js';
 import type { BrowserInteractionObserver } from '../browser/cdpObserver.js';
+import {
+  compositeAnchorIsCurrent,
+  focusedCompositeState,
+} from '../focus/compositeState.js';
 import type { BrowserInput } from '../input/browserInput.js';
 import type { InteractionEdge, InteractionNode, Point, Rect } from '../types.js';
 import type { EdgeDispatchContext, EdgeDispatchResult } from './replanningExecutor.js';
@@ -26,6 +30,16 @@ function focusedId(nodes: readonly InteractionNode[]): string | undefined {
   return nodes.find((node) => node.focused)?.id;
 }
 
+function navigationArrival(
+  nodes: readonly InteractionNode[],
+  edge: InteractionEdge,
+): string | undefined {
+  if (DIRECTION_FOR_KIND[edge.kind]) {
+    return focusedCompositeState(nodes)?.active.id ?? focusedId(nodes);
+  }
+  return focusedId(nodes);
+}
+
 function targetRect(node: InteractionNode): Rect | undefined {
   return node.mainViewportVisibleRect ?? node.visibleRect ?? node.mainViewportRect ?? node.rect;
 }
@@ -41,11 +55,28 @@ export class BrowserEdgeDispatcher {
     edge: InteractionEdge,
     context: EdgeDispatchContext,
   ): Promise<EdgeDispatchResult> => {
+    if (edge.kind === 'state-anchor') return this.dispatchStateAnchor(context);
     const key = KEY_FOR_KIND[edge.kind];
     if (key) return this.dispatchKeyboardNavigation(edge, context, key);
     if (edge.kind === 'pointer-move') return this.dispatchPointerMove(context);
-    return { succeeded: false, arrivedNodeId: context.source.id, reason: `Unsupported edge kind: ${edge.kind}` };
+    return {
+      succeeded: false,
+      arrivedNodeId: context.source.id,
+      reason: `Unsupported edge kind: ${edge.kind}`,
+    };
   };
+
+  private async dispatchStateAnchor(context: EdgeDispatchContext): Promise<EdgeDispatchResult> {
+    const after = await this.observer.snapshot();
+    const succeeded = compositeAnchorIsCurrent(after, context.source.id, context.target.id);
+    return {
+      succeeded,
+      arrivedNodeId: succeeded ? context.target.id : context.source.id,
+      reason: succeeded
+        ? undefined
+        : `Composite logical state no longer bridges ${context.source.id} -> ${context.target.id}`,
+    };
+  }
 
   private async dispatchKeyboardNavigation(
     edge: InteractionEdge,
@@ -54,7 +85,7 @@ export class BrowserEdgeDispatcher {
   ): Promise<EdgeDispatchResult> {
     await this.input.pressKey(key);
     const after = await this.observer.snapshot();
-    const arrivedNodeId = focusedId(after);
+    const arrivedNodeId = navigationArrival(after, edge);
     const succeeded = arrivedNodeId === context.target.id;
 
     if (arrivedNodeId && arrivedNodeId !== context.source.id) {
@@ -79,7 +110,9 @@ export class BrowserEdgeDispatcher {
     return {
       succeeded,
       arrivedNodeId: arrivedNodeId ?? context.source.id,
-      reason: succeeded ? undefined : `Observed focus ${arrivedNodeId ?? '<none>'}, expected ${context.target.id}`,
+      reason: succeeded
+        ? undefined
+        : `Observed navigation state ${arrivedNodeId ?? '<none>'}, expected ${context.target.id}`,
     };
   }
 
