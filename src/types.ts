@@ -87,6 +87,15 @@ export interface PathCostWeights {
   uncertainty: number;
 }
 
+export interface EdgeCostBreakdown {
+  time: number;
+  failure: number;
+  modalitySwitch: number;
+  scroll: number;
+  uncertainty: number;
+  total: number;
+}
+
 export const DEFAULT_PATH_COST_WEIGHTS: PathCostWeights = {
   failure: 800,
   modalitySwitch: 120,
@@ -94,15 +103,28 @@ export const DEFAULT_PATH_COST_WEIGHTS: PathCostWeights = {
   uncertainty: 300,
 };
 
+export function edgeCostBreakdown(
+  edge: InteractionEdge,
+  weights: PathCostWeights = DEFAULT_PATH_COST_WEIGHTS,
+): EdgeCostBreakdown {
+  const time = edge.estimatedTimeMs;
+  const failure = weights.failure * (edge.failureProbability ?? 0);
+  const modalitySwitch = weights.modalitySwitch * (edge.modalitySwitchCost ?? 0);
+  const scroll = weights.scroll * (edge.scrollCost ?? 0);
+  const uncertainty = weights.uncertainty * (edge.uncertaintyCost ?? 0);
+  return {
+    time,
+    failure,
+    modalitySwitch,
+    scroll,
+    uncertainty,
+    total: time + failure + modalitySwitch + scroll + uncertainty,
+  };
+}
+
 export function edgeCost(
   edge: InteractionEdge,
   weights: PathCostWeights = DEFAULT_PATH_COST_WEIGHTS,
 ): number {
-  return (
-    edge.estimatedTimeMs +
-    weights.failure * (edge.failureProbability ?? 0) +
-    weights.modalitySwitch * (edge.modalitySwitchCost ?? 0) +
-    weights.scroll * (edge.scrollCost ?? 0) +
-    weights.uncertainty * (edge.uncertaintyCost ?? 0)
-  );
+  return edgeCostBreakdown(edge, weights).total;
 }
