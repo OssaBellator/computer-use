@@ -1,6 +1,11 @@
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
 import {
+  CdpDownloadController,
+  type BrowserDownloadControllerOptions,
+  type BrowserDownloadSummary,
+} from '../browser/downloadController.js';
+import {
   CdpDialogController,
   isCdpEventSessionLike,
   type BrowserDialogController,
@@ -41,10 +46,11 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly navigator: BrowserNavigator = new CdpNavigationController(session),
     readonly dialogs?: BrowserDialogController,
     readonly targets?: CdpTargetController,
+    readonly downloads?: CdpDownloadController,
   ) {}
 
   async prepare(): Promise<void> {
-    await Promise.all([this.dialogs?.start(), this.targets?.start()]);
+    await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start()]);
   }
 
   refresh(): Promise<InteractionNode[]> {
@@ -61,6 +67,10 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   targetState(): BrowserTargetSummary | undefined {
     return this.targets?.summary();
+  }
+
+  downloadState(): BrowserDownloadSummary | undefined {
+    return this.downloads?.summary();
   }
 
   activate(
@@ -111,6 +121,8 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
 export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions {
   navigationPolicy?: NavigationPolicy;
+  /** Explicit opt-in; download files are stored under opaque CDP GUID names. */
+  downloadOptions?: BrowserDownloadControllerOptions;
 }
 
 export function createCdpBrowserAgentEngine(
@@ -118,7 +130,7 @@ export function createCdpBrowserAgentEngine(
   session: CdpSessionLike,
   options: CdpBrowserAgentEngineOptions = {},
 ): CdpBrowserAgentEngine {
-  const { navigationPolicy, ...interactionOptions } = options;
+  const { navigationPolicy, downloadOptions, ...interactionOptions } = options;
   const eventSession = isCdpEventSessionLike(session) ? session : undefined;
   return new CdpBrowserAgentEngine(
     createCdpInteractionEngine(page, session, interactionOptions),
@@ -126,5 +138,6 @@ export function createCdpBrowserAgentEngine(
     new CdpNavigationController(session, navigationPolicy),
     eventSession ? new CdpDialogController(eventSession) : undefined,
     eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined,
+    eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined,
   );
 }

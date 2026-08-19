@@ -1,5 +1,6 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type { BrowserDialogState } from '../browser/dialogController.js';
+import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserTargetSummary } from '../browser/targetController.js';
 import { resolveInteractionTargetDetailed } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
@@ -11,6 +12,7 @@ export interface TaskObservation {
   browser?: BrowserStateSnapshot;
   dialog?: BrowserDialogState;
   targets?: BrowserTargetSummary;
+  downloads?: BrowserDownloadSummary;
   fingerprint: string;
 }
 
@@ -66,6 +68,17 @@ function matchesDialog(
   return state.open === false || dialog !== undefined;
 }
 
+function matchesDownloads(
+  state: Extract<TaskPredicate, { kind: 'downloads' }>['state'],
+  downloads: BrowserDownloadSummary | undefined,
+): boolean {
+  if (!downloads) return false;
+  if (state.completedCountAtLeast !== undefined && downloads.completed < state.completedCountAtLeast) return false;
+  if (state.inProgressCountAtLeast !== undefined && downloads.inProgress < state.inProgressCountAtLeast) return false;
+  if (state.canceledCountAtLeast !== undefined && downloads.canceled < state.canceledCountAtLeast) return false;
+  return true;
+}
+
 function matchesTargets(
   state: Extract<TaskPredicate, { kind: 'targets' }>['state'],
   targets: BrowserTargetSummary | undefined,
@@ -84,6 +97,7 @@ export function evaluateTaskPredicate(
   browserState?: BrowserStateSnapshot,
   dialogState?: BrowserDialogState,
   targetState?: BrowserTargetSummary,
+  downloadState?: BrowserDownloadSummary,
 ): boolean {
   switch (predicate.kind) {
     case 'exists': {
@@ -98,14 +112,15 @@ export function evaluateTaskPredicate(
     case 'browser': return matchesBrowser(predicate.state, browserState, inputs);
     case 'dialog': return matchesDialog(predicate.state, dialogState);
     case 'targets': return matchesTargets(predicate.state, targetState);
+    case 'downloads': return matchesDownloads(predicate.state, downloadState);
     case 'all':
       return predicate.predicates.every((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState));
+        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState, downloadState));
     case 'any':
       return predicate.predicates.some((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState));
+        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState, downloadState));
     case 'not':
-      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState, dialogState, targetState);
+      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState, dialogState, targetState, downloadState);
   }
 }
 
@@ -141,6 +156,7 @@ export function taskObservationFingerprint(
   browser?: BrowserStateSnapshot,
   dialog?: BrowserDialogState,
   targets?: BrowserTargetSummary,
+  downloads?: BrowserDownloadSummary,
 ): string {
   const browserValue = browser
     ? [browser.url, browser.origin, browser.title, browser.readyState,
@@ -152,7 +168,12 @@ export function taskObservationFingerprint(
         targets.latestPage?.targetId ?? '', targets.latestPage?.sequence ?? '',
         targets.latestUnattachedPage?.targetId ?? '', targets.latestUnattachedPage?.sequence ?? ''].join('\u001f')
     : '';
-  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browserValue}\u001d${dialogValue}\u001d${targetValue}`);
+  const downloadValue = downloads
+    ? [downloads.total, downloads.inProgress, downloads.completed, downloads.canceled,
+        downloads.latest?.guid ?? '', downloads.latest?.sequence ?? '', downloads.latest?.state ?? '',
+        downloads.latestCompleted?.guid ?? '', downloads.latestCompleted?.sequence ?? ''].join('\u001f')
+    : '';
+  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browserValue}\u001d${dialogValue}\u001d${targetValue}\u001d${downloadValue}`);
 }
 
 export async function observeTaskEngine(engine: TaskRuntimeEngine): Promise<TaskObservation> {
@@ -160,11 +181,13 @@ export async function observeTaskEngine(engine: TaskRuntimeEngine): Promise<Task
   let browser: BrowserStateSnapshot | undefined;
   let dialog: BrowserDialogState | undefined;
   let targets: BrowserTargetSummary | undefined;
+  let downloads: BrowserDownloadSummary | undefined;
   try { nodes = await engine.refresh(); } catch {}
   try { browser = await engine.browserState?.(); } catch {}
   try { dialog = engine.dialogState?.(); } catch {}
   try { targets = engine.targetState?.(); } catch {}
-  if (nodes === undefined && browser === undefined && dialog === undefined && targets === undefined) {
+  try { downloads = engine.downloadState?.(); } catch {}
+  if (nodes === undefined && browser === undefined && dialog === undefined && targets === undefined && downloads === undefined) {
     throw new Error('No browser observation channel is currently available');
   }
   const normalizedNodes = nodes ?? [];
@@ -173,6 +196,7 @@ export async function observeTaskEngine(engine: TaskRuntimeEngine): Promise<Task
     browser,
     dialog,
     targets,
-    fingerprint: taskObservationFingerprint(normalizedNodes, browser, dialog, targets),
+    downloads,
+    fingerprint: taskObservationFingerprint(normalizedNodes, browser, dialog, targets, downloads),
   };
 }

@@ -25,6 +25,12 @@ export interface TaskBrowserTargetsExpectation {
   unattachedPageCountAtLeast?: number;
 }
 
+export interface TaskDownloadExpectation {
+  completedCountAtLeast?: number;
+  inProgressCountAtLeast?: number;
+  canceledCountAtLeast?: number;
+}
+
 export interface TaskDialogExpectation {
   open?: boolean;
   type?: BrowserDialogType;
@@ -47,6 +53,7 @@ export type TaskPredicate =
   | { kind: 'browser'; state: TaskBrowserExpectation }
   | { kind: 'dialog'; state: TaskDialogExpectation }
   | { kind: 'targets'; state: TaskBrowserTargetsExpectation }
+  | { kind: 'downloads'; state: TaskDownloadExpectation }
   | { kind: 'all'; predicates: readonly TaskPredicate[] }
   | { kind: 'any'; predicates: readonly TaskPredicate[] }
   | { kind: 'not'; predicate: TaskPredicate };
@@ -201,6 +208,7 @@ function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): vo
       return;
     case 'dialog':
     case 'targets':
+    case 'downloads':
       return;
     case 'all':
     case 'any':
@@ -286,6 +294,15 @@ function validatePredicate(predicate: TaskPredicate, stepId: string, errors: str
       if (unattachedPageCountAtLeast !== undefined &&
           (!Number.isInteger(unattachedPageCountAtLeast) || unattachedPageCountAtLeast < 0)) {
         errors.push(`step ${stepId} targets unattachedPageCountAtLeast must be a non-negative integer`);
+      }
+      return;
+    }
+    case 'downloads': {
+      const { completedCountAtLeast, inProgressCountAtLeast, canceledCountAtLeast } = predicate.state;
+      for (const [name, value] of Object.entries({ completedCountAtLeast, inProgressCountAtLeast, canceledCountAtLeast })) {
+        if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+          errors.push(`step ${stepId} downloads ${name} must be a non-negative integer`);
+        }
       }
       return;
     }

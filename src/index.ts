@@ -11,6 +11,7 @@ export * from './browser/frameHierarchy.js';
 export * from './browser/hitTesting.js';
 export * from './browser/browserState.js';
 export * from './browser/dialogController.js';
+export * from './browser/downloadController.js';
 export * from './browser/navigationController.js';
 export * from './browser/targetController.js';
 export * from './focus/focusTopology.js';

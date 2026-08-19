@@ -1,5 +1,6 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
+import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type {
   BrowserTargetSummary,
@@ -22,6 +23,7 @@ export interface TaskRuntimeEngine {
   browserState?(): Promise<BrowserStateSnapshot | undefined>;
   dialogState?(): BrowserDialogState | undefined;
   targetState?(): BrowserTargetSummary | undefined;
+  downloadState?(): BrowserDownloadSummary | undefined;
   activate(
     query: TargetQuery | string,
     options?: {

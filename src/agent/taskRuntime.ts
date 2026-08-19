@@ -228,7 +228,7 @@ export class TaskRuntime {
       }
 
       const predicate = (condition: Parameters<typeof evaluateTaskPredicate>[0]) =>
-        evaluateTaskPredicate(condition, before.nodes, inputs, before.browser, before.dialog, before.targets);
+        evaluateTaskPredicate(condition, before.nodes, inputs, before.browser, before.dialog, before.targets, before.downloads);
 
       if (step.kind === 'assert') {
         const passed = predicate(step.condition);
@@ -267,7 +267,7 @@ export class TaskRuntime {
           await sleep(pollIntervalMs);
           try { observed = await observeTaskEngine(this.engine); } catch { break; }
           passed = evaluateTaskPredicate(
-            step.condition, observed.nodes, inputs, observed.browser, observed.dialog, observed.targets,
+            step.condition, observed.nodes, inputs, observed.browser, observed.dialog, observed.targets, observed.downloads,
           );
         }
         const nextId = passed ? step.next : step.onTimeout;
