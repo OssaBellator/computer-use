@@ -1,12 +1,19 @@
 import { FocusTopology } from '../focus/focusTopology.js';
 import { buildDirectionalEdges, createPointerMoveEdge } from '../graphBuilder.js';
-import { planInteractionPath, type PlanResult } from '../planner/actionPlanner.js';
+import {
+  planInteractionPath,
+  type Heuristic,
+  type InputModality,
+  type PlanResult,
+} from '../planner/actionPlanner.js';
 import type { InteractionEdge, InteractionNode, PathCostWeights } from '../types.js';
 
 export interface InteractionModelPlanOptions {
   includeDirectional?: boolean;
   includePointer?: boolean;
   weights?: PathCostWeights;
+  heuristic?: Heuristic;
+  initialModality?: InputModality;
 }
 
 /**
@@ -59,7 +66,11 @@ export class InteractionModel {
       this.edgesForTarget(targetId, options),
       startId,
       targetId,
-      { weights: options.weights },
+      {
+        weights: options.weights,
+        heuristic: options.heuristic,
+        initialModality: options.initialModality,
+      },
     );
   }
 }
