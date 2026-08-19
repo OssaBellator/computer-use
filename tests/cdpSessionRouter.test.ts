@@ -8,6 +8,7 @@ import {
 class Connection {
   readonly calls: Array<[string, Record<string, unknown>, string | undefined]> = [];
   readonly listeners = new Map<string, Set<CdpMultiplexEventListener>>();
+  attachCount = 0;
 
   async send(
     method: string,
@@ -15,7 +16,10 @@ class Connection {
     sessionId?: string,
   ): Promise<any> {
     this.calls.push([method, params, sessionId]);
-    if (method === 'Target.attachToTarget') return { sessionId: 'session-1' };
+    if (method === 'Target.attachToTarget') {
+      this.attachCount += 1;
+      return { sessionId: `session-${this.attachCount}` };
+    }
     if (method === 'Runtime.evaluate') return { result: { value: 2 } };
     return {};
   }
@@ -71,7 +75,33 @@ test('root session receives only browser-root events', () => {
   assert.equal(events, 1);
 });
 
-test('detach cleans routed listeners and rejects future commands', async () => {
+test('repeated attach reuses the one routed debugger session for a target', async () => {
+  const connection = new Connection();
+  const router = new CdpTargetSessionRouter(connection);
+  const first = await router.attach('target-1');
+  const second = await router.attach('target-1');
+
+  assert.equal(second, first);
+  assert.equal(connection.attachCount, 1);
+  assert.equal(router.sessionFor('target-1'), first);
+});
+
+test('externally-created flattened session can be adopted and reused by attach', async () => {
+  const connection = new Connection();
+  const router = new CdpTargetSessionRouter(connection);
+  const adopted = router.adopt('target-guarded', 'security-session');
+  const attached = await router.attach('target-guarded');
+
+  assert.equal(attached, adopted);
+  assert.equal(attached.sessionId, 'security-session');
+  assert.equal(connection.attachCount, 0);
+  assert.throws(
+    () => router.adopt('target-guarded', 'different-session'),
+    /different routed CDP session/,
+  );
+});
+
+test('detach cleans routed listeners, forgets registry entry, and permits a later fresh attach', async () => {
   const connection = new Connection();
   const router = new CdpTargetSessionRouter(connection);
   const session = await router.attach('target-1');
@@ -79,6 +109,7 @@ test('detach cleans routed listeners and rejects future commands', async () => {
 
   await router.detach(session);
   assert.equal(session.detached, true);
+  assert.equal(router.sessionFor('target-1'), undefined);
   assert.equal(connection.listeners.get('Page.loadEventFired')?.size ?? 0, 0);
   await assert.rejects(() => session.send('Runtime.evaluate', { expression: '1' }), /detached/);
   assert.equal(
@@ -86,4 +117,8 @@ test('detach cleans routed listeners and rejects future commands', async () => {
       method === 'Target.detachFromTarget' && params.sessionId === 'session-1'),
     true,
   );
+
+  const replacement = await router.attach('target-1');
+  assert.notEqual(replacement, session);
+  assert.equal(replacement.sessionId, 'session-2');
 });

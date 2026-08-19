@@ -1,6 +1,6 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "private": true,
   "description": "Closed-loop semantic/spatial browser interaction engine with bounded plan-then-execute task programs.",
   "type": "module",

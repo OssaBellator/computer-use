@@ -123,16 +123,53 @@ export class RoutedCdpSession implements CdpEventSessionLike {
   }
 }
 
-/** Attaches/activates/detaches Chromium page targets through browser-root CDP. */
+/**
+ * Attaches/activates/detaches Chromium page targets through browser-root CDP.
+ * A target has at most one routed session in this router; externally-created
+ * flattened sessions can be adopted so security auto-attach and semantic page
+ * control share the same debugger attachment.
+ */
 export class CdpTargetSessionRouter {
   readonly root: CdpRootSession;
+  private readonly sessionsByTarget = new Map<string, RoutedCdpSession>();
+  private readonly sessionsById = new Map<string, RoutedCdpSession>();
 
   constructor(readonly connection: CdpMultiplexConnectionLike) {
     this.root = new CdpRootSession(connection);
   }
 
+  sessionFor(targetId: string): RoutedCdpSession | undefined {
+    const session = this.sessionsByTarget.get(targetId);
+    return session?.detached ? undefined : session;
+  }
+
+  adopt(targetId: string, sessionId: string): RoutedCdpSession {
+    if (!targetId) throw new Error('targetId is required');
+    if (!sessionId) throw new Error('sessionId is required');
+
+    const byTarget = this.sessionFor(targetId);
+    if (byTarget) {
+      if (byTarget.sessionId !== sessionId) {
+        throw new Error('target already has a different routed CDP session');
+      }
+      return byTarget;
+    }
+    const byId = this.sessionsById.get(sessionId);
+    if (byId && !byId.detached && byId.targetId !== targetId) {
+      throw new Error('CDP session id is already routed to a different target');
+    }
+
+    const session = new RoutedCdpSession(this.connection, targetId, sessionId);
+    this.sessionsByTarget.set(targetId, session);
+    this.sessionsById.set(sessionId, session);
+    return session;
+  }
+
   async attach(targetId: string): Promise<RoutedCdpSession> {
     if (!targetId) throw new Error('targetId is required');
+    const existing = this.sessionFor(targetId);
+    if (existing) return existing;
+
     const result = await this.connection.send('Target.attachToTarget', {
       targetId,
       flatten: true,
@@ -140,7 +177,7 @@ export class CdpTargetSessionRouter {
     if (typeof result.sessionId !== 'string' || !result.sessionId) {
       throw new Error('Target.attachToTarget did not return a session id');
     }
-    return new RoutedCdpSession(this.connection, targetId, result.sessionId);
+    return this.adopt(targetId, result.sessionId);
   }
 
   async activate(targetId: string): Promise<void> {
@@ -149,15 +186,31 @@ export class CdpTargetSessionRouter {
   }
 
   async detach(session: RoutedCdpSession): Promise<void> {
-    if (session.detached) return;
+    if (session.detached) {
+      this.forget(session);
+      return;
+    }
     try {
       await this.connection.send('Target.detachFromTarget', { sessionId: session.sessionId });
     } finally {
       session.dispose();
+      this.forget(session);
     }
   }
 
   dispose(): void {
+    for (const session of this.sessionsByTarget.values()) session.dispose();
+    this.sessionsByTarget.clear();
+    this.sessionsById.clear();
     this.root.dispose();
+  }
+
+  private forget(session: RoutedCdpSession): void {
+    if (this.sessionsByTarget.get(session.targetId) === session) {
+      this.sessionsByTarget.delete(session.targetId);
+    }
+    if (this.sessionsById.get(session.sessionId) === session) {
+      this.sessionsById.delete(session.sessionId);
+    }
   }
 }

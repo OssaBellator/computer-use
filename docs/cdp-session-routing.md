@@ -17,9 +17,13 @@ interface CdpMultiplexConnectionLike {
 A WebSocket/CDP client implements that browser-root envelope once. The router then provides:
 
 - `router.root`: a `CdpEventSessionLike` that receives only browser-root events;
-- `router.attach(targetId)`: a `RoutedCdpSession` for one flattened page target;
+- `router.attach(targetId)`: a routed session for one flattened page target;
+- `router.adopt(targetId, sessionId)`: registers a flattened session created externally, such as browser-root security auto-attach;
+- `router.sessionFor(targetId)`: returns the live routed session already owned for a target;
 - `router.activate(targetId)`: foregrounds a target with `Target.activateTarget`; and
-- `router.detach(session)`: detaches the target session and removes every routed listener.
+- `router.detach(session)`: detaches the target session, removes every routed listener, and forgets the registry binding.
+
+A target has at most one routed session in a router. Repeated `attach(targetId)` calls return the same live object instead of creating multiple debugger attachments. After detach, a later attach is allowed to create a fresh session.
 
 ## Event isolation
 
@@ -29,17 +33,21 @@ A WebSocket/CDP client implements that browser-root envelope once. The router th
 
 A detached routed session rejects future commands and drops registered wrappers.
 
+## Security-session adoption
+
+Browser-root policy enforcement may attach a target *before* normal semantic control so the initial document cannot run outside policy. `adopt()` makes that security session the router's canonical session for the target. When `MultiPageCdpAgent` later switches into that page, its normal `attach()` path reuses the already-guarded session rather than opening a second debugger channel.
+
+This provides a clean ownership handoff between pre-execution containment and semantic browser use.
+
 ## Why this unlocks real tab switching
 
 The pure-CDP semantic frame runtime can construct a complete interaction/browser-agent engine from any `CdpSessionLike`. Combining it with `CdpTargetSessionRouter` means an arbitrary page target can now be:
 
-1. attached from the browser websocket;
+1. attached or adopted from the browser websocket;
 2. represented as an isolated routed session;
 3. passed to `createPureCdpBrowserAgentEngine()`; and
 4. activated/detached independently.
 
-This is the protocol foundation for a higher-level multi-page agent that can switch its active semantic engine rather than merely create/close background targets.
-
 ## Regression coverage
 
-Unit regressions cover flattened command routing, per-session event isolation, root-event isolation, detach cleanup, and post-detach failure. The Chromium regression connects to the real browser websocket, attaches the primary and a newly created secondary page, executes commands independently, verifies session-filtered console events, activates the second target, and detaches it cleanly.
+Unit regressions cover flattened command routing, per-session event isolation, root-event isolation, repeated-attach reuse, externally-created session adoption, conflicting adoption rejection, detach cleanup, registry removal, fresh reattach, and post-detach failure. The Chromium regression connects to the real browser websocket, attaches the primary and a newly created secondary page, executes commands independently, verifies session-filtered console events, activates the second target, and detaches it cleanly.
