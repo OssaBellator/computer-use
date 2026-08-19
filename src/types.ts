@@ -31,6 +31,8 @@ export interface InteractionNode {
   selected?: boolean;
   pressed?: boolean | 'mixed';
   activeDescendantId?: string;
+  /** Structural identity resolved from aria-activedescendant in the same DOM/shadow scope. */
+  activeDescendantStructuralId?: string;
   /** Structural identity of the nearest independently scrollable ancestor. */
   scrollAncestorStructuralId?: string;
   focused: boolean;
@@ -53,6 +55,7 @@ export interface InteractionNode {
 }
 
 export type InteractionEdgeKind =
+  | 'state-anchor'
   | 'focus-next'
   | 'focus-previous'
   | 'spatial-up'
