@@ -27,6 +27,7 @@ interface RawNode {
 
 export interface SnapshotFrameLike {
   evaluate<R>(pageFunction: () => R | Promise<R>): Promise<R>;
+  parentFrame?(): SnapshotFrameLike | null;
 }
 
 export interface SnapshotPageLike {
@@ -302,8 +303,18 @@ function framePath(frame: SnapshotFrameLike, allFrames: readonly SnapshotFrameLi
 
 export async function snapshotInteractiveDom(page: SnapshotPageLike): Promise<InteractionNode[]> {
   const frames = page.frames();
+  const frameIds = new Map(frames.map((frame, index) => [
+    frame,
+    index === 0 ? 'main' : `frame-${index}`,
+  ]));
   const perFrame = await Promise.all(
-    frames.map((frame) => extractFrame(frame, framePath(frame, frames))),
+    frames.map(async (frame) => {
+      const frameId = frameIds.get(frame) ?? framePath(frame, frames);
+      const parent = frame.parentFrame?.() ?? null;
+      const parentFrameId = parent ? frameIds.get(parent) : undefined;
+      const nodes = await extractFrame(frame, frameId);
+      return nodes.map((node) => ({ ...node, parentFrameId }));
+    }),
   );
   return perFrame.flat();
 }
