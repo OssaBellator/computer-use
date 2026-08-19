@@ -1,3 +1,12 @@
+import {
+  describeSnapshotFrames,
+  type SnapshotPageLike,
+} from '../browser/cdpIdentity.js';
+import { snapshotInteractiveDom } from '../browser/domSnapshot.js';
+import {
+  buildInteractionFrameHierarchy,
+  enrichInteractionNodesWithFrameHierarchy,
+} from '../browser/frameHierarchy.js';
 import { FocusTopology, type FocusDirection, type FocusObservation } from '../focus/focusTopology.js';
 import type { BrowserInput } from '../input/browserInput.js';
 import type { InteractionNode } from '../types.js';
@@ -16,13 +25,47 @@ function focusedId(nodes: readonly InteractionNode[]): string | null {
   return nodes.find((node) => node.focused)?.id ?? null;
 }
 
-/** Executes a sequential-focus action and learns the browser-observed result. */
+function isSnapshotPageLike(value: BrowserInput | SnapshotPageLike): value is SnapshotPageLike {
+  return typeof (value as SnapshotPageLike).frames === 'function';
+}
+
+function pageSnapshotProvider(page: SnapshotPageLike): SnapshotProvider {
+  return async () => enrichInteractionNodesWithFrameHierarchy(
+    await snapshotInteractiveDom(page),
+    buildInteractionFrameHierarchy(describeSnapshotFrames(page)),
+  );
+}
+
+/** Executes sequential-focus actions and learns browser-observed transitions. */
 export class FocusController {
+  private readonly input: BrowserInput;
+  private readonly snapshot: SnapshotProvider;
+  readonly topology: FocusTopology;
+
   constructor(
-    private readonly input: BrowserInput,
-    private readonly snapshot: SnapshotProvider,
-    readonly topology = new FocusTopology(),
-  ) {}
+    input: BrowserInput,
+    snapshot: SnapshotProvider,
+    topology?: FocusTopology,
+  );
+  constructor(
+    page: SnapshotPageLike,
+    input: BrowserInput,
+    topology?: FocusTopology,
+  );
+  constructor(
+    inputOrPage: BrowserInput | SnapshotPageLike,
+    snapshotOrInput: SnapshotProvider | BrowserInput,
+    topology = new FocusTopology(),
+  ) {
+    if (isSnapshotPageLike(inputOrPage)) {
+      this.input = snapshotOrInput as BrowserInput;
+      this.snapshot = pageSnapshotProvider(inputOrPage);
+    } else {
+      this.input = inputOrPage;
+      this.snapshot = snapshotOrInput as SnapshotProvider;
+    }
+    this.topology = topology;
+  }
 
   async step(direction: FocusDirection): Promise<FocusStepResult> {
     const before = await this.snapshot();
