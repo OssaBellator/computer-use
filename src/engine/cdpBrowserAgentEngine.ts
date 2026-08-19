@@ -13,6 +13,12 @@ import {
   type BrowserDialogState,
 } from '../browser/dialogController.js';
 import {
+  CdpHistoryController,
+  type BrowserHistoryController,
+  type BrowserHistoryOptions,
+  type BrowserHistoryResult,
+} from '../browser/historyController.js';
+import {
   CdpNavigationController,
   type BrowserNavigationOptions,
   type BrowserNavigationResult,
@@ -47,6 +53,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly dialogs?: BrowserDialogController,
     readonly targets?: CdpTargetController,
     readonly downloads?: CdpDownloadController,
+    readonly historyController: BrowserHistoryController = new CdpHistoryController(session),
   ) {}
 
   async prepare(): Promise<void> {
@@ -90,6 +97,18 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> {
     return this.navigator.navigate(url, options);
+  }
+
+  goBack(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    return this.historyController.back(options);
+  }
+
+  goForward(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    return this.historyController.forward(options);
+  }
+
+  reload(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    return this.historyController.reload(options);
   }
 
   createPageTarget(url: string): Promise<CreateBrowserTargetResult> {
@@ -139,5 +158,6 @@ export function createCdpBrowserAgentEngine(
     eventSession ? new CdpDialogController(eventSession) : undefined,
     eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined,
     eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined,
+    new CdpHistoryController(session, navigationPolicy),
   );
 }
