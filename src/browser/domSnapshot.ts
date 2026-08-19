@@ -1,4 +1,3 @@
-import type { Frame, Page } from 'playwright-core';
 import type { InteractionCapability, InteractionNode, Rect } from '../types.js';
 
 interface RawNode {
@@ -22,7 +21,15 @@ interface RawNode {
   interactionConfidence: number;
 }
 
-async function extractFrame(frame: Frame, frameId: string): Promise<InteractionNode[]> {
+export interface SnapshotFrameLike {
+  evaluate<R>(pageFunction: () => R | Promise<R>): Promise<R>;
+}
+
+export interface SnapshotPageLike {
+  frames(): SnapshotFrameLike[];
+}
+
+async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<InteractionNode[]> {
   const raw = await frame.evaluate((): RawNode[] => {
     const results: RawNode[] = [];
     const visited = new Set<Element>();
@@ -106,7 +113,6 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
       for (const element of root.querySelectorAll(selectors.join(','))) {
         if (visited.has(element)) continue;
         visited.add(element);
-
         const style = getComputedStyle(element);
         const bounds = element.getBoundingClientRect();
         const visible =
@@ -175,7 +181,6 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
           focusable, clickable, editable, scrollable, capabilities,
           interactionConfidence: confidence,
         });
-
         if (element.shadowRoot) collect(element.shadowRoot);
       }
     }
@@ -187,12 +192,12 @@ async function extractFrame(frame: Frame, frameId: string): Promise<InteractionN
   return raw.map((node) => ({ ...node, id: `${frameId}:${node.path}`, frameId }));
 }
 
-function framePath(frame: Frame, allFrames: readonly Frame[]): string {
+function framePath(frame: SnapshotFrameLike, allFrames: readonly SnapshotFrameLike[]): string {
   const index = allFrames.indexOf(frame);
   return index === 0 ? 'main' : `frame-${index}`;
 }
 
-export async function snapshotInteractiveDom(page: Page): Promise<InteractionNode[]> {
+export async function snapshotInteractiveDom(page: SnapshotPageLike): Promise<InteractionNode[]> {
   const frames = page.frames();
   const perFrame = await Promise.all(
     frames.map((frame) => extractFrame(frame, framePath(frame, frames))),
