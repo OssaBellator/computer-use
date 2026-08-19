@@ -54,3 +54,11 @@ test('pointer and spatial edges do not target explicitly offscreen nodes', () =>
   const edges = buildDirectionalEdges([visible, offscreen]);
   assert.ok(!edges.some((edge) => edge.to === 'offscreen'));
 });
+
+test('pointer edges prefer normalized main-viewport geometry when available', () => {
+  const from = { ...node('from-main', 0, 0), mainViewportVisible: true, mainViewportVisibleRect: { x: 200, y: 100, width: 20, height: 20 } };
+  const to = { ...node('to-main', 10, 0), mainViewportVisible: true, mainViewportVisibleRect: { x: 400, y: 100, width: 20, height: 20 } };
+  const normalized = createPointerMoveEdge(from, to)!;
+  const local = createPointerMoveEdge(node('a-local', 0, 0), node('b-local', 10, 0))!;
+  assert.ok(normalized.estimatedTimeMs > local.estimatedTimeMs);
+});
