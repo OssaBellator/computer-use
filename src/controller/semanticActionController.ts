@@ -41,6 +41,8 @@ export interface ActivateTargetOptions extends ObservationWaitOptions {
   key?: string;
 }
 
+export interface HoverTargetOptions extends ObservationWaitOptions {}
+
 export interface TypeIntoTargetOptions extends ObservationWaitOptions {
   delayMs?: number;
   expectedValue?: string;
@@ -172,6 +174,36 @@ export class SemanticActionController {
       options,
     );
     return this.observationResult(current, before, observed, method);
+  }
+
+  /**
+   * Moves the pointer onto a live semantic target and verifies hover-specific
+   * browser evidence. The target is intentionally not re-hit-tested after
+   * movement because a successful tooltip/menu may cover the original point.
+   */
+  async hover(
+    target: InteractionNode,
+    options: HoverTargetOptions = {},
+  ): Promise<SemanticActionResult> {
+    const before = await this.observer.snapshot();
+    const current = before.find((node) => node.id === target.id) ?? target;
+    const point = await this.observer.targetPoint(current);
+    if (!point) return emptyResult('target-point-unavailable', current, before);
+
+    const rect = targetRect(current);
+    const movement: Point = {
+      x: point.x - this.pointer.touchpad.cursor.x,
+      y: point.y - this.pointer.touchpad.cursor.y,
+    };
+    await this.pointer.moveTo(point, rect ? effectiveTargetWidth(rect, movement) : 20);
+
+    const observed = await waitForObservation(
+      () => this.observer.snapshot(),
+      before,
+      activationHasEvidence,
+      options,
+    );
+    return this.observationResult(current, before, observed, 'pointer');
   }
 
   async typeInto(
