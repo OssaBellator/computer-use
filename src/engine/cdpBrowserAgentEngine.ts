@@ -25,6 +25,9 @@ import {
   type BrowserHistoryResult,
 } from '../browser/historyController.js';
 import {
+  CdpNavigationGuard,
+} from '../browser/navigationGuard.js';
+import {
   CdpNavigationController,
   type BrowserNavigationOptions,
   type BrowserNavigationResult,
@@ -61,6 +64,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly downloads?: CdpDownloadController,
     readonly historyController: BrowserHistoryController = new CdpHistoryController(session),
     readonly uploads?: CdpFileUploadController,
+    readonly navigationGuard?: CdpNavigationGuard,
   ) {}
 
   async prepare(): Promise<void> {
@@ -69,6 +73,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
       this.targets?.start(),
       this.downloads?.start(),
       this.uploads?.start(),
+      this.navigationGuard?.start(),
     ]);
   }
 
@@ -186,6 +191,11 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
 export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions {
   navigationPolicy?: NavigationPolicy;
+  /**
+   * Intercept page-initiated Document requests with Fetch and apply navigationPolicy
+   * before network dispatch. Defaults to true when navigationPolicy is supplied.
+   */
+  enforceNavigationPolicyAtRequestBoundary?: boolean;
   /** Explicit opt-in; download files are stored under opaque CDP GUID names. */
   downloadOptions?: BrowserDownloadControllerOptions;
   /** Explicit opt-in local-file disclosure policy for file inputs. */
@@ -197,8 +207,16 @@ export function createCdpBrowserAgentEngine(
   session: CdpSessionLike,
   options: CdpBrowserAgentEngineOptions = {},
 ): CdpBrowserAgentEngine {
-  const { navigationPolicy, downloadOptions, uploadOptions, ...interactionOptions } = options;
+  const {
+    navigationPolicy,
+    enforceNavigationPolicyAtRequestBoundary,
+    downloadOptions,
+    uploadOptions,
+    ...interactionOptions
+  } = options;
   const eventSession = isCdpEventSessionLike(session) ? session : undefined;
+  const useNavigationGuard = eventSession !== undefined &&
+    (enforceNavigationPolicyAtRequestBoundary ?? navigationPolicy !== undefined);
   return new CdpBrowserAgentEngine(
     createCdpInteractionEngine(page, session, interactionOptions),
     session,
@@ -208,5 +226,6 @@ export function createCdpBrowserAgentEngine(
     eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined,
     new CdpHistoryController(session, navigationPolicy),
     uploadOptions ? new CdpFileUploadController(session, uploadOptions) : undefined,
+    useNavigationGuard ? new CdpNavigationGuard(eventSession, navigationPolicy) : undefined,
   );
 }

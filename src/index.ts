@@ -17,6 +17,7 @@ export * from './browser/downloadController.js';
 export * from './browser/fileUploadController.js';
 export * from './browser/historyController.js';
 export * from './browser/navigationController.js';
+export * from './browser/navigationGuard.js';
 export * from './browser/targetController.js';
 export * from './focus/focusTopology.js';
 export * from './focus/directionalTopology.js';
