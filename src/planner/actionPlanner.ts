@@ -38,6 +38,8 @@ export interface PlanOptions {
 const KEYBOARD_KINDS = new Set<InteractionEdgeKind>([
   'focus-next',
   'focus-previous',
+  'enter-frame',
+  'exit-frame',
   'spatial-up',
   'spatial-down',
   'spatial-left',
