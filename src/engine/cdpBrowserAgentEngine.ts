@@ -24,6 +24,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   targetState(): BrowserTargetSummary | undefined { return this.targets?.summary(); }
   downloadState(): BrowserDownloadSummary | undefined { return this.downloads?.summary(); }
   activate(query: TargetQuery | string, options?: Parameters<InteractionEngine['activate']>[1]): Promise<TaskEngineActionResult> { return this.interaction.activate(query, options); }
+  hover(query: TargetQuery | string, options?: Parameters<InteractionEngine['hover']>[1]): Promise<TaskEngineActionResult> { return this.interaction.hover(query, options); }
   typeInto(query: TargetQuery | string, text: string, options?: Parameters<InteractionEngine['typeInto']>[2]): Promise<TaskEngineActionResult> { return this.interaction.typeInto(query, text, options); }
   pressKey(key: string, options?: Parameters<InteractionEngine['pressKey']>[1]): Promise<TaskKeyActionResult> { return this.interaction.pressKey(key, options); }
   waitForNetworkIdle(options?: NetworkIdleOptions): Promise<NetworkIdleResult> {
