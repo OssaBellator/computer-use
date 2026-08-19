@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chooseSafeTargetPoint, effectiveTargetWidth, intersectRect, rectContainsPoint } from '../src/geometry.js';
+import {
+  chooseSafeTargetPoint,
+  effectiveTargetWidth,
+  intersectRect,
+  rectContainsPoint,
+  targetPointCandidates,
+} from '../src/geometry.js';
 
 test('rectangle intersection clips to viewport', () => {
   assert.deepEqual(
@@ -39,4 +45,13 @@ test('rectangle boundaries count as contained', () => {
 test('effective width follows movement axis', () => {
   assert.equal(effectiveTargetWidth({ x: 0, y: 0, width: 100, height: 20 }, { x: 10, y: 0 }), 100);
   assert.equal(effectiveTargetWidth({ x: 0, y: 0, width: 100, height: 20 }, { x: 0, y: 10 }), 20);
+});
+
+test('target point candidates are deterministic and center-first', () => {
+  const points = targetPointCandidates(
+    { x: 0, y: 0, width: 100, height: 40 },
+    { x: 0, y: 0, width: 100, height: 40 },
+  );
+  assert.deepEqual(points[0], { x: 50, y: 20 });
+  assert.equal(points.length, 9);
 });
