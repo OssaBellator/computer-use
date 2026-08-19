@@ -33,6 +33,8 @@ export interface InteractionNode {
   disabled: boolean;
   rect?: Rect;
   visibleRect?: Rect;
+  /** Explicit viewport intersection state when captured from a live page. */
+  viewportVisible?: boolean;
   focusable: boolean;
   clickable: boolean;
   editable: boolean;
