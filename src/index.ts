@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './graph.js';
 export * from './geometry.js';
+export * from './graphBuilder.js';
 export * from './browser/domSnapshot.js';
 export * from './focus/focusTopology.js';
 export * from './planner/actionPlanner.js';
@@ -10,3 +11,4 @@ export * from './input/playwrightInputAdapter.js';
 export * from './motor/minimumJerk.js';
 export * from './motor/virtualTouchpad.js';
 export * from './controller/pointerController.js';
+export * from './controller/focusController.js';
