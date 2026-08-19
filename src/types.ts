@@ -13,6 +13,7 @@ export type InteractionCapability =
   | 'activate'
   | 'type'
   | 'upload'
+  | 'select'
   | 'scroll'
   | 'expand'
   | 'dismiss';
