@@ -7,6 +7,7 @@ import { CdpHistoryController, type BrowserHistoryAction, type BrowserHistoryCon
 import { CdpNavigationGuard } from '../browser/navigationGuard.js';
 import { CdpNavigationController, type BrowserNavigationOptions, type BrowserNavigationResult, type BrowserNavigator, type NavigationPolicy } from '../browser/navigationController.js';
 import { CdpNetworkActivityMonitor, type NetworkIdleOptions, type NetworkIdleResult } from '../browser/networkActivityMonitor.js';
+import { CdpSelectController, type BrowserSelectMatch, type BrowserSelectResult } from '../browser/selectController.js';
 import type { SnapshotPageLike } from '../browser/domSnapshot.js';
 import { CdpTargetController, type BrowserTargetSummary, type CloseBrowserTargetResult, type CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery, TargetResolution } from '../model/targetResolver.js';
@@ -16,7 +17,7 @@ import { createCdpInteractionEngine, type CdpInteractionEngineOptions } from './
 import type { InteractionEngine } from './interactionEngine.js';
 
 export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
-  constructor(readonly interaction: InteractionEngine, private readonly session: CdpSessionLike, readonly navigator: BrowserNavigator = new CdpNavigationController(session), readonly dialogs?: BrowserDialogController, readonly targets?: CdpTargetController, readonly downloads?: CdpDownloadController, readonly historyController: BrowserHistoryController = new CdpHistoryController(session), readonly uploads?: CdpFileUploadController, readonly navigationGuard?: CdpNavigationGuard, readonly networkActivity?: CdpNetworkActivityMonitor) {}
+  constructor(readonly interaction: InteractionEngine, private readonly session: CdpSessionLike, readonly navigator: BrowserNavigator = new CdpNavigationController(session), readonly dialogs?: BrowserDialogController, readonly targets?: CdpTargetController, readonly downloads?: CdpDownloadController, readonly historyController: BrowserHistoryController = new CdpHistoryController(session), readonly uploads?: CdpFileUploadController, readonly navigationGuard?: CdpNavigationGuard, readonly networkActivity?: CdpNetworkActivityMonitor, readonly selects: CdpSelectController = new CdpSelectController(session)) {}
   async prepare(): Promise<void> { await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start(), this.uploads?.start(), this.navigationGuard?.start(), this.networkActivity?.start()]); }
   refresh(): Promise<InteractionNode[]> { return this.interaction.refresh(); }
   browserState(): Promise<BrowserStateSnapshot> { return captureCdpBrowserState(this.session); }
@@ -35,6 +36,20 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
       elapsedMs: 0,
       samples: 0,
     });
+  }
+  async selectOption(
+    query: TargetQuery | string,
+    option: string,
+    options: { requireUnambiguous?: boolean; by?: BrowserSelectMatch } = {},
+  ): Promise<BrowserSelectResult> {
+    let resolution: TargetResolution;
+    try { resolution = await this.interaction.resolveDetailed(query); } catch {
+      return { status: 'invalid-target', target: null };
+    }
+    if (!resolution.target || ((options.requireUnambiguous ?? true) && resolution.ambiguous)) {
+      return { status: 'invalid-target', target: resolution.target };
+    }
+    return this.selects.select(resolution.target, option, { by: options.by });
   }
   async uploadFiles(query: TargetQuery | string, paths: readonly string[], options: { requireUnambiguous?: boolean } = {}): Promise<BrowserFileUploadResult> {
     const unresolved = { targetId: '', fileCount: paths.length, totalBytes: 0 };
