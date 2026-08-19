@@ -45,3 +45,53 @@ test('CDP text input dispatches exact printable text through key events', async 
   assert.deepEqual(events.filter((event) => event.type === 'keyDown').map((event) => event.text), ['a', '1']);
   assert.deepEqual(events.filter((event) => event.type === 'keyUp').map((event) => event.key), ['a', '1']);
 });
+
+test('Ctrl+A suppresses printable text while the Control modifier is active', async () => {
+  const events: Record<string, unknown>[] = [];
+  const session: CdpSessionLike = { async send(method, params) {
+    if (method === 'Input.dispatchKeyEvent') events.push(params ?? {});
+    return {};
+  } };
+  await new CdpInputAdapter(session).pressKey('Control+a');
+  assert.deepEqual(events.map((event) => [event.type, event.key, event.modifiers]), [
+    ['rawKeyDown', 'Control', 2],
+    ['rawKeyDown', 'a', 2],
+    ['keyUp', 'a', 2],
+    ['keyUp', 'Control', 0],
+  ]);
+  assert.equal('text' in events[1], false);
+});
+
+test('uppercase and shifted punctuation use coherent US-layout Shift metadata', async () => {
+  const events: Record<string, unknown>[] = [];
+  const session: CdpSessionLike = { async send(method, params) {
+    if (method === 'Input.dispatchKeyEvent') events.push(params ?? {});
+    return {};
+  } };
+  await new CdpInputAdapter(session).typeText('A!');
+  const printable = events.filter((event) => event.type === 'keyDown');
+  assert.deepEqual(
+    printable.map((event) => [event.key, event.code, event.text, event.unmodifiedText, event.modifiers]),
+    [
+      ['A', 'KeyA', 'A', 'a', 8],
+      ['!', 'Digit1', '!', '1', 8],
+    ],
+  );
+  assert.equal(events.filter((event) => event.key === 'Shift' && event.type === 'rawKeyDown').length, 2);
+  assert.equal(events.filter((event) => event.key === 'Shift' && event.type === 'keyUp').length, 2);
+});
+
+test('explicit Shift plus a base key resolves the shifted key value', async () => {
+  const events: Record<string, unknown>[] = [];
+  const session: CdpSessionLike = { async send(method, params) {
+    if (method === 'Input.dispatchKeyEvent') events.push(params ?? {});
+    return {};
+  } };
+  await new CdpInputAdapter(session).pressKey('Shift+1');
+  const main = events.find((event) => event.type === 'keyDown' && event.code === 'Digit1');
+  assert.ok(main);
+  assert.deepEqual(
+    [main.key, main.text, main.unmodifiedText, main.modifiers],
+    ['!', '!', '1', 8],
+  );
+});
