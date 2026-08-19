@@ -53,10 +53,9 @@ test('navigation controller surfaces protocol errors and validates URL schemes',
   );
   assert.equal(result.status, 'navigation-error');
   assert.equal(result.errorText, 'net::ERR_NAME_NOT_RESOLVED');
-  await assert.rejects(
-    () => new CdpNavigationController(session).navigate('javascript:alert(1)'),
-    /Unsupported navigation URL scheme/,
-  );
+  const unsupported = await new CdpNavigationController(session).navigate('javascript:alert(1)');
+  assert.equal(unsupported.status, 'policy-blocked');
+  assert.match(unsupported.policyReason ?? '', /unsupported navigation URL scheme/);
 });
 
 test('navigation controller does not mistake the old completed document for the new navigation', async () => {

@@ -12,6 +12,7 @@ import {
   type BrowserNavigationOptions,
   type BrowserNavigationResult,
   type BrowserNavigator,
+  type NavigationPolicy,
 } from '../browser/navigationController.js';
 import type { SnapshotPageLike } from '../browser/domSnapshot.js';
 import type { TargetQuery } from '../model/targetResolver.js';
@@ -82,15 +83,20 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   }
 }
 
+export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions {
+  navigationPolicy?: NavigationPolicy;
+}
+
 export function createCdpBrowserAgentEngine(
   page: SnapshotPageLike,
   session: CdpSessionLike,
-  options: CdpInteractionEngineOptions = {},
+  options: CdpBrowserAgentEngineOptions = {},
 ): CdpBrowserAgentEngine {
+  const { navigationPolicy, ...interactionOptions } = options;
   return new CdpBrowserAgentEngine(
-    createCdpInteractionEngine(page, session, options),
+    createCdpInteractionEngine(page, session, interactionOptions),
     session,
-    new CdpNavigationController(session),
+    new CdpNavigationController(session, navigationPolicy),
     isCdpEventSessionLike(session) ? new CdpDialogController(session) : undefined,
   );
 }
