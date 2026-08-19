@@ -14,6 +14,7 @@ interface RawNode {
   disabled: boolean;
   rect?: Rect;
   visibleRect?: Rect;
+  viewportVisible: boolean;
   focusable: boolean;
   clickable: boolean;
   editable: boolean;
@@ -197,6 +198,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           disabled,
           rect: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
           visibleRect,
+          viewportVisible: visibleRect !== undefined,
           focusable, clickable, editable, scrollable, capabilities,
           interactionConfidence: confidence,
         });
