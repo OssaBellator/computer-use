@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import { snapshotInteractiveDom } from '../../dist/src/browser/domSnapshot.js';
+import { findHitTestedTargetPoint, pointHitsInteractionNode } from '../../dist/src/browser/hitTesting.js';
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -109,9 +110,12 @@ async function launchChromium() {
 
 function snapshotPage(client) {
   const frame = {
-    async evaluate(pageFunction) {
+    async evaluate(pageFunction, arg) {
+      const invocation = arg === undefined
+        ? `(${pageFunction.toString()})()`
+        : `(${pageFunction.toString()})(${JSON.stringify(arg)})`;
       const result = await client.send('Runtime.evaluate', {
-        expression: `(${pageFunction.toString()})()`,
+        expression: invocation,
         returnByValue: true,
         awaitPromise: true,
       });
@@ -124,7 +128,7 @@ function snapshotPage(client) {
   return { frames: () => [frame] };
 }
 
-test('live Chromium snapshot handles shadow focus and ARIA state', async (t) => {
+test('live Chromium snapshot handles shadow focus, ARIA state, and occlusion', async (t) => {
   const { client, child, profile } = await launchChromium();
   t.after(async () => {
     client.close();
@@ -154,4 +158,22 @@ test('live Chromium snapshot handles shadow focus and ARIA state', async (t) => 
   });
   const after = await snapshotInteractiveDom(page);
   assert.equal(after.find((node) => node.name === 'Outer')?.expanded, true);
+
+  await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      document.body.innerHTML = '<button id="target" style="position:absolute;left:10px;top:10px;width:120px;height:40px">Target</button><div style="position:absolute;left:50px;top:10px;width:50px;height:40px;z-index:10;background:black"></div>';
+    })()`,
+  });
+
+  const occluded = await snapshotInteractiveDom(page);
+  const target = occluded.find((node) => node.name === 'Target');
+  assert.ok(target);
+  const centerHit = await pointHitsInteractionNode(page.frames()[0], target, { x: 70, y: 30 });
+  assert.equal(centerHit.hit, false);
+  const validatedPoint = await findHitTestedTargetPoint(
+    page.frames()[0],
+    target,
+    { x: 0, y: 0, width: 800, height: 600 },
+  );
+  assert.deepEqual(validatedPoint, { x: 42, y: 30 });
 });
