@@ -5,6 +5,8 @@ interface RawNode {
   role?: string;
   name?: string;
   value?: string;
+  tabIndex?: number;
+  compositeOwnerStructuralId?: string;
   expanded?: boolean;
   checked?: boolean | 'mixed';
   selected?: boolean;
@@ -46,7 +48,15 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       'button', 'checkbox', 'image', 'radio', 'range', 'reset', 'submit',
     ]);
     const activatableRoles = new Set([
-      'button', 'link', 'checkbox', 'radio', 'switch', 'menuitem', 'option', 'tab',
+      'button', 'link', 'checkbox', 'radio', 'switch', 'menuitem', 'menuitemcheckbox',
+      'menuitemradio', 'option', 'tab', 'treeitem',
+    ]);
+    const compositeOwnerRoles = new Set([
+      'grid', 'listbox', 'menu', 'menubar', 'radiogroup', 'tablist', 'toolbar', 'tree', 'treegrid',
+    ]);
+    const compositeItemRoles = new Set([
+      'columnheader', 'gridcell', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
+      'radio', 'rowheader', 'tab', 'treeitem',
     ]);
     const clippingOverflowValues = new Set(['auto', 'scroll', 'hidden', 'clip']);
     const scrollOverflowValues = new Set(['auto', 'scroll']);
@@ -55,7 +65,13 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       '[contenteditable="true"]', '[tabindex]', '[role="button"]',
       '[role="link"]', '[role="textbox"]', '[role="checkbox"]',
       '[role="radio"]', '[role="switch"]', '[role="menuitem"]',
-      '[role="option"]', '[role="tab"]', 'nav', 'header', 'form',
+      '[role="menuitemcheckbox"]', '[role="menuitemradio"]', '[role="option"]',
+      '[role="tab"]', '[role="treeitem"]', '[role="gridcell"]',
+      '[role="columnheader"]', '[role="rowheader"]',
+      '[role="grid"]', '[role="listbox"]', '[role="menu"]', '[role="menubar"]',
+      '[role="radiogroup"]', '[role="tablist"]', '[role="toolbar"]',
+      '[role="tree"]', '[role="treegrid"]',
+      'nav', 'header', 'form',
       '[aria-expanded]', '[aria-checked]', '[aria-selected]', '[aria-pressed]',
       '[aria-activedescendant]',
     ];
@@ -91,6 +107,16 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       if (element.parentElement) return element.parentElement;
       const root = element.getRootNode();
       return root instanceof ShadowRoot ? root.host : null;
+    }
+
+    function nearestCompositeOwner(element: Element): Element | null {
+      let current = composedParent(element);
+      while (current) {
+        const role = current.getAttribute('role')?.trim().toLowerCase();
+        if (role && compositeOwnerRoles.has(role)) return current;
+        current = composedParent(current);
+      }
+      return null;
     }
 
     function deepActiveElement(root: Document | ShadowRoot = document): Element | null {
@@ -221,12 +247,14 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           element instanceof HTMLTextAreaElement || html.isContentEditable;
         const focusable = !disabled && html.tabIndex >= 0;
         const role = element.getAttribute('role') ?? element.tagName.toLowerCase();
+        const roleLower = role.toLowerCase();
+        const compositeOwner = compositeItemRoles.has(roleLower) ? nearestCompositeOwner(element) : null;
         const nativeActivatableInput = element instanceof HTMLInputElement &&
           activatableInputTypes.has(element.type.toLowerCase());
         const clickable = !disabled && (
           element instanceof HTMLButtonElement || element instanceof HTMLAnchorElement ||
           element instanceof HTMLSelectElement || nativeActivatableInput ||
-          activatableRoles.has(role.toLowerCase()) ||
+          activatableRoles.has(roleLower) ||
           typeof (html as HTMLElement & { onclick?: unknown }).onclick === 'function'
         );
 
@@ -269,7 +297,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         ));
 
         results.push({
-          path: domPath(element), role, name, expanded, checked, selected, pressed, activeDescendantId,
+          path: domPath(element), role, name, tabIndex: html.tabIndex,
+          compositeOwnerStructuralId: compositeOwner ? domPath(compositeOwner) : undefined,
+          expanded, checked, selected, pressed, activeDescendantId,
           activeDescendantStructuralId: activeDescendant ? domPath(activeDescendant) : undefined,
           scrollAncestorStructuralId: scrollAncestor ? domPath(scrollAncestor) : undefined,
           value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ||
@@ -295,6 +325,9 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
     ...node,
     id: `${frameId}:${node.path}`,
     frameId,
+    compositeOwnerStructuralId: node.compositeOwnerStructuralId
+      ? `${frameId}:${node.compositeOwnerStructuralId}`
+      : undefined,
     activeDescendantStructuralId: node.activeDescendantStructuralId
       ? `${frameId}:${node.activeDescendantStructuralId}`
       : undefined,
