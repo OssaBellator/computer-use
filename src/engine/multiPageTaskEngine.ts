@@ -4,6 +4,7 @@ import type { BrowserFileUploadResult } from '../browser/fileUploadController.js
 import type { BrowserHistoryAction, BrowserHistoryOptions, BrowserHistoryResult } from '../browser/historyController.js';
 import type { NetworkIdleOptions, NetworkIdleResult } from '../browser/networkActivityMonitor.js';
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
+import type { BrowserSelectMatch, BrowserSelectResult } from '../browser/selectController.js';
 import type { BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 import type { InteractionNode, Point } from '../types.js';
@@ -99,6 +100,15 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
   ): Promise<TaskEngineActionResult> {
     return this.pages.activeEngine?.typeInto(query, text, options) ??
       Promise.resolve({ status: 'target-not-found', target: null });
+  }
+
+  selectOption(
+    query: TargetQuery | string,
+    option: string,
+    options?: { requireUnambiguous?: boolean; by?: BrowserSelectMatch },
+  ): Promise<BrowserSelectResult> {
+    return this.pages.activeEngine?.selectOption(query, option, options) ??
+      Promise.resolve({ status: 'invalid-target', target: null });
   }
 
   pressKey(key: string, options?: ObservationActionOptions): Promise<TaskKeyActionResult> {
