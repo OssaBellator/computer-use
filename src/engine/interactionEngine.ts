@@ -6,7 +6,6 @@ import {
   type InteractionModelPlanOptions,
 } from '../model/interactionModel.js';
 import {
-  resolveInteractionTarget,
   resolveInteractionTargetDetailed,
   type TargetQuery,
   type TargetResolution,
@@ -42,12 +41,15 @@ export interface AcquireOptions extends ReplanningOptions {
   startId?: string;
   autoReveal?: boolean;
   revealOptions?: ScrollRevealOptions;
+  /** Refuse to dispatch input when equally preferred semantic matches exist. */
+  requireUnambiguous?: boolean;
 }
 
 export interface AcquireResult {
-  status: ReplanningResult['status'] | 'target-not-found';
+  status: ReplanningResult['status'] | 'target-not-found' | 'target-ambiguous';
   target: InteractionNode | null;
   execution: ReplanningResult | null;
+  resolution?: TargetResolution;
   reveal?: ScrollRevealResult;
 }
 
@@ -138,8 +140,14 @@ export class InteractionEngine {
   async acquire(query: TargetQuery | string, options: AcquireOptions = {}): Promise<AcquireResult> {
     let nodes = await this.planningSnapshot();
     this.model.refresh(nodes);
-    let target = resolveInteractionTarget(nodes, query);
-    if (!target) return { status: 'target-not-found', target: null, execution: null };
+    let resolution = resolveInteractionTargetDetailed(nodes, query);
+    let target = resolution.target;
+    if (!target) {
+      return { status: 'target-not-found', target: null, execution: null, resolution };
+    }
+    if (options.requireUnambiguous && resolution.ambiguous) {
+      return { status: 'target-ambiguous', target, execution: null, resolution };
+    }
 
     let reveal: ScrollRevealResult | undefined;
     if (options.autoReveal !== false && shouldAutoReveal(target) && this.observer.viewportRect) {
@@ -148,9 +156,13 @@ export class InteractionEngine {
       if (reveal.status === 'revealed' || reveal.status === 'already-visible') {
         nodes = await this.planningSnapshot();
         this.model.refresh(nodes);
-        target = nodes.find((node) => node.id === targetIdBeforeReveal) ?? resolveInteractionTarget(nodes, query);
+        resolution = resolveInteractionTargetDetailed(nodes, query);
+        target = nodes.find((node) => node.id === targetIdBeforeReveal) ?? resolution.target;
         if (!target) {
-          return { status: 'target-not-found', target: null, execution: null, reveal };
+          return { status: 'target-not-found', target: null, execution: null, resolution, reveal };
+        }
+        if (options.requireUnambiguous && resolution.ambiguous) {
+          return { status: 'target-ambiguous', target, execution: null, resolution, reveal };
         }
       }
     }
@@ -162,6 +174,7 @@ export class InteractionEngine {
       status: execution.status,
       target: this.model.getNode(target.id) ?? target,
       execution,
+      resolution,
       ...(reveal ? { reveal } : {}),
     };
   }
