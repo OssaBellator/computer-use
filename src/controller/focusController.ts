@@ -6,6 +6,8 @@ export type SnapshotProvider = () => Promise<readonly InteractionNode[]>;
 
 export interface FocusStepResult {
   observation: FocusObservation | null;
+  beforeFocusId: string | null;
+  afterFocusId: string | null;
   before: readonly InteractionNode[];
   after: readonly InteractionNode[];
 }
@@ -24,15 +26,15 @@ export class FocusController {
 
   async step(direction: FocusDirection): Promise<FocusStepResult> {
     const before = await this.snapshot();
-    const fromId = focusedId(before);
+    const beforeFocusId = focusedId(before);
     await this.input.pressKey(direction === 'forward' ? 'Tab' : 'Shift+Tab');
     const after = await this.snapshot();
-    const toId = focusedId(after);
+    const afterFocusId = focusedId(after);
 
-    const observation = fromId && toId && fromId !== toId
-      ? { fromId, toId, direction, observedAtMs: Date.now() }
+    const observation = beforeFocusId && afterFocusId && beforeFocusId !== afterFocusId
+      ? { fromId: beforeFocusId, toId: afterFocusId, direction, observedAtMs: Date.now() }
       : null;
     if (observation) this.topology.observe(observation);
-    return { observation, before, after };
+    return { observation, beforeFocusId, afterFocusId, before, after };
   }
 }
