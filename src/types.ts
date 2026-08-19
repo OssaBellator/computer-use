@@ -18,6 +18,8 @@ export type InteractionCapability =
 
 export interface InteractionNode {
   id: string;
+  /** Original structural frame/path identity when id has been stabilized. */
+  structuralId?: string;
   frameId: string;
   backendNodeId?: number;
   axNodeId?: string;
@@ -69,7 +71,7 @@ export interface InteractionEdge {
   from: string;
   to: string;
   kind: InteractionEdgeKind;
-  /** Optional explicit modality override; planners infer common edge kinds. */
+  /** Optional explicit modality override; planners can infer common kinds. */
   modality?: 'keyboard' | 'pointer' | 'scroll';
   estimatedTimeMs: number;
   failureProbability?: number;
