@@ -1,4 +1,8 @@
 import type { BrowserInteractionObserver } from '../browser/cdpObserver.js';
+import {
+  deviceProfileEngineOptions,
+  type InteractionDeviceProfile,
+} from '../config/deviceProfile.js';
 import type { BrowserInput } from '../input/browserInput.js';
 import {
   InteractionModel,
@@ -35,6 +39,8 @@ export const CURSOR_ANCHOR_ID = '@cursor';
 export interface InteractionEngineOptions {
   model?: InteractionModel;
   touchpad?: VirtualTouchpad;
+  /** Deterministic calibration defaults; explicit touchpad/pointer options override profile fields. */
+  deviceProfile?: InteractionDeviceProfile;
   touchpadOptions?: VirtualTouchpadOptions;
   pointerOptions?: PointerControllerOptions;
 }
@@ -110,8 +116,19 @@ export class InteractionEngine {
     options: InteractionEngineOptions = {},
   ) {
     this.model = options.model ?? new InteractionModel();
-    this.touchpad = options.touchpad ?? new VirtualTouchpad(options.touchpadOptions);
-    this.pointer = new PointerController(input, this.touchpad, options.pointerOptions);
+    const profileOptions = options.deviceProfile
+      ? deviceProfileEngineOptions(options.deviceProfile)
+      : undefined;
+    const touchpadOptions: VirtualTouchpadOptions = {
+      ...(profileOptions?.touchpadOptions ?? {}),
+      ...(options.touchpadOptions ?? {}),
+    };
+    const pointerOptions: PointerControllerOptions = {
+      ...(profileOptions?.pointerOptions ?? {}),
+      ...(options.pointerOptions ?? {}),
+    };
+    this.touchpad = options.touchpad ?? new VirtualTouchpad(touchpadOptions);
+    this.pointer = new PointerController(input, this.touchpad, pointerOptions);
     this.dispatcher = new BrowserEdgeDispatcher(input, this.pointer, observer);
     this.replanner = new ReplanningExecutor(this.model, () => this.planningSnapshot(), this.dispatcher.dispatch);
     this.actions = new SemanticActionController(observer, input, this.pointer);
