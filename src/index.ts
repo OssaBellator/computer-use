@@ -19,6 +19,7 @@ export * from './browser/historyController.js';
 export * from './browser/navigationController.js';
 export * from './browser/navigationGuard.js';
 export * from './browser/networkActivityMonitor.js';
+export * from './browser/selectController.js';
 export * from './browser/targetController.js';
 export * from './browser/visualObserver.js';
 export * from './focus/focusTopology.js';
