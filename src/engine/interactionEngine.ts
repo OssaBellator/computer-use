@@ -6,6 +6,13 @@ import { VirtualTouchpad, type VirtualTouchpadOptions } from '../motor/virtualTo
 import { PointerController, type PointerControllerOptions } from '../controller/pointerController.js';
 import { BrowserEdgeDispatcher } from '../controller/browserEdgeDispatcher.js';
 import { ReplanningExecutor, type ReplanningOptions, type ReplanningResult } from '../controller/replanningExecutor.js';
+import {
+  SemanticActionController,
+  type ActivateTargetOptions,
+  type SemanticActionResult,
+  type SemanticActionStatus,
+  type TypeIntoTargetOptions,
+} from '../controller/semanticActionController.js';
 import type { InteractionNode, Point } from '../types.js';
 
 export const CURSOR_ANCHOR_ID = '@cursor';
@@ -25,6 +32,16 @@ export interface AcquireResult {
   status: ReplanningResult['status'] | 'target-not-found';
   target: InteractionNode | null;
   execution: ReplanningResult | null;
+}
+
+export interface EngineActivateOptions extends AcquireOptions, ActivateTargetOptions {}
+export interface EngineTypeIntoOptions extends AcquireOptions, TypeIntoTargetOptions {}
+
+export interface EngineSemanticActionResult {
+  status: AcquireResult['status'] | SemanticActionStatus;
+  target: InteractionNode | null;
+  acquisition: AcquireResult;
+  action: SemanticActionResult | null;
 }
 
 function cursorAnchor(point: Point): InteractionNode {
@@ -58,6 +75,7 @@ export class InteractionEngine {
   readonly pointer: PointerController;
   readonly dispatcher: BrowserEdgeDispatcher;
   readonly replanner: ReplanningExecutor;
+  readonly actions: SemanticActionController;
 
   constructor(
     readonly observer: BrowserInteractionObserver,
@@ -69,6 +87,7 @@ export class InteractionEngine {
     this.pointer = new PointerController(input, this.touchpad, options.pointerOptions);
     this.dispatcher = new BrowserEdgeDispatcher(input, this.pointer, observer);
     this.replanner = new ReplanningExecutor(this.model, () => this.planningSnapshot(), this.dispatcher.dispatch);
+    this.actions = new SemanticActionController(observer, input, this.pointer);
   }
 
   private async planningSnapshot(): Promise<InteractionNode[]> {
@@ -103,6 +122,41 @@ export class InteractionEngine {
       target: this.model.getNode(target.id) ?? target,
       execution,
     };
+  }
+
+  async activate(
+    query: TargetQuery | string,
+    options: EngineActivateOptions = {},
+  ): Promise<EngineSemanticActionResult> {
+    const acquisition = await this.acquire(query, options);
+    if (acquisition.status !== 'reached' || !acquisition.target) {
+      return {
+        status: acquisition.status,
+        target: acquisition.target,
+        acquisition,
+        action: null,
+      };
+    }
+    const action = await this.actions.activate(acquisition.target, options);
+    return { status: action.status, target: action.target, acquisition, action };
+  }
+
+  async typeInto(
+    query: TargetQuery | string,
+    text: string,
+    options: EngineTypeIntoOptions = {},
+  ): Promise<EngineSemanticActionResult> {
+    const acquisition = await this.acquire(query, options);
+    if (acquisition.status !== 'reached' || !acquisition.target) {
+      return {
+        status: acquisition.status,
+        target: acquisition.target,
+        acquisition,
+        action: null,
+      };
+    }
+    const action = await this.actions.typeInto(acquisition.target, text, options);
+    return { status: action.status, target: action.target, acquisition, action };
   }
 
   planTo(startId: string, targetId: string, options: InteractionModelPlanOptions = {}) {
