@@ -33,7 +33,7 @@ export interface RealtimeControlLoopOptions<TObservation> {
   tickIntervalMs?: number;
   /** Hard upper bound on policy decisions. Defaults to 3,600 ticks. */
   maxTicks?: number;
-  /** Hard wall-clock bound. Defaults to 60 seconds. */
+  /** Hard wall-clock bound for dispatching new control intents. Defaults to 60 seconds. */
   maxDurationMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -133,26 +133,26 @@ export class RealtimeControlLoop<TObservation> {
     let lastObservation: TObservation | undefined;
     let primaryError: unknown;
 
+    const elapsed = () => Math.max(0, this.now() - startedAt);
     const result = (
       status: RealtimeControlStatus,
       reason?: string,
     ): RealtimeControlResult<TObservation> => ({
       status,
       ticks,
-      elapsedMs: Math.max(0, this.now() - startedAt),
+      elapsedMs: elapsed(),
       ...(reason ? { reason } : {}),
       ...(lastObservation === undefined ? {} : { lastObservation }),
     });
 
     try {
       while (ticks < this.maxTicks) {
-        const beforeObservation = this.now();
-        if (Math.max(0, beforeObservation - startedAt) >= this.maxDurationMs) {
-          return result('time-budget-exhausted');
-        }
+        if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
 
         lastObservation = await this.options.observe();
         const sampledAt = this.now();
+        if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
+
         const sample: RealtimeControlSample<TObservation> = {
           tick: ticks,
           elapsedMs: Math.max(0, sampledAt - startedAt),
@@ -160,6 +160,8 @@ export class RealtimeControlLoop<TObservation> {
           observation: lastObservation,
         };
         const intent = await this.options.decide(sample);
+        if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
+
         await this.applyIntent(intent);
         ticks += 1;
         previousSampleAt = sampledAt;
@@ -167,7 +169,7 @@ export class RealtimeControlLoop<TObservation> {
         if (intent.stop) return result('stopped', intent.reason);
         if (ticks >= this.maxTicks) return result('tick-budget-exhausted');
 
-        const elapsedMs = Math.max(0, this.now() - startedAt);
+        const elapsedMs = elapsed();
         if (elapsedMs >= this.maxDurationMs) return result('time-budget-exhausted');
         const remainingMs = Math.max(0, this.maxDurationMs - elapsedMs);
         if (this.tickIntervalMs > 0 && remainingMs > 0) {
