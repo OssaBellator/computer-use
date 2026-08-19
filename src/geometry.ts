@@ -67,3 +67,42 @@ export function effectiveTargetWidth(rect: Rect, movement: Point): number {
   const uy = Math.abs(movement.y / length);
   return Math.max(1, rect.width * ux + rect.height * uy);
 }
+
+/**
+ * Computes the smallest CSS-pixel scroll correction that places a target inside
+ * a viewport inset. Oversized targets are centered on the constrained axis.
+ */
+export function viewportScrollDeltaToReveal(
+  target: Rect,
+  viewport: Rect,
+  marginPx = 16,
+): Point {
+  const marginX = Math.max(0, Math.min(marginPx, viewport.width / 2));
+  const marginY = Math.max(0, Math.min(marginPx, viewport.height / 2));
+  const left = viewport.x + marginX;
+  const right = viewport.x + viewport.width - marginX;
+  const top = viewport.y + marginY;
+  const bottom = viewport.y + viewport.height - marginY;
+  const usableWidth = Math.max(0, right - left);
+  const usableHeight = Math.max(0, bottom - top);
+
+  let x = 0;
+  if (target.width > usableWidth && usableWidth > 0) {
+    x = target.x + target.width / 2 - (left + right) / 2;
+  } else if (target.x < left) {
+    x = target.x - left;
+  } else if (target.x + target.width > right) {
+    x = target.x + target.width - right;
+  }
+
+  let y = 0;
+  if (target.height > usableHeight && usableHeight > 0) {
+    y = target.y + target.height / 2 - (top + bottom) / 2;
+  } else if (target.y < top) {
+    y = target.y - top;
+  } else if (target.y + target.height > bottom) {
+    y = target.y + target.height - bottom;
+  }
+
+  return { x, y };
+}
