@@ -1,5 +1,7 @@
 import {
   edgeCost,
+  edgeCostBreakdown,
+  type EdgeCostBreakdown,
   type InteractionEdge,
   type InteractionEdgeKind,
   type InteractionNode,
@@ -14,6 +16,15 @@ export interface PlanResult {
   totalCost: number;
   expandedNodes: number;
   finalModality?: InputModality;
+}
+
+export interface PlanStepCostExplanation {
+  edge: InteractionEdge;
+  modality?: InputModality;
+  edgeCost: EdgeCostBreakdown;
+  pathModalitySwitch: number;
+  stepTotal: number;
+  cumulativeTotal: number;
 }
 
 export type Heuristic = (node: InteractionNode, target: InteractionNode) => number;
@@ -44,6 +55,36 @@ export function edgeModality(edge: InteractionEdge): InputModality | undefined {
   if (edge.kind === 'scroll-reveal') return 'scroll';
   if (KEYBOARD_KINDS.has(edge.kind)) return 'keyboard';
   return undefined;
+}
+
+/** Produces a deterministic per-step explanation matching planner cost semantics. */
+export function explainPlanCosts(
+  edges: readonly InteractionEdge[],
+  options: Pick<PlanOptions, 'weights' | 'initialModality'> = {},
+): PlanStepCostExplanation[] {
+  const weights = options.weights ?? DEFAULT_PATH_COST_WEIGHTS;
+  let currentModality = options.initialModality;
+  let cumulativeTotal = 0;
+  return edges.map((edge) => {
+    const requestedModality = edgeModality(edge);
+    const switched =
+      currentModality !== undefined &&
+      requestedModality !== undefined &&
+      currentModality !== requestedModality;
+    const base = edgeCostBreakdown(edge, weights);
+    const pathModalitySwitch = switched ? weights.modalitySwitch : 0;
+    const stepTotal = base.total + pathModalitySwitch;
+    cumulativeTotal += stepTotal;
+    if (requestedModality) currentModality = requestedModality;
+    return {
+      edge,
+      modality: requestedModality ?? currentModality,
+      edgeCost: base,
+      pathModalitySwitch,
+      stepTotal,
+      cumulativeTotal,
+    };
+  });
 }
 
 function stateKey(nodeId: string, modality: InputModality | undefined): string {
