@@ -1,4 +1,5 @@
 import { effectiveTargetWidth } from '../geometry.js';
+import type { Direction } from '../graph.js';
 import type { BrowserInteractionObserver } from '../browser/cdpObserver.js';
 import type { BrowserInput } from '../input/browserInput.js';
 import type { InteractionEdge, InteractionNode, Point, Rect } from '../types.js';
@@ -12,6 +13,13 @@ const KEY_FOR_KIND: Partial<Record<InteractionEdge['kind'], string>> = {
   'spatial-down': 'ArrowDown',
   'spatial-left': 'ArrowLeft',
   'spatial-right': 'ArrowRight',
+};
+
+const DIRECTION_FOR_KIND: Partial<Record<InteractionEdge['kind'], Direction>> = {
+  'spatial-up': 'up',
+  'spatial-down': 'down',
+  'spatial-left': 'left',
+  'spatial-right': 'right',
 };
 
 function focusedId(nodes: readonly InteractionNode[]): string | undefined {
@@ -49,13 +57,23 @@ export class BrowserEdgeDispatcher {
     const arrivedNodeId = focusedId(after);
     const succeeded = arrivedNodeId === context.target.id;
 
-    if (arrivedNodeId && arrivedNodeId !== context.source.id &&
-        (edge.kind === 'focus-next' || edge.kind === 'focus-previous')) {
-      context.model.focusTopology.observe({
-        fromId: context.source.id,
-        toId: arrivedNodeId,
-        direction: edge.kind === 'focus-next' ? 'forward' : 'backward',
-      });
+    if (arrivedNodeId && arrivedNodeId !== context.source.id) {
+      if (edge.kind === 'focus-next' || edge.kind === 'focus-previous') {
+        context.model.focusTopology.observe({
+          fromId: context.source.id,
+          toId: arrivedNodeId,
+          direction: edge.kind === 'focus-next' ? 'forward' : 'backward',
+        });
+      } else {
+        const direction = DIRECTION_FOR_KIND[edge.kind];
+        if (direction) {
+          context.model.directionalTopology.observe({
+            fromId: context.source.id,
+            toId: arrivedNodeId,
+            direction,
+          });
+        }
+      }
     }
 
     return {
