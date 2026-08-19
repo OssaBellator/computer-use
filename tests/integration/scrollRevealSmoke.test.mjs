@@ -142,3 +142,48 @@ test('engine reveals and acquires a target below the fold using wheel input', as
   assert.equal(result.target?.mainViewportVisible, true);
   assert.equal(await engine.observer.pointStillTargets(result.target, engine.touchpad.cursor), true);
 });
+
+test('engine routes wheel input through a nested overflow container to reveal a clipped target', async (t) => {
+  const { client, child, profile } = await launch();
+  t.after(async () => {
+    client.close();
+    await stop(child, profile);
+  });
+
+  await client.send('Runtime.evaluate', {
+    expression: `document.body.innerHTML='<div id="scroller" aria-label="Scroller" style="position:absolute;left:120px;top:80px;width:260px;height:120px;overflow:auto;border:1px solid black"><div style="height:500px;padding-top:330px"><button id="nested" style="width:130px;height:40px">Nested target</button></div></div>'`,
+  });
+
+  const engine = createCdpInteractionEngine(pageFor(client), client, {
+    touchpadOptions: { initialCursor: { x: 5, y: 5 } },
+    pointerOptions: { sleep: async () => {}, sampleIntervalMs: 100 },
+  });
+
+  const before = await engine.refresh();
+  const nestedBefore = before.find((node) => node.name === 'Nested target');
+  const scrollerBefore = before.find((node) => node.name === 'Scroller' && node.scrollable);
+  assert.ok(nestedBefore && scrollerBefore);
+  assert.equal(nestedBefore.mainViewportVisible, true);
+  assert.equal(nestedBefore.viewportVisible, false);
+  assert.equal(nestedBefore.scrollAncestorStructuralId, scrollerBefore.structuralId);
+
+  const result = await engine.acquire(
+    { name: 'Nested target', role: 'button' },
+    {
+      includeDirectional: false,
+      revealOptions: {
+        timeoutMs: 300,
+        pollIntervalMs: 10,
+        maxSamples: 10,
+        maxAttempts: 3,
+      },
+    },
+  );
+
+  assert.equal(result.status, 'reached');
+  assert.equal(result.reveal?.status, 'revealed');
+  assert.equal(result.reveal?.scrollScopeId, scrollerBefore.id);
+  assert.ok((await value(client, `document.querySelector('#scroller').scrollTop`)) > 0);
+  assert.equal(result.target?.viewportVisible, true);
+  assert.equal(await engine.observer.pointStillTargets(result.target, engine.touchpad.cursor), true);
+});
