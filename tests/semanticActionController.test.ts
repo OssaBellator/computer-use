@@ -110,6 +110,48 @@ test('pointer activation aborts before mouse-down when target moved during curso
   assert.equal(input.moves.length > 0, true);
 });
 
+test('hover verifies semantic overlay appearance without clicking', async () => {
+  const target = node('trigger', { name: 'More options' });
+  const before = [target];
+  const after = [target, node('overlay', {
+    role: 'menu', name: 'Hover menu', focusable: false, clickable: false,
+    capabilities: [],
+  })];
+  const input = new Input();
+  const result = await controller(
+    new Observer([before, after], { x: 40, y: 25 }),
+    input,
+  ).hover(target, { maxSamples: 1 });
+
+  assert.equal(result.status, 'verified');
+  assert.equal(result.delta.added[0]?.id, 'overlay');
+  assert.deepEqual(input.moves.at(-1), { x: 40, y: 25 });
+  assert.deepEqual(input.buttons, []);
+});
+
+test('hover stays unverified when pointer movement produces no semantic evidence', async () => {
+  const target = node('trigger');
+  const before = [target];
+  const input = new Input();
+  const result = await controller(new Observer([before, before]), input)
+    .hover(target, { maxSamples: 1 });
+
+  assert.equal(result.status, 'unverified');
+  assert.equal(input.moves.length > 0, true);
+  assert.deepEqual(input.buttons, []);
+});
+
+test('hover fails before pointer movement when no live target point is available', async () => {
+  const target = node('trigger');
+  const before = [target];
+  const input = new Input();
+  const result = await controller(new Observer([before], null), input)
+    .hover(target, { maxSamples: 1 });
+
+  assert.equal(result.status, 'target-point-unavailable');
+  assert.deepEqual(input.moves, []);
+});
+
 test('typeInto rejects non-editable targets without sending text', async () => {
   const before = [node('button')];
   const input = new Input();
