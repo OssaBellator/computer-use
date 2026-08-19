@@ -41,6 +41,7 @@ export * from './config/deviceProfile.js';
 export * from './controller/pointerController.js';
 export * from './controller/focusController.js';
 export * from './controller/keyboardActionController.js';
+export * from './controller/scrollActionController.js';
 export * from './controller/actionExecutor.js';
 export * from './controller/semanticActionController.js';
 export * from './controller/scrollRevealController.js';
