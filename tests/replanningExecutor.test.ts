@@ -117,3 +117,28 @@ test('successful dispatch to an unexpected confirmed anchor triggers replanning'
   assert.deepEqual(dispatched, ['a->b', 'd->c']);
   assert.equal(result.finalModality, 'keyboard');
 });
+
+test('closed-loop executor feeds dispatch duration and failure into edge performance', async () => {
+  const model = new InteractionModel();
+  observeMany(model, 'a', 'b');
+  const nodes = [node('a', true), node('b')];
+  const clock = [10, 45];
+  const runner = new ReplanningExecutor(
+    model,
+    async () => nodes,
+    async () => ({ succeeded: false }),
+    () => clock.shift() ?? 45,
+  );
+  const result = await runner.execute('a', 'b', {
+    includeDirectional: false,
+    includePointer: false,
+    maxReplans: 0,
+  });
+  assert.equal(result.status, 'replan-exhausted');
+  const attempted = result.executed[0].edge;
+  assert.deepEqual(model.edgePerformance.stats(attempted), {
+    attempts: 1,
+    failures: 1,
+    totalDurationMs: 35,
+  });
+});
