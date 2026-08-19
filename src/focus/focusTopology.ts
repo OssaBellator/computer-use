@@ -1,4 +1,4 @@
-import type { InteractionEdge, InteractionNode } from '../types.js';
+import type { InteractionEdge, InteractionEdgeKind, InteractionNode } from '../types.js';
 
 export type FocusDirection = 'forward' | 'backward';
 
@@ -14,9 +14,25 @@ interface ObservationStats {
   lastObservedAtMs: number;
 }
 
+function focusKind(
+  from: InteractionNode,
+  to: InteractionNode,
+  direction: FocusDirection,
+): InteractionEdgeKind {
+  if (from.frameId !== to.frameId && to.parentFrameId === from.frameId) return 'enter-frame';
+  if (from.frameId !== to.frameId && from.parentFrameId === to.frameId) return 'exit-frame';
+  return direction === 'forward' ? 'focus-next' : 'focus-previous';
+}
+
+function focusKey(direction: FocusDirection): string {
+  return direction === 'forward' ? 'Tab' : 'Shift+Tab';
+}
+
 /**
  * Learns sequential focus movement from observations instead of assuming DOM
- * order exactly matches the browser's focus-navigation algorithm.
+ * order exactly matches the browser's focus-navigation algorithm. When stable
+ * frame ownership is available, direct parent/child crossings remain explicit
+ * in the graph while retaining the actual Tab command that produced them.
  */
 export class FocusTopology {
   private readonly observations = new Map<string, ObservationStats>();
@@ -50,16 +66,20 @@ export class FocusTopology {
   }
 
   toEdges(nodes: readonly InteractionNode[], estimatedTimeMs = 90): InteractionEdge[] {
-    const nodeIds = new Set(nodes.map((node) => node.id));
+    const byId = new Map(nodes.map((node) => [node.id, node]));
     const edges: InteractionEdge[] = [];
     for (const [key, stats] of this.observations) {
       const { fromId, toId, direction } = this.parseKey(key);
-      if (!nodeIds.has(fromId) || !nodeIds.has(toId)) continue;
+      const from = byId.get(fromId);
+      const to = byId.get(toId);
+      if (!from || !to) continue;
       const confidence = stats.count / (stats.count + 1);
       edges.push({
         from: fromId,
         to: toId,
-        kind: direction === 'forward' ? 'focus-next' : 'focus-previous',
+        kind: focusKind(from, to, direction),
+        modality: 'keyboard',
+        keyboardKey: focusKey(direction),
         estimatedTimeMs,
         failureProbability: 1 - confidence,
         uncertaintyCost: 1 - confidence,
