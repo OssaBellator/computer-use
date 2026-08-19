@@ -12,3 +12,4 @@ export * from './motor/minimumJerk.js';
 export * from './motor/virtualTouchpad.js';
 export * from './controller/pointerController.js';
 export * from './controller/focusController.js';
+export * from './controller/actionExecutor.js';
