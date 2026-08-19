@@ -13,6 +13,7 @@ interface RawNode {
   focused: boolean;
   disabled: boolean;
   rect?: Rect;
+  visibleRect?: Rect;
   focusable: boolean;
   clickable: boolean;
   editable: boolean;
@@ -152,6 +153,19 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         if (scrollable) capabilities.push('scroll');
         if (element.hasAttribute('aria-expanded')) capabilities.push('expand');
 
+        const viewportX1 = Math.max(0, bounds.left);
+        const viewportY1 = Math.max(0, bounds.top);
+        const viewportX2 = Math.min(window.innerWidth, bounds.right);
+        const viewportY2 = Math.min(window.innerHeight, bounds.bottom);
+        const visibleRect = viewportX2 > viewportX1 && viewportY2 > viewportY1
+          ? {
+              x: viewportX1,
+              y: viewportY1,
+              width: viewportX2 - viewportX1,
+              height: viewportY2 - viewportY1,
+            }
+          : undefined;
+
         const ariaChecked = element.getAttribute('aria-checked');
         const ariaPressed = element.getAttribute('aria-pressed');
         const expanded = element.hasAttribute('aria-expanded')
@@ -182,11 +196,14 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           focused: deepActiveElement() === element,
           disabled,
           rect: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+          visibleRect,
           focusable, clickable, editable, scrollable, capabilities,
           interactionConfidence: confidence,
         });
       }
 
+      // Shadow hosts are not necessarily interactive themselves. Traverse every
+      // open root independently so a plain layout host cannot hide its controls.
       for (const element of root.querySelectorAll('*')) {
         if (element.shadowRoot) collect(element.shadowRoot);
       }
