@@ -129,6 +129,42 @@ test('time budget truncates the final sleep and stops before another observation
   assert.deepEqual(sleeps, [6, 4]);
 });
 
+test('slow observation cannot dispatch a new intent after the wall-clock budget expires', async () => {
+  const input = new Input();
+  let now = 0;
+  let decisions = 0;
+  const result = await new RealtimeControlLoop(input, {
+    observe: async () => { now = 11; return { ready: true }; },
+    decide: () => { decisions += 1; return { heldKeys: ['ArrowRight'] }; },
+    tickIntervalMs: 0,
+    maxTicks: 10,
+    maxDurationMs: 10,
+    now: () => now,
+  }).run();
+
+  assert.equal(result.status, 'time-budget-exhausted');
+  assert.equal(result.ticks, 0);
+  assert.equal(decisions, 0);
+  assert.deepEqual(input.events, []);
+});
+
+test('slow policy cannot dispatch a stale intent after the wall-clock budget expires', async () => {
+  const input = new Input();
+  let now = 0;
+  const result = await new RealtimeControlLoop(input, {
+    observe: async () => ({ ready: true }),
+    decide: async () => { now = 11; return { heldKeys: ['ArrowRight'] }; },
+    tickIntervalMs: 0,
+    maxTicks: 10,
+    maxDurationMs: 10,
+    now: () => now,
+  }).run();
+
+  assert.equal(result.status, 'time-budget-exhausted');
+  assert.equal(result.ticks, 0);
+  assert.deepEqual(input.events, []);
+});
+
 test('invalid intents fail closed before dispatching new input', async () => {
   const input = new Input();
   const loop = new RealtimeControlLoop(input, {
