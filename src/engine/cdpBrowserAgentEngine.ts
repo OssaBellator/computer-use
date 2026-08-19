@@ -6,6 +6,7 @@ import { CdpFileUploadController, type BrowserFileUploadControllerOptions, type 
 import { CdpHistoryController, type BrowserHistoryAction, type BrowserHistoryController, type BrowserHistoryOptions, type BrowserHistoryResult } from '../browser/historyController.js';
 import { CdpNavigationGuard } from '../browser/navigationGuard.js';
 import { CdpNavigationController, type BrowserNavigationOptions, type BrowserNavigationResult, type BrowserNavigator, type NavigationPolicy } from '../browser/navigationController.js';
+import { CdpNetworkActivityMonitor, type NetworkIdleOptions, type NetworkIdleResult } from '../browser/networkActivityMonitor.js';
 import type { SnapshotPageLike } from '../browser/domSnapshot.js';
 import { CdpTargetController, type BrowserTargetSummary, type CloseBrowserTargetResult, type CreateBrowserTargetResult } from '../browser/targetController.js';
 import type { TargetQuery, TargetResolution } from '../model/targetResolver.js';
@@ -15,8 +16,8 @@ import { createCdpInteractionEngine, type CdpInteractionEngineOptions } from './
 import type { InteractionEngine } from './interactionEngine.js';
 
 export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
-  constructor(readonly interaction: InteractionEngine, private readonly session: CdpSessionLike, readonly navigator: BrowserNavigator = new CdpNavigationController(session), readonly dialogs?: BrowserDialogController, readonly targets?: CdpTargetController, readonly downloads?: CdpDownloadController, readonly historyController: BrowserHistoryController = new CdpHistoryController(session), readonly uploads?: CdpFileUploadController, readonly navigationGuard?: CdpNavigationGuard) {}
-  async prepare(): Promise<void> { await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start(), this.uploads?.start(), this.navigationGuard?.start()]); }
+  constructor(readonly interaction: InteractionEngine, private readonly session: CdpSessionLike, readonly navigator: BrowserNavigator = new CdpNavigationController(session), readonly dialogs?: BrowserDialogController, readonly targets?: CdpTargetController, readonly downloads?: CdpDownloadController, readonly historyController: BrowserHistoryController = new CdpHistoryController(session), readonly uploads?: CdpFileUploadController, readonly navigationGuard?: CdpNavigationGuard, readonly networkActivity?: CdpNetworkActivityMonitor) {}
+  async prepare(): Promise<void> { await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start(), this.uploads?.start(), this.navigationGuard?.start(), this.networkActivity?.start()]); }
   refresh(): Promise<InteractionNode[]> { return this.interaction.refresh(); }
   browserState(): Promise<BrowserStateSnapshot> { return captureCdpBrowserState(this.session); }
   dialogState(): BrowserDialogState | undefined { return this.dialogs?.state(); }
@@ -25,6 +26,14 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   activate(query: TargetQuery | string, options?: Parameters<InteractionEngine['activate']>[1]): Promise<TaskEngineActionResult> { return this.interaction.activate(query, options); }
   typeInto(query: TargetQuery | string, text: string, options?: Parameters<InteractionEngine['typeInto']>[2]): Promise<TaskEngineActionResult> { return this.interaction.typeInto(query, text, options); }
   pressKey(key: string, options?: Parameters<InteractionEngine['pressKey']>[1]): Promise<TaskKeyActionResult> { return this.interaction.pressKey(key, options); }
+  waitForNetworkIdle(options?: NetworkIdleOptions): Promise<NetworkIdleResult> {
+    return this.networkActivity?.waitForIdle(options) ?? Promise.resolve({
+      idle: false,
+      summary: { inFlight: 0, started: 0, finished: 0, failed: 0, activitySequence: 0 },
+      elapsedMs: 0,
+      samples: 0,
+    });
+  }
   async uploadFiles(query: TargetQuery | string, paths: readonly string[], options: { requireUnambiguous?: boolean } = {}): Promise<BrowserFileUploadResult> {
     const unresolved = { targetId: '', fileCount: paths.length, totalBytes: 0 };
     if (!this.uploads) return { ...unresolved, status: 'configuration-error', errorText: 'File upload is not configured for this browser-agent engine' };
@@ -43,10 +52,10 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   handleDialog(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult> { if (!this.dialogs) return Promise.resolve({ status: 'protocol-error', accepted: accept, errorText: 'CDP session does not expose event subscriptions for dialog monitoring' }); return this.dialogs.handle(accept, promptText); }
 }
 
-export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions { navigationPolicy?: NavigationPolicy; enforceNavigationPolicyAtRequestBoundary?: boolean; downloadOptions?: BrowserDownloadControllerOptions; uploadOptions?: BrowserFileUploadControllerOptions; }
+export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions { navigationPolicy?: NavigationPolicy; enforceNavigationPolicyAtRequestBoundary?: boolean; downloadOptions?: BrowserDownloadControllerOptions; uploadOptions?: BrowserFileUploadControllerOptions; /** Explicit opt-in URL-redacted network lifecycle monitoring. */ networkActivity?: boolean; }
 export function createCdpBrowserAgentEngine(page: SnapshotPageLike, session: CdpSessionLike, options: CdpBrowserAgentEngineOptions = {}): CdpBrowserAgentEngine {
-  const { navigationPolicy, enforceNavigationPolicyAtRequestBoundary, downloadOptions, uploadOptions, ...interactionOptions } = options;
+  const { navigationPolicy, enforceNavigationPolicyAtRequestBoundary, downloadOptions, uploadOptions, networkActivity, ...interactionOptions } = options;
   const eventSession = isCdpEventSessionLike(session) ? session : undefined;
   const useNavigationGuard = eventSession !== undefined && (enforceNavigationPolicyAtRequestBoundary ?? navigationPolicy !== undefined);
-  return new CdpBrowserAgentEngine(createCdpInteractionEngine(page, session, interactionOptions), session, new CdpNavigationController(session, navigationPolicy), eventSession ? new CdpDialogController(eventSession) : undefined, eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined, eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined, new CdpHistoryController(session, navigationPolicy), uploadOptions ? new CdpFileUploadController(session, uploadOptions) : undefined, useNavigationGuard ? new CdpNavigationGuard(eventSession, navigationPolicy) : undefined);
+  return new CdpBrowserAgentEngine(createCdpInteractionEngine(page, session, interactionOptions), session, new CdpNavigationController(session, navigationPolicy), eventSession ? new CdpDialogController(eventSession) : undefined, eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined, eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined, new CdpHistoryController(session, navigationPolicy), uploadOptions ? new CdpFileUploadController(session, uploadOptions) : undefined, useNavigationGuard ? new CdpNavigationGuard(eventSession, navigationPolicy) : undefined, eventSession && networkActivity === true ? new CdpNetworkActivityMonitor(eventSession) : undefined);
 }
