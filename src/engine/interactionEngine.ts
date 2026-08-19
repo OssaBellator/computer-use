@@ -85,7 +85,7 @@ function cursorAnchor(point: Point): InteractionNode {
 }
 
 function shouldAutoReveal(target: InteractionNode): boolean {
-  return target.mainViewportVisible === false;
+  return target.mainViewportVisible === false || target.viewportVisible === false;
 }
 
 /**
@@ -112,7 +112,7 @@ export class InteractionEngine {
     this.dispatcher = new BrowserEdgeDispatcher(input, this.pointer, observer);
     this.replanner = new ReplanningExecutor(this.model, () => this.planningSnapshot(), this.dispatcher.dispatch);
     this.actions = new SemanticActionController(observer, input, this.pointer);
-    this.revealController = new ScrollRevealController(observer, input);
+    this.revealController = new ScrollRevealController(observer, input, this.pointer);
   }
 
   private async planningSnapshot(): Promise<InteractionNode[]> {
@@ -150,7 +150,7 @@ export class InteractionEngine {
     }
 
     let reveal: ScrollRevealResult | undefined;
-    if (options.autoReveal !== false && shouldAutoReveal(target) && this.observer.viewportRect) {
+    if (options.autoReveal !== false && shouldAutoReveal(target)) {
       const targetIdBeforeReveal = target.id;
       reveal = await this.revealController.reveal(target, options.revealOptions);
       if (reveal.status === 'revealed' || reveal.status === 'already-visible') {
