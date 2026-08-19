@@ -5,7 +5,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
-import { snapshotInteractiveDomWithCdpIdentity } from '../../dist/src/browser/cdpIdentity.js';
+import { captureCdpIdentityIndex, snapshotInteractiveDomWithCdpIdentity } from '../../dist/src/browser/cdpIdentity.js';
+import { enrichInteractionNodesWithCdpGeometry, findCdpHitTestedTargetPoint } from '../../dist/src/browser/cdpGeometry.js';
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -97,7 +98,7 @@ function flatten(tree, out = []) {
   return out;
 }
 
-test('identical DOM paths in sibling frames receive distinct stable backend identities', async (t) => {
+test('identical DOM paths in sibling frames receive distinct stable geometry-aware identities', async (t) => {
   const { client, child, profile } = await launch();
   t.after(async () => {
     client.close();
@@ -149,4 +150,15 @@ test('identical DOM paths in sibling frames receive distinct stable backend iden
   assert.equal(typeof same[0].backendNodeId, 'number');
   assert.equal(typeof same[1].backendNodeId, 'number');
   assert.notEqual(same[0].backendNodeId, same[1].backendNodeId);
+
+  const identities = await captureCdpIdentityIndex(client);
+  const normalized = await enrichInteractionNodesWithCdpGeometry(same, client);
+  assert.equal(normalized.every((node) => node.mainViewportVisible), true);
+  assert.notEqual(normalized[0].mainViewportRect.x, normalized[1].mainViewportRect.x);
+  for (const target of normalized) {
+    const point = await findCdpHitTestedTargetPoint(client, identities, target);
+    assert.ok(point);
+    assert.ok(point.x >= target.mainViewportRect.x);
+    assert.ok(point.y >= target.mainViewportRect.y);
+  }
 });
