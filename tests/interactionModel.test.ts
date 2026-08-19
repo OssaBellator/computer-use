@@ -45,3 +45,21 @@ test('model returns null plan after target disappears on refresh', () => {
   model.refresh([node('a', 0)]);
   assert.equal(model.plan('a', 'b'), null);
 });
+
+test('model routes around an edge that learned repeated failures', () => {
+  const model = new InteractionModel();
+  model.refresh([node('a', 0), node('b', 100), node('c', 200), node('d', 100)]);
+  for (let i = 0; i < 20; i += 1) {
+    model.focusTopology.observe({ fromId: 'a', toId: 'b', direction: 'forward', observedAtMs: i });
+    model.focusTopology.observe({ fromId: 'b', toId: 'c', direction: 'forward', observedAtMs: i });
+    model.focusTopology.observe({ fromId: 'a', toId: 'd', direction: 'forward', observedAtMs: i });
+    model.focusTopology.observe({ fromId: 'd', toId: 'c', direction: 'forward', observedAtMs: i });
+  }
+  const bad = model.edgesForTarget('c', { includeDirectional: false, includePointer: false })
+    .find((edge) => edge.from === 'a' && edge.to === 'b')!;
+  for (let i = 0; i < 5; i += 1) {
+    model.edgePerformance.observe(bad, { durationMs: 90, succeeded: false });
+  }
+  const plan = model.plan('a', 'c', { includeDirectional: false, includePointer: false });
+  assert.deepEqual(plan?.edges.map((edge) => edge.to), ['d', 'c']);
+});
