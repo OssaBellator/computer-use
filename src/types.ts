@@ -33,8 +33,13 @@ export interface InteractionNode {
   disabled: boolean;
   rect?: Rect;
   visibleRect?: Rect;
-  /** Explicit viewport intersection state when captured from a live page. */
+  /** Explicit viewport intersection state in the node's owning frame. */
   viewportVisible?: boolean;
+  /** Browser-authoritative border box normalized into the main viewport. */
+  mainViewportRect?: Rect;
+  /** Main-viewport-clipped portion of mainViewportRect. */
+  mainViewportVisibleRect?: Rect;
+  mainViewportVisible?: boolean;
   focusable: boolean;
   clickable: boolean;
   editable: boolean;
