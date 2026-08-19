@@ -12,10 +12,23 @@ export interface TargetQuery {
   enabled?: boolean;
 }
 
+export interface TargetResolution {
+  target: InteractionNode | null;
+  candidates: InteractionNode[];
+  equallyPreferred: InteractionNode[];
+  ambiguous: boolean;
+}
+
 function isVisible(node: InteractionNode): boolean {
   return node.mainViewportVisible !== false && node.viewportVisible !== false &&
     (node.mainViewportVisibleRect !== undefined || node.visibleRect !== undefined ||
       node.mainViewportRect !== undefined || node.rect !== undefined);
+}
+
+function semanticRankEquals(a: InteractionNode, b: InteractionNode): boolean {
+  return isVisible(a) === isVisible(b) &&
+    a.disabled === b.disabled &&
+    Math.abs(a.interactionConfidence - b.interactionConfidence) <= Number.EPSILON;
 }
 
 export function findInteractionTargets(
@@ -52,15 +65,38 @@ export function findInteractionTargets(
     });
 }
 
-/** Returns a deterministic best match; callers can inspect findInteractionTargets for ambiguity. */
+/**
+ * Returns the deterministic target plus all matches sharing the same semantic
+ * rank before the final stable-id tie break. Callers can surface ambiguity
+ * instead of silently pretending an arbitrary DOM identity was semantically unique.
+ */
+export function resolveInteractionTargetDetailed(
+  nodes: readonly InteractionNode[],
+  query: TargetQuery | string,
+): TargetResolution {
+  let candidates: InteractionNode[];
+  if (typeof query === 'string') {
+    const direct = findInteractionTargets(nodes, { id: query });
+    candidates = direct.length ? direct : findInteractionTargets(nodes, { name: query });
+  } else {
+    candidates = findInteractionTargets(nodes, query);
+  }
+  const target = candidates[0] ?? null;
+  const equallyPreferred = target
+    ? candidates.filter((candidate) => semanticRankEquals(target, candidate))
+    : [];
+  return {
+    target,
+    candidates,
+    equallyPreferred,
+    ambiguous: equallyPreferred.length > 1,
+  };
+}
+
+/** Returns a deterministic best match; inspect resolveInteractionTargetDetailed for ambiguity. */
 export function resolveInteractionTarget(
   nodes: readonly InteractionNode[],
   query: TargetQuery | string,
 ): InteractionNode | null {
-  if (typeof query === 'string') {
-    const direct = findInteractionTargets(nodes, { id: query });
-    if (direct.length) return direct[0];
-    return findInteractionTargets(nodes, { name: query })[0] ?? null;
-  }
-  return findInteractionTargets(nodes, query)[0] ?? null;
+  return resolveInteractionTargetDetailed(nodes, query).target;
 }
