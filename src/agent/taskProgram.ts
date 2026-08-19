@@ -1,5 +1,6 @@
 import type { BrowserDocumentReadyState } from '../browser/browserState.js';
 import type { BrowserDialogType } from '../browser/dialogController.js';
+import type { BrowserHistoryAction } from '../browser/historyController.js';
 import type { NavigationWaitUntil } from '../browser/navigationController.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 
@@ -110,6 +111,17 @@ export interface NavigateTaskStep extends TaskActionStepBase {
   pollIntervalMs?: number;
 }
 
+export interface HistoryTaskStep extends TaskActionStepBase {
+  kind: 'history';
+  action: BrowserHistoryAction;
+  waitUntil?: NavigationWaitUntil;
+  timeoutMs?: number;
+  maxPolls?: number;
+  pollIntervalMs?: number;
+  /** Used only when action is reload. */
+  ignoreCache?: boolean;
+}
+
 export interface AssertTaskStep {
   id: string;
   kind: 'assert';
@@ -157,6 +169,7 @@ export type TaskStep =
   | ActivateTaskStep
   | TypeTaskStep
   | NavigateTaskStep
+  | HistoryTaskStep
   | HandleDialogTaskStep
   | OpenTabTaskStep
   | CloseLatestTabTaskStep
@@ -227,6 +240,7 @@ function referencedStepIds(step: TaskStep): string[] {
     case 'activate':
     case 'type':
     case 'navigate':
+    case 'history':
     case 'handle-dialog':
     case 'open-tab':
     case 'close-latest-tab':
@@ -342,12 +356,12 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
     if (stepMap.has(step.id)) errors.push(`duplicate step id: ${step.id}`);
     else stepMap.set(step.id, step);
 
-    if (step.kind === 'wait' || step.kind === 'navigate') {
+    if (step.kind === 'wait' || step.kind === 'navigate' || step.kind === 'history') {
       validatePollFields(step.id, step.maxPolls, step.pollIntervalMs, errors);
     }
-    if (step.kind === 'navigate' && step.timeoutMs !== undefined &&
+    if ((step.kind === 'navigate' || step.kind === 'history') && step.timeoutMs !== undefined &&
         (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1)) {
-      errors.push(`navigate step ${step.id} timeoutMs must be positive`);
+      errors.push(`${step.kind} step ${step.id} timeoutMs must be positive`);
     }
     if (step.kind === 'type' && step.delayMs !== undefined &&
         (!Number.isFinite(step.delayMs) || step.delayMs < 0)) {

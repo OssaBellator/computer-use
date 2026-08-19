@@ -14,6 +14,7 @@ import {
 } from '../browser/dialogController.js';
 import {
   CdpHistoryController,
+  type BrowserHistoryAction,
   type BrowserHistoryController,
   type BrowserHistoryOptions,
   type BrowserHistoryResult,
@@ -97,6 +98,14 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> {
     return this.navigator.navigate(url, options);
+  }
+
+  history(action: BrowserHistoryAction, options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    switch (action) {
+      case 'back': return this.goBack(options);
+      case 'forward': return this.goForward(options);
+      case 'reload': return this.reload(options);
+    }
   }
 
   goBack(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {

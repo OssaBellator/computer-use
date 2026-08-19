@@ -1,4 +1,5 @@
 import type { BrowserDialogHandleResult } from '../browser/dialogController.js';
+import type { BrowserHistoryResult } from '../browser/historyController.js';
 import type { BrowserNavigationResult } from '../browser/navigationController.js';
 import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import {
@@ -6,6 +7,7 @@ import {
   type ActivateTaskStep,
   type CloseLatestTabTaskStep,
   type HandleDialogTaskStep,
+  type HistoryTaskStep,
   type NavigateTaskStep,
   type OpenTabTaskStep,
   type TaskProgram,
@@ -44,6 +46,7 @@ type ActionStep =
   | ActivateTaskStep
   | TypeTaskStep
   | NavigateTaskStep
+  | HistoryTaskStep
   | HandleDialogTaskStep
   | OpenTabTaskStep
   | CloseLatestTabTaskStep;
@@ -51,6 +54,7 @@ type ActionStep =
 type RuntimeActionResult =
   | TaskEngineActionResult
   | BrowserNavigationResult
+  | BrowserHistoryResult
   | BrowserDialogHandleResult
   | CreateBrowserTargetResult
   | CloseBrowserTargetResult;
@@ -69,7 +73,9 @@ function riskOf(step: ActionStep): Exclude<TaskRisk, 'observe'> {
 function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean {
   if (!result) return false;
   switch (step.kind) {
-    case 'navigate': return result.status === 'navigated';
+    case 'navigate':
+    case 'history':
+      return result.status === 'navigated';
     case 'handle-dialog': return result.status === 'handled';
     case 'open-tab': return result.status === 'created';
     case 'close-latest-tab': return result.status === 'closed';
@@ -80,6 +86,7 @@ function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefin
 function successOutcome(step: ActionStep): TaskTraceOutcome {
   switch (step.kind) {
     case 'navigate': return 'navigated';
+    case 'history': return 'history-navigated';
     case 'handle-dialog': return 'dialog-handled';
     case 'open-tab': return 'target-created';
     case 'close-latest-tab': return 'target-closed';
@@ -116,6 +123,14 @@ async function performAction(
         timeoutMs: step.timeoutMs,
         maxPolls: step.maxPolls,
         pollIntervalMs: step.pollIntervalMs,
+      });
+    case 'history':
+      return engine.history?.(step.action, {
+        waitUntil: step.waitUntil,
+        timeoutMs: step.timeoutMs,
+        maxPolls: step.maxPolls,
+        pollIntervalMs: step.pollIntervalMs,
+        ignoreCache: step.ignoreCache,
       });
     case 'handle-dialog':
       return engine.handleDialog?.(
@@ -185,7 +200,8 @@ export class TaskRuntime {
       try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
 
       if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'navigate' ||
-          step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
+          step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' ||
+          step.kind === 'close-latest-tab') {
         const risk = riskOf(step);
         const needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
         let approved = !needsApproval;

@@ -21,6 +21,38 @@ const back = await history.back({ timeoutMs: 5000 });
 const reload = await history.reload({ ignoreCache: true });
 ```
 
+## Task-program integration
+
+History is also a static task action. The action is fixed when the `TaskProgram` is compiled; page content cannot choose a new history command at runtime.
+
+```ts
+const program: TaskProgram = {
+  version: 1,
+  entry: 'recover-back',
+  steps: [
+    {
+      id: 'recover-back',
+      kind: 'history',
+      action: 'back',
+      waitUntil: 'complete',
+      next: 'check',
+      onFailure: 'failed',
+    },
+    {
+      id: 'check',
+      kind: 'assert',
+      condition: { kind: 'browser', state: { origin: 'https://app.example' } },
+      next: 'done',
+      onFailure: 'failed',
+    },
+    { id: 'done', kind: 'complete' },
+    { id: 'failed', kind: 'fail' },
+  ],
+};
+```
+
+The task trace records the step, outcome, action status, and hashed browser-state fingerprints. It does not include the history destination URL/title.
+
 ## Local regression coverage
 
-Unit regressions cover back/forward verification, reload identity changes, policy preflight, and history boundaries. The Chromium smoke test creates genuine same-document history entries with `history.pushState()`, then exercises real `Page.getNavigationHistory`, `Page.navigateToHistoryEntry`, and `Page.reload` behavior without requiring public network access.
+Unit regressions cover back/forward verification, reload identity changes, policy preflight, history boundaries, typed task execution, missing-controller failure, and trace redaction. The Chromium smoke test creates genuine same-document history entries with `history.pushState()`, then exercises real `Page.getNavigationHistory`, `Page.navigateToHistoryEntry`, and `Page.reload` behavior without requiring public network access.

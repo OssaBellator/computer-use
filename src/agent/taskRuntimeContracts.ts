@@ -1,6 +1,11 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
+import type {
+  BrowserHistoryAction,
+  BrowserHistoryOptions,
+  BrowserHistoryResult,
+} from '../browser/historyController.js';
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type {
   BrowserTargetSummary,
@@ -44,6 +49,7 @@ export interface TaskRuntimeEngine {
     },
   ): Promise<TaskEngineActionResult>;
   navigate?(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult>;
+  history?(action: BrowserHistoryAction, options?: BrowserHistoryOptions): Promise<BrowserHistoryResult>;
   handleDialog?(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult>;
   createPageTarget?(url: string): Promise<CreateBrowserTargetResult>;
   closeLatestUnattachedPage?(): Promise<CloseBrowserTargetResult | undefined>;
@@ -62,6 +68,7 @@ export type TaskRunStatus =
 export type TaskTraceOutcome =
   | 'verified'
   | 'navigated'
+  | 'history-navigated'
   | 'dialog-handled'
   | 'target-created'
   | 'target-closed'
@@ -94,7 +101,7 @@ export interface TaskTraceEntry {
 export interface TaskApprovalContext {
   programName?: string;
   stepId: string;
-  kind: 'activate' | 'type' | 'navigate' | 'handle-dialog' | 'open-tab' | 'close-latest-tab';
+  kind: 'activate' | 'type' | 'navigate' | 'history' | 'handle-dialog' | 'open-tab' | 'close-latest-tab';
   risk: Exclude<TaskRisk, 'observe'>;
   visit: number;
 }
