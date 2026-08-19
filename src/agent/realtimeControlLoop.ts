@@ -11,6 +11,12 @@ export interface RealtimeControlSample<TObservation> {
   elapsedMs: number;
   deltaMs: number;
   observation: TObservation;
+  /** True only when observe() ran for this control tick. */
+  observationFresh: boolean;
+  /** Number of control ticks since the observation was captured. */
+  observationAgeTicks: number;
+  /** Wall-clock age of the reused observation at decision time. */
+  observationAgeMs: number;
 }
 
 export interface RealtimeControlIntent {
@@ -29,8 +35,10 @@ export interface RealtimeControlLoopOptions<TObservation> {
   decide(
     sample: RealtimeControlSample<TObservation>,
   ): RealtimeControlIntent | Promise<RealtimeControlIntent>;
-  /** Target delay between completed ticks. Defaults to 16 ms. */
+  /** Target delay between completed control ticks. Defaults to 16 ms. */
   tickIntervalMs?: number;
+  /** Run an expensive observation every N control ticks; tick 0 is always observed. Defaults to 1. */
+  observeEveryTicks?: number;
   /** Hard upper bound on policy decisions. Defaults to 3,600 ticks. */
   maxTicks?: number;
   /** Hard wall-clock bound for dispatching new control intents. Defaults to 60 seconds. */
@@ -99,8 +107,10 @@ function validatePoint(point: Point | undefined): void {
  *
  * The policy declares the complete set of inputs that should remain held after
  * every tick. The loop diffs that intent against browser input state, avoiding
- * repeated keyDown events while a control is continuously held. All held keys
- * and mouse buttons are released in a final cleanup pass on normal stop, budget
+ * repeated keyDown events while a control is continuously held. Expensive
+ * observations can run less often than control decisions; skipped ticks reuse
+ * the last observation and expose explicit freshness/age metadata to the policy.
+ * All held inputs are released in a final cleanup pass on normal stop, budget
  * exhaustion, observation failure, policy failure, or dispatch failure.
  *
  * This is an input/runtime primitive only. It intentionally contains no stealth,
@@ -110,6 +120,7 @@ export class RealtimeControlLoop<TObservation> {
   private readonly heldKeys = new Set<string>();
   private readonly heldButtons = new Set<MouseButton>();
   private readonly tickIntervalMs: number;
+  private readonly observeEveryTicks: number;
   private readonly maxTicks: number;
   private readonly maxDurationMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -120,6 +131,7 @@ export class RealtimeControlLoop<TObservation> {
     private readonly options: RealtimeControlLoopOptions<TObservation>,
   ) {
     this.tickIntervalMs = finiteNonNegative('tickIntervalMs', options.tickIntervalMs ?? 16);
+    this.observeEveryTicks = positiveInteger('observeEveryTicks', options.observeEveryTicks ?? 1);
     this.maxTicks = positiveInteger('maxTicks', options.maxTicks ?? 3_600);
     this.maxDurationMs = finiteNonNegative('maxDurationMs', options.maxDurationMs ?? 60_000);
     this.sleep = options.sleep ?? defaultSleep;
@@ -128,9 +140,12 @@ export class RealtimeControlLoop<TObservation> {
 
   async run(): Promise<RealtimeControlResult<TObservation>> {
     const startedAt = this.now();
-    let previousSampleAt = startedAt;
+    let previousDecisionAt = startedAt;
     let ticks = 0;
     let lastObservation: TObservation | undefined;
+    let hasObservation = false;
+    let observationTick = -1;
+    let observationAt = startedAt;
     let primaryError: unknown;
 
     const elapsed = () => Math.max(0, this.now() - startedAt);
@@ -142,29 +157,38 @@ export class RealtimeControlLoop<TObservation> {
       ticks,
       elapsedMs: elapsed(),
       ...(reason ? { reason } : {}),
-      ...(lastObservation === undefined ? {} : { lastObservation }),
+      ...(!hasObservation || lastObservation === undefined ? {} : { lastObservation }),
     });
 
     try {
       while (ticks < this.maxTicks) {
         if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
 
-        lastObservation = await this.options.observe();
-        const sampledAt = this.now();
-        if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
+        const observationFresh = !hasObservation || ticks % this.observeEveryTicks === 0;
+        if (observationFresh) {
+          lastObservation = await this.options.observe();
+          hasObservation = true;
+          observationTick = ticks;
+          observationAt = this.now();
+          if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
+        }
 
+        const decisionAt = this.now();
         const sample: RealtimeControlSample<TObservation> = {
           tick: ticks,
-          elapsedMs: Math.max(0, sampledAt - startedAt),
-          deltaMs: ticks === 0 ? 0 : Math.max(0, sampledAt - previousSampleAt),
-          observation: lastObservation,
+          elapsedMs: Math.max(0, decisionAt - startedAt),
+          deltaMs: ticks === 0 ? 0 : Math.max(0, decisionAt - previousDecisionAt),
+          observation: lastObservation as TObservation,
+          observationFresh,
+          observationAgeTicks: Math.max(0, ticks - observationTick),
+          observationAgeMs: Math.max(0, decisionAt - observationAt),
         };
         const intent = await this.options.decide(sample);
         if (elapsed() >= this.maxDurationMs) return result('time-budget-exhausted');
 
         await this.applyIntent(intent);
         ticks += 1;
-        previousSampleAt = sampledAt;
+        previousDecisionAt = decisionAt;
 
         if (intent.stop) return result('stopped', intent.reason);
         if (ticks >= this.maxTicks) return result('tick-budget-exhausted');
