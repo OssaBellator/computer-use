@@ -27,6 +27,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   hover(query: TargetQuery | string, options?: Parameters<InteractionEngine['hover']>[1]): Promise<TaskEngineActionResult> { return this.interaction.hover(query, options); }
   typeInto(query: TargetQuery | string, text: string, options?: Parameters<InteractionEngine['typeInto']>[2]): Promise<TaskEngineActionResult> { return this.interaction.typeInto(query, text, options); }
   pressKey(key: string, options?: Parameters<InteractionEngine['pressKey']>[1]): Promise<TaskKeyActionResult> { return this.interaction.pressKey(key, options); }
+  scrollViewport(delta: Parameters<InteractionEngine['scrollViewport']>[0], options?: Parameters<InteractionEngine['scrollViewport']>[1]): Promise<TaskKeyActionResult> { return this.interaction.scrollViewport(delta, options); }
   waitForNetworkIdle(options?: NetworkIdleOptions): Promise<NetworkIdleResult> {
     return this.networkActivity?.waitForIdle(options) ?? Promise.resolve({
       idle: false,
