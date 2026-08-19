@@ -13,6 +13,8 @@ export interface EdgeDispatchResult {
   succeeded: boolean;
   /** Override when execution establishes a different confirmed interaction anchor. */
   arrivedNodeId?: string;
+  /** Fresh post-action snapshot already used by the dispatcher for verification. */
+  observedSnapshot?: readonly InteractionNode[];
   reason?: string;
 }
 
@@ -118,7 +120,7 @@ export class ReplanningExecutor {
         });
         executed.push({ edge, result: dispatchResult });
         currentModality = edgeModality(edge) ?? currentModality;
-        this.model.refresh(await this.snapshot());
+        this.model.refresh(dispatchResult.observedSnapshot ?? await this.snapshot());
 
         if (!dispatchResult.succeeded) {
           if (dispatchResult.arrivedNodeId && this.model.getNode(dispatchResult.arrivedNodeId)) {
