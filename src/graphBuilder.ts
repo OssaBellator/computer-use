@@ -25,22 +25,23 @@ function directionKind(direction: Direction): InteractionEdgeKind {
 /**
  * Builds geometric Arrow-key hypotheses. Geometry alone does not establish that
  * a page implements spatial keyboard navigation, so these edges intentionally
- * carry a strong failure/uncertainty prior. Active-descendant owners are not
- * Arrow sources: they first enter logical descendant space through state-anchor.
+ * carry a strong failure/uncertainty prior. Active-descendant owners are kept
+ * outside logical Arrow space entirely; state-anchor bridges real DOM focus to
+ * the currently active descendant before option-level navigation begins.
  */
 export function buildDirectionalEdges(
   nodes: readonly InteractionNode[],
   estimatedTimeMs = 90,
   speculativeFailureProbability = DEFAULT_SPECULATIVE_DIRECTION_FAILURE,
 ): InteractionEdge[] {
-  const eligible = nodes.filter((node) => !node.disabled && viewportEligible(node) &&
+  const interactive = nodes.filter((node) => !node.disabled && viewportEligible(node) &&
     !!rectFor(node) && (node.focusable || node.clickable || node.editable));
-  const origins = eligible.filter((node) => !node.activeDescendantStructuralId);
+  const eligible = interactive.filter((node) => !node.activeDescendantStructuralId);
   const edges: InteractionEdge[] = [];
   const directions: Direction[] = ['up', 'down', 'left', 'right'];
   const speculativeFailure = Math.max(0, Math.min(1, speculativeFailureProbability));
 
-  for (const origin of origins) {
+  for (const origin of eligible) {
     const local = eligible.filter((candidate) => candidate.frameId === origin.frameId);
     for (const direction of directions) {
       const target = bestDirectionalCandidate(origin, local, direction);
