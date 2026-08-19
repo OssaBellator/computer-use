@@ -27,6 +27,8 @@ export interface BrowserInteractionObserver {
   viewportRect?(): Promise<Rect>;
 }
 
+type RefreshableSnapshotPage = SnapshotPageLike & { refresh?: () => Promise<void> };
+
 /**
  * Stateful CDP-backed observer that composes DOM semantics, stable backend/AX
  * identity, frame ownership, normalized geometry, and paint-order hit tests.
@@ -44,6 +46,7 @@ export class CdpInteractionObserver implements BrowserInteractionObserver {
   }
 
   async snapshot(): Promise<InteractionNode[]> {
+    await (this.page as RefreshableSnapshotPage).refresh?.();
     const frameDescriptors = describeSnapshotFrames(this.page);
     const [raw, identities] = await Promise.all([
       snapshotInteractiveDom(this.page),
