@@ -17,15 +17,15 @@ function directionKind(direction: Direction): InteractionEdgeKind {
 
 /**
  * Derives one best directional neighbor per direction for each eligible node.
- * Candidates stay within a frame because frame-enter/exit edges are separate.
+ * Candidates stay within a frame because arrow/spatial intent normally acts
+ * on the currently perceived local surface; frame-enter/exit edges are separate.
  */
 export function buildDirectionalEdges(
   nodes: readonly InteractionNode[],
   estimatedTimeMs = 90,
 ): InteractionEdge[] {
-  const eligible = nodes.filter((node) =>
-    !node.disabled && !!rectFor(node) && (node.focusable || node.clickable || node.editable),
-  );
+  const eligible = nodes.filter((node) => !node.disabled && node.viewportVisible !== false &&
+    !!rectFor(node) && (node.focusable || node.clickable || node.editable));
   const edges: InteractionEdge[] = [];
   const directions: Direction[] = ['up', 'down', 'left', 'right'];
 
@@ -56,7 +56,7 @@ export function createPointerMoveEdge(
 ): InteractionEdge | null {
   const a = rectFor(from);
   const b = rectFor(to);
-  if (!a || !b || from.frameId !== to.frameId || to.disabled) return null;
+  if (!a || !b || from.frameId !== to.frameId || to.disabled || to.viewportVisible === false) return null;
   const start = center(a);
   const target = center(b);
   const movement = { x: target.x - start.x, y: target.y - start.y };
