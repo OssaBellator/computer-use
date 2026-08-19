@@ -2,6 +2,7 @@ import type { BrowserDialogHandleResult } from '../browser/dialogController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryResult } from '../browser/historyController.js';
 import type { BrowserNavigationResult } from '../browser/navigationController.js';
+import type { BrowserSelectResult } from '../browser/selectController.js';
 import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import {
   validateTaskProgram,
@@ -14,6 +15,7 @@ import {
   type OpenTabTaskStep,
   type PressKeyTaskStep,
   type ScrollViewportTaskStep,
+  type SelectOptionTaskStep,
   type SwitchPageTaskStep,
   type TaskProgram,
   type TaskRisk,
@@ -37,13 +39,13 @@ export * from './taskRuntimeContracts.js';
 export { evaluateTaskPredicate, interactionSnapshotFingerprint, taskObservationFingerprint } from './taskObservation.js';
 
 const RISK_RANK: Record<TaskRisk, number> = { observe: 0, interaction: 1, 'external-side-effect': 2 };
-type ActionStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | UploadTaskStep | PressKeyTaskStep | ScrollViewportTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep;
-type RuntimeActionResult = TaskEngineActionResult | TaskKeyActionResult | BrowserFileUploadResult | TaskPageSwitchResult | BrowserNavigationResult | BrowserHistoryResult | BrowserDialogHandleResult | CreateBrowserTargetResult | CloseBrowserTargetResult;
+type ActionStep = ActivateTaskStep | HoverTaskStep | TypeTaskStep | SelectOptionTaskStep | UploadTaskStep | PressKeyTaskStep | ScrollViewportTaskStep | SwitchPageTaskStep | NavigateTaskStep | HistoryTaskStep | HandleDialogTaskStep | OpenTabTaskStep | CloseLatestTabTaskStep;
+type RuntimeActionResult = TaskEngineActionResult | TaskKeyActionResult | BrowserSelectResult | BrowserFileUploadResult | TaskPageSwitchResult | BrowserNavigationResult | BrowserHistoryResult | BrowserDialogHandleResult | CreateBrowserTargetResult | CloseBrowserTargetResult;
 
 const positiveInt = (value: number | undefined, fallback: number) => value === undefined || !Number.isFinite(value) ? fallback : Math.max(1, Math.floor(value));
 async function sleep(ms: number): Promise<void> { if (ms > 0) await new Promise<void>((resolve) => setTimeout(resolve, ms)); }
 function riskOf(step: ActionStep): Exclude<TaskRisk, 'observe'> { if (step.kind === 'upload') return 'external-side-effect'; return step.risk ?? 'interaction'; }
-function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean { if (!result) return false; switch (step.kind) { case 'upload': return result.status === 'uploaded'; case 'switch-page': return result.status === 'switched'; case 'navigate': case 'history': return result.status === 'navigated'; case 'handle-dialog': return result.status === 'handled'; case 'open-tab': return result.status === 'created'; case 'close-latest-tab': return result.status === 'closed'; default: return result.status === 'verified'; } }
+function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean { if (!result) return false; switch (step.kind) { case 'select-option': return result.status === 'selected' || result.status === 'already-selected'; case 'upload': return result.status === 'uploaded'; case 'switch-page': return result.status === 'switched'; case 'navigate': case 'history': return result.status === 'navigated'; case 'handle-dialog': return result.status === 'handled'; case 'open-tab': return result.status === 'created'; case 'close-latest-tab': return result.status === 'closed'; default: return result.status === 'verified'; } }
 function successOutcome(step: ActionStep): TaskTraceOutcome { switch (step.kind) { case 'upload': return 'uploaded'; case 'switch-page': return 'page-switched'; case 'navigate': return 'navigated'; case 'history': return 'history-navigated'; case 'handle-dialog': return 'dialog-handled'; case 'open-tab': return 'target-created'; case 'close-latest-tab': return 'target-closed'; default: return 'verified'; } }
 
 async function performAction(engine: TaskRuntimeEngine, step: ActionStep, inputs: Readonly<Record<string, string>>, options: TaskRuntimeOptions): Promise<RuntimeActionResult | undefined> {
@@ -51,6 +53,7 @@ async function performAction(engine: TaskRuntimeEngine, step: ActionStep, inputs
     case 'activate': return engine.activate(step.target, { requireUnambiguous: options.requireUnambiguousTargets ?? true, autoReveal: step.autoReveal, method: step.method, key: step.key });
     case 'hover': return engine.hover?.(step.target, { requireUnambiguous: options.requireUnambiguousTargets ?? true, autoReveal: step.autoReveal, timeoutMs: step.timeoutMs, maxSamples: step.maxSamples, pollIntervalMs: step.pollIntervalMs });
     case 'type': return engine.typeInto(step.target, resolveProgramText(step.text, inputs), { requireUnambiguous: options.requireUnambiguousTargets ?? true, autoReveal: step.autoReveal, delayMs: step.delayMs, expectedValue: step.expectedValue === undefined ? undefined : resolveProgramText(step.expectedValue, inputs) });
+    case 'select-option': return engine.selectOption?.(step.target, resolveProgramText(step.option, inputs), { requireUnambiguous: options.requireUnambiguousTargets ?? true, by: step.by });
     case 'upload': return engine.uploadFiles?.(step.target, step.files.map((file) => resolveProgramText(file, inputs)), { requireUnambiguous: options.requireUnambiguousTargets ?? true });
     case 'press-key': return engine.pressKey?.(step.key, { timeoutMs: step.timeoutMs, maxSamples: step.maxSamples, pollIntervalMs: step.pollIntervalMs });
     case 'scroll-viewport': return engine.scrollViewport?.({ x: step.deltaX ?? 0, y: step.deltaY ?? 0 }, { timeoutMs: step.timeoutMs, maxSamples: step.maxSamples, pollIntervalMs: step.pollIntervalMs });
@@ -85,7 +88,7 @@ export class TaskRuntime {
       if (visit > maxVisits) return failed('loop-detected', index);
       let before; try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
 
-      if (step.kind === 'activate' || step.kind === 'hover' || step.kind === 'type' || step.kind === 'upload' || step.kind === 'press-key' || step.kind === 'scroll-viewport' || step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
+      if (step.kind === 'activate' || step.kind === 'hover' || step.kind === 'type' || step.kind === 'select-option' || step.kind === 'upload' || step.kind === 'press-key' || step.kind === 'scroll-viewport' || step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
         const risk = riskOf(step), needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
         let approved = !needsApproval;
         if (needsApproval && options.approve) { try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk, visit }); } catch { approved = false; } }
@@ -96,10 +99,7 @@ export class TaskRuntime {
         let after = before; try { after = await observeTaskEngine(this.engine); } catch {}
         const changed = before.fingerprint !== after.fingerprint;
         const succeeded = actionSucceeded(step, action), nextId = succeeded ? step.next : step.onFailure;
-        // Raw node geometry is intentionally omitted from task fingerprints to
-        // avoid animation noise. A scroll controller's verified geometry/visibility
-        // evidence therefore counts as progress even when the semantic hash is stable.
-        const madeProgress = changed || (step.kind === 'scroll-viewport' && succeeded);
+        const madeProgress = changed || ((step.kind === 'scroll-viewport' || step.kind === 'select-option') && succeeded);
         consecutiveNoProgress = madeProgress ? 0 : consecutiveNoProgress + 1;
         const targetId = action && 'target' in action ? action.target?.id : action && 'targetId' in action ? action.targetId : undefined;
         await emit({ index, stepId: step.id, kind: step.kind, outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed', ...(nextId ? { nextStepId: nextId } : {}), ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
