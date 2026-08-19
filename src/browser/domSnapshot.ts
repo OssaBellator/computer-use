@@ -10,6 +10,7 @@ interface RawNode {
   selected?: boolean;
   pressed?: boolean | 'mixed';
   activeDescendantId?: string;
+  scrollAncestorStructuralId?: string;
   focused: boolean;
   disabled: boolean;
   rect?: Rect;
@@ -34,7 +35,6 @@ export interface SnapshotPageLike {
 async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<InteractionNode[]> {
   const raw = await frame.evaluate((): RawNode[] => {
     const results: RawNode[] = [];
-    const visited = new Set<Element>();
     const visitedRoots = new Set<Document | ShadowRoot>();
     const nonTextInputTypes = new Set([
       'button', 'checkbox', 'color', 'file', 'hidden', 'image',
@@ -46,6 +46,8 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
     const activatableRoles = new Set([
       'button', 'link', 'checkbox', 'radio', 'switch', 'menuitem', 'option', 'tab',
     ]);
+    const clippingOverflowValues = new Set(['auto', 'scroll', 'hidden', 'clip']);
+    const scrollOverflowValues = new Set(['auto', 'scroll']);
     const selectors = [
       'a[href]', 'button', 'input', 'select', 'textarea',
       '[contenteditable="true"]', '[tabindex]', '[role="button"]',
@@ -55,6 +57,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       '[aria-expanded]', '[aria-checked]', '[aria-selected]', '[aria-pressed]',
       '[aria-activedescendant]',
     ];
+    const selectorText = selectors.join(',');
 
     function elementSegment(element: Element): string {
       let index = 1;
@@ -80,6 +83,12 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         }
       }
       return parts.reverse().join(' > ');
+    }
+
+    function composedParent(element: Element): Element | null {
+      if (element.parentElement) return element.parentElement;
+      const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.host : null;
     }
 
     function deepActiveElement(root: Document | ShadowRoot = document): Element | null {
@@ -127,20 +136,74 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
       return element instanceof HTMLInputElement && !nonTextInputTypes.has(element.type.toLowerCase());
     }
 
+    function isScrollableElement(element: Element, style = getComputedStyle(element)): boolean {
+      if (!(element instanceof HTMLElement)) return false;
+      const canScrollX = scrollOverflowValues.has(style.overflowX) && element.scrollWidth > element.clientWidth;
+      const canScrollY = scrollOverflowValues.has(style.overflowY) && element.scrollHeight > element.clientHeight;
+      return canScrollX || canScrollY;
+    }
+
+    function nearestScrollableAncestor(element: Element): Element | null {
+      let current = composedParent(element);
+      while (current) {
+        if (isScrollableElement(current)) return current;
+        current = composedParent(current);
+      }
+      return null;
+    }
+
+    function clippedVisibleRect(element: Element, bounds: DOMRect): Rect | undefined {
+      let left = Math.max(0, bounds.left);
+      let top = Math.max(0, bounds.top);
+      let right = Math.min(window.innerWidth, bounds.right);
+      let bottom = Math.min(window.innerHeight, bounds.bottom);
+
+      let ancestor = composedParent(element);
+      while (ancestor && right > left && bottom > top) {
+        const style = getComputedStyle(ancestor);
+        const clipsX = clippingOverflowValues.has(style.overflowX);
+        const clipsY = clippingOverflowValues.has(style.overflowY);
+        if ((clipsX || clipsY) && ancestor instanceof HTMLElement) {
+          const rect = ancestor.getBoundingClientRect();
+          const clientLeft = rect.left + ancestor.clientLeft;
+          const clientTop = rect.top + ancestor.clientTop;
+          const clientRight = clientLeft + ancestor.clientWidth;
+          const clientBottom = clientTop + ancestor.clientHeight;
+          if (clipsX) {
+            left = Math.max(left, clientLeft);
+            right = Math.min(right, clientRight);
+          }
+          if (clipsY) {
+            top = Math.max(top, clientTop);
+            bottom = Math.min(bottom, clientBottom);
+          }
+        }
+        ancestor = composedParent(ancestor);
+      }
+
+      return right > left && bottom > top
+        ? { x: left, y: top, width: right - left, height: bottom - top }
+        : undefined;
+    }
+
     function collect(root: Document | ShadowRoot): void {
       if (visitedRoots.has(root)) return;
       visitedRoots.add(root);
 
-      for (const element of root.querySelectorAll(selectors.join(','))) {
-        if (visited.has(element)) continue;
-        visited.add(element);
+      for (const element of root.querySelectorAll('*')) {
         const style = getComputedStyle(element);
+        const scrollable = isScrollableElement(element, style);
+        const semanticCandidate = element.matches(selectorText);
+
+        if (element.shadowRoot) collect(element.shadowRoot);
+        if (!semanticCandidate && !scrollable) continue;
+
         const bounds = element.getBoundingClientRect();
-        const visible =
+        const rendered =
           bounds.width > 0 && bounds.height > 0 &&
           style.visibility !== 'hidden' && style.display !== 'none' &&
           style.pointerEvents !== 'none' && element.getAttribute('aria-hidden') !== 'true';
-        if (!visible) continue;
+        if (!rendered) continue;
 
         const html = element as HTMLElement;
         const nativeDisabled =
@@ -160,10 +223,6 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           activatableRoles.has(role.toLowerCase()) ||
           typeof (html as HTMLElement & { onclick?: unknown }).onclick === 'function'
         );
-        const scrollable =
-          (style.overflowX === 'auto' || style.overflowX === 'scroll' ||
-            style.overflowY === 'auto' || style.overflowY === 'scroll') &&
-          (html.scrollHeight > html.clientHeight || html.scrollWidth > html.clientWidth);
 
         const capabilities: InteractionCapability[] = [];
         if (focusable) capabilities.push('focus');
@@ -172,19 +231,8 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
         if (scrollable) capabilities.push('scroll');
         if (element.hasAttribute('aria-expanded')) capabilities.push('expand');
 
-        const viewportX1 = Math.max(0, bounds.left);
-        const viewportY1 = Math.max(0, bounds.top);
-        const viewportX2 = Math.min(window.innerWidth, bounds.right);
-        const viewportY2 = Math.min(window.innerHeight, bounds.bottom);
-        const visibleRect = viewportX2 > viewportX1 && viewportY2 > viewportY1
-          ? {
-              x: viewportX1,
-              y: viewportY1,
-              width: viewportX2 - viewportX1,
-              height: viewportY2 - viewportY1,
-            }
-          : undefined;
-
+        const visibleRect = clippedVisibleRect(element, bounds);
+        const scrollAncestor = nearestScrollableAncestor(element);
         const ariaChecked = element.getAttribute('aria-checked');
         const ariaPressed = element.getAttribute('aria-pressed');
         const expanded = element.hasAttribute('aria-expanded')
@@ -210,6 +258,7 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
 
         results.push({
           path: domPath(element), role, name, expanded, checked, selected, pressed, activeDescendantId,
+          scrollAncestorStructuralId: scrollAncestor ? domPath(scrollAncestor) : undefined,
           value: element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ||
             element instanceof HTMLSelectElement
             ? element.value
@@ -223,19 +272,20 @@ async function extractFrame(frame: SnapshotFrameLike, frameId: string): Promise<
           interactionConfidence: confidence,
         });
       }
-
-      // Shadow hosts are not necessarily interactive themselves. Traverse every
-      // open root independently so a plain layout host cannot hide its controls.
-      for (const element of root.querySelectorAll('*')) {
-        if (element.shadowRoot) collect(element.shadowRoot);
-      }
     }
 
     collect(document);
     return results;
   });
 
-  return raw.map((node) => ({ ...node, id: `${frameId}:${node.path}`, frameId }));
+  return raw.map((node) => ({
+    ...node,
+    id: `${frameId}:${node.path}`,
+    frameId,
+    scrollAncestorStructuralId: node.scrollAncestorStructuralId
+      ? `${frameId}:${node.scrollAncestorStructuralId}`
+      : undefined,
+  }));
 }
 
 function framePath(frame: SnapshotFrameLike, allFrames: readonly SnapshotFrameLike[]): string {
