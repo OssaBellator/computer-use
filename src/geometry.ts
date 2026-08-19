@@ -18,22 +18,14 @@ export function rectContainsPoint(rect: Rect, point: Point): boolean {
   );
 }
 
-/**
- * Picks an interior point from the visible target area while avoiding known
- * occlusion rectangles. This is intentionally conservative: if the center is
- * occluded, it probes a deterministic set of inset points rather than clicking
- * an arbitrary bounding-box coordinate.
- */
-export function chooseSafeTargetPoint(
+/** Deterministic interior probes ordered from center toward corners. */
+export function targetPointCandidates(
   elementRect: Rect,
   viewportRect: Rect,
-  occlusions: readonly Rect[] = [],
   insetPx = 4,
-): Point | null {
+): Point[] {
   const visible = intersectRect(elementRect, viewportRect);
-  if (!visible || visible.width <= insetPx * 2 || visible.height <= insetPx * 2) {
-    return null;
-  }
+  if (!visible || visible.width <= insetPx * 2 || visible.height <= insetPx * 2) return [];
 
   const left = visible.x + insetPx;
   const right = visible.x + visible.width - insetPx;
@@ -42,7 +34,7 @@ export function chooseSafeTargetPoint(
   const centerX = (left + right) / 2;
   const centerY = (top + bottom) / 2;
 
-  const candidates: Point[] = [
+  return [
     { x: centerX, y: centerY },
     { x: left + (right - left) * 0.25, y: centerY },
     { x: left + (right - left) * 0.75, y: centerY },
@@ -53,9 +45,16 @@ export function chooseSafeTargetPoint(
     { x: left, y: bottom },
     { x: right, y: bottom },
   ];
+}
 
+export function chooseSafeTargetPoint(
+  elementRect: Rect,
+  viewportRect: Rect,
+  occlusions: readonly Rect[] = [],
+  insetPx = 4,
+): Point | null {
   return (
-    candidates.find(
+    targetPointCandidates(elementRect, viewportRect, insetPx).find(
       (point) => !occlusions.some((occlusion) => rectContainsPoint(occlusion, point)),
     ) ?? null
   );
