@@ -19,6 +19,7 @@ import { PointerController, type PointerControllerOptions } from '../controller/
 import { BrowserEdgeDispatcher } from '../controller/browserEdgeDispatcher.js';
 import { FocusController, type FocusStepResult } from '../controller/focusController.js';
 import { KeyboardActionController, type KeyboardActionResult } from '../controller/keyboardActionController.js';
+import { ScrollActionController, type ScrollActionOptions, type ScrollActionResult } from '../controller/scrollActionController.js';
 import type { FocusDirection } from '../focus/focusTopology.js';
 import { ReplanningExecutor, type ReplanningOptions, type ReplanningResult } from '../controller/replanningExecutor.js';
 import {
@@ -123,6 +124,7 @@ export class InteractionEngine {
   readonly replanner: ReplanningExecutor;
   readonly actions: SemanticActionController;
   readonly keyboard: KeyboardActionController;
+  readonly scrollController: ScrollActionController;
   readonly revealController: ScrollRevealController;
   readonly focusController: FocusController;
 
@@ -149,6 +151,7 @@ export class InteractionEngine {
     this.replanner = new ReplanningExecutor(this.model, () => this.planningSnapshot(), this.dispatcher.dispatch);
     this.actions = new SemanticActionController(observer, input, this.pointer);
     this.keyboard = new KeyboardActionController(observer, input);
+    this.scrollController = new ScrollActionController(observer, input, this.pointer);
     this.revealController = new ScrollRevealController(observer, input, this.pointer);
     this.focusController = new FocusController(
       input,
@@ -192,6 +195,14 @@ export class InteractionEngine {
     options: Parameters<KeyboardActionController['press']>[1] = {},
   ): Promise<KeyboardActionResult> {
     return this.keyboard.press(key, options);
+  }
+
+  /** Dispatch bounded top-level wheel input and verify semantic/geometry movement. */
+  async scrollViewport(
+    delta: Point,
+    options: ScrollActionOptions = {},
+  ): Promise<ScrollActionResult> {
+    return this.scrollController.scroll(delta, options);
   }
 
   /** Resolve/reveal without pre-hover pointer acquisition, then verify hover evidence. */
