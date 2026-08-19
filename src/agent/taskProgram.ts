@@ -87,6 +87,14 @@ export interface TypeTaskStep extends SemanticTaskActionStepBase {
   delayMs?: number;
 }
 
+/** Local file disclosure is always an external side effect; it cannot be downgraded by the program. */
+export interface UploadTaskStep extends Omit<TaskActionStepBase, 'risk'> {
+  kind: 'upload';
+  risk?: 'external-side-effect';
+  target: TaskTarget;
+  files: readonly ProgramText[];
+}
+
 export interface OpenTabTaskStep extends TaskActionStepBase {
   kind: 'open-tab';
   url: ProgramText;
@@ -168,6 +176,7 @@ export interface CompleteTaskStep {
 export type TaskStep =
   | ActivateTaskStep
   | TypeTaskStep
+  | UploadTaskStep
   | NavigateTaskStep
   | HistoryTaskStep
   | HandleDialogTaskStep
@@ -239,6 +248,7 @@ function referencedStepIds(step: TaskStep): string[] {
   switch (step.kind) {
     case 'activate':
     case 'type':
+    case 'upload':
     case 'navigate':
     case 'history':
     case 'handle-dialog':
@@ -262,6 +272,9 @@ function stepInputs(step: TaskStep): Set<string> {
   if (step.kind === 'type') {
     collectProgramTextInput(step.text, inputs);
     collectProgramTextInput(step.expectedValue, inputs);
+  }
+  if (step.kind === 'upload') {
+    for (const file of step.files) collectProgramTextInput(file, inputs);
   }
   if (step.kind === 'navigate') collectProgramTextInput(step.url, inputs);
   if (step.kind === 'handle-dialog') collectProgramTextInput(step.promptText, inputs);
@@ -356,6 +369,9 @@ export function validateTaskProgram(program: TaskProgram): TaskProgramValidation
     if (stepMap.has(step.id)) errors.push(`duplicate step id: ${step.id}`);
     else stepMap.set(step.id, step);
 
+    if (step.kind === 'upload' && step.files.length < 1) {
+      errors.push(`upload step ${step.id} requires at least one file`);
+    }
     if (step.kind === 'wait' || step.kind === 'navigate' || step.kind === 'history') {
       validatePollFields(step.id, step.maxPolls, step.pollIntervalMs, errors);
     }

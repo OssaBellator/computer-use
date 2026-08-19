@@ -13,6 +13,11 @@ import {
   type BrowserDialogState,
 } from '../browser/dialogController.js';
 import {
+  CdpFileUploadController,
+  type BrowserFileUploadControllerOptions,
+  type BrowserFileUploadResult,
+} from '../browser/fileUploadController.js';
+import {
   CdpHistoryController,
   type BrowserHistoryAction,
   type BrowserHistoryController,
@@ -33,7 +38,7 @@ import {
   type CloseBrowserTargetResult,
   type CreateBrowserTargetResult,
 } from '../browser/targetController.js';
-import type { TargetQuery } from '../model/targetResolver.js';
+import type { TargetQuery, TargetResolution } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
 import type { TaskRuntimeEngine, TaskEngineActionResult } from '../agent/taskRuntime.js';
 import {
@@ -55,10 +60,16 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly targets?: CdpTargetController,
     readonly downloads?: CdpDownloadController,
     readonly historyController: BrowserHistoryController = new CdpHistoryController(session),
+    readonly uploads?: CdpFileUploadController,
   ) {}
 
   async prepare(): Promise<void> {
-    await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start()]);
+    await Promise.all([
+      this.dialogs?.start(),
+      this.targets?.start(),
+      this.downloads?.start(),
+      this.uploads?.start(),
+    ]);
   }
 
   refresh(): Promise<InteractionNode[]> {
@@ -94,6 +105,32 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     options?: Parameters<InteractionEngine['typeInto']>[2],
   ): Promise<TaskEngineActionResult> {
     return this.interaction.typeInto(query, text, options);
+  }
+
+  async uploadFiles(
+    query: TargetQuery | string,
+    paths: readonly string[],
+    options: { requireUnambiguous?: boolean } = {},
+  ): Promise<BrowserFileUploadResult> {
+    const unresolved = { targetId: '', fileCount: paths.length, totalBytes: 0 };
+    if (!this.uploads) {
+      return {
+        ...unresolved,
+        status: 'configuration-error',
+        errorText: 'File upload is not configured for this browser-agent engine',
+      };
+    }
+
+    let resolution: TargetResolution;
+    try {
+      resolution = await this.interaction.resolveDetailed(query);
+    } catch {
+      return { ...unresolved, status: 'invalid-target' };
+    }
+    if (!resolution.target || ((options.requireUnambiguous ?? true) && resolution.ambiguous)) {
+      return { ...unresolved, status: 'invalid-target' };
+    }
+    return this.uploads.upload(resolution.target, paths);
   }
 
   navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> {
@@ -151,6 +188,8 @@ export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOption
   navigationPolicy?: NavigationPolicy;
   /** Explicit opt-in; download files are stored under opaque CDP GUID names. */
   downloadOptions?: BrowserDownloadControllerOptions;
+  /** Explicit opt-in local-file disclosure policy for file inputs. */
+  uploadOptions?: BrowserFileUploadControllerOptions;
 }
 
 export function createCdpBrowserAgentEngine(
@@ -158,7 +197,7 @@ export function createCdpBrowserAgentEngine(
   session: CdpSessionLike,
   options: CdpBrowserAgentEngineOptions = {},
 ): CdpBrowserAgentEngine {
-  const { navigationPolicy, downloadOptions, ...interactionOptions } = options;
+  const { navigationPolicy, downloadOptions, uploadOptions, ...interactionOptions } = options;
   const eventSession = isCdpEventSessionLike(session) ? session : undefined;
   return new CdpBrowserAgentEngine(
     createCdpInteractionEngine(page, session, interactionOptions),
@@ -168,5 +207,6 @@ export function createCdpBrowserAgentEngine(
     eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined,
     eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined,
     new CdpHistoryController(session, navigationPolicy),
+    uploadOptions ? new CdpFileUploadController(session, uploadOptions) : undefined,
   );
 }

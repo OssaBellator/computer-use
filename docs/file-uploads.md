@@ -39,6 +39,36 @@ File inputs remain non-editable and are not promoted to generic activation contr
 
 This lets semantic acquisition use `{ capability: 'upload' }` without conflating local-file disclosure with text entry or button activation.
 
+## Browser-agent and task-program integration
+
+`createCdpBrowserAgentEngine()` enables uploads only when `uploadOptions` are supplied. `uploadFiles()` resolves the semantic target first and rejects ambiguous matches before any local path reaches CDP.
+
+A task program may declare a static upload from literals or trusted task inputs:
+
+```ts
+const program: TaskProgram = {
+  version: 1,
+  entry: 'attach',
+  inputs: ['attachmentPath'],
+  steps: [
+    {
+      id: 'attach',
+      kind: 'upload',
+      target: { name: 'Upload', capability: 'upload' },
+      files: [{ input: 'attachmentPath' }],
+      next: 'done',
+      onFailure: 'failed',
+    },
+    { id: 'done', kind: 'complete' },
+    { id: 'failed', kind: 'fail' },
+  ],
+};
+```
+
+Upload is always classified as `external-side-effect`; the task-program type cannot downgrade it, and the runtime independently hard-codes that classification. With the default risk budget, the step is blocked until an approval callback authorizes it or the caller explicitly raises `maxRisk` to `external-side-effect`.
+
+Task traces record only the step/outcome, semantic target ID, action status, and hashed observations. Trusted local paths are never copied into trace entries.
+
 ## Regression coverage
 
-Local unit regressions verify canonical in-root upload, symlink escape rejection before `DOM.setFileInputFiles`, and single-file target enforcement. The Chromium regression verifies that perception exposes `upload`, assigns a real local file through backend-node identity, observes the native `change` event, and reads the expected `File` name/content in the browser while controller result metadata remains path-free.
+Local unit regressions verify canonical in-root upload, symlink escape rejection before `DOM.setFileInputFiles`, single-file target enforcement, static trusted-input validation, default approval blocking, trace redaction, missing-controller failure, semantic ambiguity rejection, and facade delegation. The Chromium regression verifies that perception exposes `upload`, assigns a real local file through backend-node identity, observes the native `change` event, and reads the expected `File` name/content in the browser while controller result metadata remains path-free.

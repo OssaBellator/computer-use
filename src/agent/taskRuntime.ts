@@ -1,4 +1,5 @@
 import type { BrowserDialogHandleResult } from '../browser/dialogController.js';
+import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryResult } from '../browser/historyController.js';
 import type { BrowserNavigationResult } from '../browser/navigationController.js';
 import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
@@ -13,6 +14,7 @@ import {
   type TaskProgram,
   type TaskRisk,
   type TypeTaskStep,
+  type UploadTaskStep,
 } from './taskProgram.js';
 import {
   evaluateTaskPredicate,
@@ -45,6 +47,7 @@ const RISK_RANK: Record<TaskRisk, number> = {
 type ActionStep =
   | ActivateTaskStep
   | TypeTaskStep
+  | UploadTaskStep
   | NavigateTaskStep
   | HistoryTaskStep
   | HandleDialogTaskStep
@@ -53,6 +56,7 @@ type ActionStep =
 
 type RuntimeActionResult =
   | TaskEngineActionResult
+  | BrowserFileUploadResult
   | BrowserNavigationResult
   | BrowserHistoryResult
   | BrowserDialogHandleResult
@@ -67,12 +71,14 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function riskOf(step: ActionStep): Exclude<TaskRisk, 'observe'> {
+  if (step.kind === 'upload') return 'external-side-effect';
   return step.risk ?? 'interaction';
 }
 
 function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean {
   if (!result) return false;
   switch (step.kind) {
+    case 'upload': return result.status === 'uploaded';
     case 'navigate':
     case 'history':
       return result.status === 'navigated';
@@ -85,6 +91,7 @@ function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefin
 
 function successOutcome(step: ActionStep): TaskTraceOutcome {
   switch (step.kind) {
+    case 'upload': return 'uploaded';
     case 'navigate': return 'navigated';
     case 'history': return 'history-navigated';
     case 'handle-dialog': return 'dialog-handled';
@@ -117,6 +124,12 @@ async function performAction(
           ? undefined
           : resolveProgramText(step.expectedValue, inputs),
       });
+    case 'upload':
+      return engine.uploadFiles?.(
+        step.target,
+        step.files.map((file) => resolveProgramText(file, inputs)),
+        { requireUnambiguous: options.requireUnambiguousTargets ?? true },
+      );
     case 'navigate':
       return engine.navigate?.(resolveProgramText(step.url, inputs), {
         waitUntil: step.waitUntil,
@@ -199,9 +212,9 @@ export class TaskRuntime {
       let before;
       try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
 
-      if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'navigate' ||
-          step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' ||
-          step.kind === 'close-latest-tab') {
+      if (step.kind === 'activate' || step.kind === 'type' || step.kind === 'upload' ||
+          step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' ||
+          step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
         const risk = riskOf(step);
         const needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
         let approved = !needsApproval;
@@ -227,12 +240,14 @@ export class TaskRuntime {
         consecutiveNoProgress = changed ? 0 : consecutiveNoProgress + 1;
         const succeeded = actionSucceeded(step, action);
         const nextId = succeeded ? step.next : step.onFailure;
-        const target = action && 'target' in action ? action.target : null;
+        const targetId = action && 'target' in action
+          ? action.target?.id
+          : action && 'targetId' in action ? action.targetId : undefined;
         await emit({
           index, stepId: step.id, kind: step.kind,
           outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed',
           ...(nextId ? { nextStepId: nextId } : {}),
-          ...(target?.id ? { targetId: target.id } : {}),
+          ...(targetId ? { targetId } : {}),
           ...(action ? { actionStatus: action.status } : {}),
           beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint,
           browserStateChanged: changed, visit,
