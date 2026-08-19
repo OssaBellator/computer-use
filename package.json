@@ -1,8 +1,8 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "private": true,
-  "description": "Closed-loop semantic/spatial browser interaction engine with bounded plan-then-execute task programs.",
+  "description": "Closed-loop semantic/spatial browser interaction engine with bounded task programs and composite-aware keyboard planning.",
   "type": "module",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
