@@ -103,6 +103,18 @@ export class TaskRuntime {
       if (step.kind === 'assert') { const passed = predicate(step.condition), nextId = passed ? step.next : step.onFailure; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'asserted' : 'assertion-failed', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); if (!nextId) return failed('failed', index + 1); currentId = nextId; continue; }
       if (step.kind === 'branch') { const passed = predicate(step.condition), nextId = passed ? step.then : step.else; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'branch-then' : 'branch-else', nextStepId: nextId, beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); currentId = nextId; continue; }
       if (step.kind === 'wait') { const maxPolls = positiveInt(step.maxPolls, positiveInt(options.waitMaxPolls, 20)), pollIntervalMs = Math.max(0, step.pollIntervalMs ?? options.waitPollIntervalMs ?? 100); let observed = before, passed = predicate(step.condition); for (let poll = 1; !passed && poll < maxPolls; poll += 1) { await sleep(pollIntervalMs); try { observed = await observeTaskEngine(this.engine); } catch { break; } passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog, observed.targets, observed.downloads); } const nextId = passed ? step.next : step.onTimeout; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'wait-satisfied' : 'wait-timeout', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: observed.fingerprint, browserStateChanged: before.fingerprint !== observed.fingerprint, visit }); if (!nextId) return failed('failed', index + 1); currentId = nextId; continue; }
+      if (step.kind === 'wait-network-idle') {
+        let idle = false;
+        try {
+          const result = await this.engine.waitForNetworkIdle?.({ quietMs: step.quietMs, maxInflight: step.maxInflight, timeoutMs: step.timeoutMs, pollIntervalMs: step.pollIntervalMs });
+          idle = result?.idle === true;
+        } catch {}
+        let after = before; try { after = await observeTaskEngine(this.engine); } catch {}
+        const nextId = idle ? step.next : step.onTimeout;
+        await emit({ index, stepId: step.id, kind: step.kind, outcome: idle ? 'wait-satisfied' : 'wait-timeout', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: before.fingerprint !== after.fingerprint, visit });
+        if (!nextId) return failed('failed', index + 1);
+        currentId = nextId; continue;
+      }
       if (step.kind === 'fail') { await emit({ index, stepId: step.id, kind: step.kind, outcome: 'failed', beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); return failed('failed', index + 1); }
       const passed = step.condition ? predicate(step.condition) : true, nextId = passed ? undefined : step.onFailure;
       await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'completed' : 'completion-condition-failed', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
