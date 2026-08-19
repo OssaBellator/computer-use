@@ -94,8 +94,13 @@ export class TaskRuntime {
         let action: RuntimeActionResult | undefined, threw = false;
         try { action = await performAction(this.engine, step, inputs, options); } catch { threw = true; }
         let after = before; try { after = await observeTaskEngine(this.engine); } catch {}
-        const changed = before.fingerprint !== after.fingerprint; consecutiveNoProgress = changed ? 0 : consecutiveNoProgress + 1;
+        const changed = before.fingerprint !== after.fingerprint;
         const succeeded = actionSucceeded(step, action), nextId = succeeded ? step.next : step.onFailure;
+        // Raw node geometry is intentionally omitted from task fingerprints to
+        // avoid animation noise. A scroll controller's verified geometry/visibility
+        // evidence therefore counts as progress even when the semantic hash is stable.
+        const madeProgress = changed || (step.kind === 'scroll-viewport' && succeeded);
+        consecutiveNoProgress = madeProgress ? 0 : consecutiveNoProgress + 1;
         const targetId = action && 'target' in action ? action.target?.id : action && 'targetId' in action ? action.targetId : undefined;
         await emit({ index, stepId: step.id, kind: step.kind, outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed', ...(nextId ? { nextStepId: nextId } : {}), ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
         if (consecutiveNoProgress >= maxNoProgress) return failed('stalled', index + 1);
