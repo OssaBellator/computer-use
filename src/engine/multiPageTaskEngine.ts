@@ -23,6 +23,14 @@ interface SemanticActivateOptions {
   key?: string;
 }
 
+interface SemanticHoverOptions {
+  requireUnambiguous?: boolean;
+  autoReveal?: boolean;
+  timeoutMs?: number;
+  maxSamples?: number;
+  pollIntervalMs?: number;
+}
+
 interface SemanticTypeOptions {
   requireUnambiguous?: boolean;
   autoReveal?: boolean;
@@ -73,6 +81,14 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     options?: SemanticActivateOptions,
   ): Promise<TaskEngineActionResult> {
     return this.pages.activeEngine?.activate(query, options) ??
+      Promise.resolve({ status: 'target-not-found', target: null });
+  }
+
+  hover(
+    query: TargetQuery | string,
+    options?: SemanticHoverOptions,
+  ): Promise<TaskEngineActionResult> {
+    return this.pages.activeEngine?.hover(query, options) ??
       Promise.resolve({ status: 'target-not-found', target: null });
   }
 
