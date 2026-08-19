@@ -5,6 +5,7 @@ import {
   captureCdpIdentityIndex,
   describeSnapshotFrames,
   enrichInteractionNodesWithCdpIdentity,
+  stabilizeInteractionNodeIds,
   type CdpIdentityIndex,
   type CdpSessionLike,
 } from './cdpIdentity.js';
@@ -42,7 +43,8 @@ export class CdpInteractionObserver implements BrowserInteractionObserver {
       captureCdpIdentityIndex(this.session),
     ]);
     const frameIdMap = buildInteractionFrameIdMap(describeSnapshotFrames(this.page), identities);
-    const stable = enrichInteractionNodesWithCdpIdentity(raw, identities, { frameIdMap });
+    const enriched = enrichInteractionNodesWithCdpIdentity(raw, identities, { frameIdMap });
+    const stable = stabilizeInteractionNodeIds(enriched);
     const normalized = await enrichInteractionNodesWithCdpGeometry(stable, this.session);
     this.identities = identities;
     return normalized;
@@ -57,8 +59,6 @@ export class CdpInteractionObserver implements BrowserInteractionObserver {
     if (!this.identities) await this.snapshot();
     let result = await pointHitsCdpInteractionNode(this.session, this.identities!, node, point);
     if (result.hit) return true;
-    // Hover/focus handlers can mutate descendants. Refresh identities once so a
-    // newly inserted descendant can still be recognized as belonging to target.
     this.identities = await captureCdpIdentityIndex(this.session);
     result = await pointHitsCdpInteractionNode(this.session, this.identities, node, point);
     return result.hit;
