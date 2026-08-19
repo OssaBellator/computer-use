@@ -13,6 +13,11 @@ import {
   type SemanticActionStatus,
   type TypeIntoTargetOptions,
 } from '../controller/semanticActionController.js';
+import {
+  ScrollRevealController,
+  type ScrollRevealOptions,
+  type ScrollRevealResult,
+} from '../controller/scrollRevealController.js';
 import type { InteractionNode, Point } from '../types.js';
 
 export const CURSOR_ANCHOR_ID = '@cursor';
@@ -26,12 +31,15 @@ export interface InteractionEngineOptions {
 
 export interface AcquireOptions extends ReplanningOptions {
   startId?: string;
+  autoReveal?: boolean;
+  revealOptions?: ScrollRevealOptions;
 }
 
 export interface AcquireResult {
   status: ReplanningResult['status'] | 'target-not-found';
   target: InteractionNode | null;
   execution: ReplanningResult | null;
+  reveal?: ScrollRevealResult;
 }
 
 export interface EngineActivateOptions extends AcquireOptions, ActivateTargetOptions {}
@@ -65,6 +73,10 @@ function cursorAnchor(point: Point): InteractionNode {
   };
 }
 
+function shouldAutoReveal(target: InteractionNode): boolean {
+  return target.mainViewportVisible === false;
+}
+
 /**
  * High-level closed-loop facade that keeps semantic page state, physical
  * pointer state, planning, dispatch, observation, and replanning together.
@@ -76,6 +88,7 @@ export class InteractionEngine {
   readonly dispatcher: BrowserEdgeDispatcher;
   readonly replanner: ReplanningExecutor;
   readonly actions: SemanticActionController;
+  readonly revealController: ScrollRevealController;
 
   constructor(
     readonly observer: BrowserInteractionObserver,
@@ -88,11 +101,12 @@ export class InteractionEngine {
     this.dispatcher = new BrowserEdgeDispatcher(input, this.pointer, observer);
     this.replanner = new ReplanningExecutor(this.model, () => this.planningSnapshot(), this.dispatcher.dispatch);
     this.actions = new SemanticActionController(observer, input, this.pointer);
+    this.revealController = new ScrollRevealController(observer, input);
   }
 
   private async planningSnapshot(): Promise<InteractionNode[]> {
     const observed = [...await this.observer.snapshot()];
-    const cursor = { ...this.touchpad.cursor };
+    const cursor = { x: this.touchpad.cursor.x, y: this.touchpad.cursor.y };
     this.model.setPointerPosition(cursor);
     return [cursorAnchor(cursor), ...observed];
   }
@@ -109,10 +123,23 @@ export class InteractionEngine {
   }
 
   async acquire(query: TargetQuery | string, options: AcquireOptions = {}): Promise<AcquireResult> {
-    const nodes = await this.planningSnapshot();
+    let nodes = await this.planningSnapshot();
     this.model.refresh(nodes);
-    const target = resolveInteractionTarget(nodes, query);
+    let target = resolveInteractionTarget(nodes, query);
     if (!target) return { status: 'target-not-found', target: null, execution: null };
+
+    let reveal: ScrollRevealResult | undefined;
+    if (options.autoReveal !== false && shouldAutoReveal(target) && this.observer.viewportRect) {
+      reveal = await this.revealController.reveal(target, options.revealOptions);
+      if (reveal.status === 'revealed' || reveal.status === 'already-visible') {
+        nodes = await this.planningSnapshot();
+        this.model.refresh(nodes);
+        target = nodes.find((node) => node.id === target!.id) ?? resolveInteractionTarget(nodes, query);
+        if (!target) {
+          return { status: 'target-not-found', target: null, execution: null, reveal };
+        }
+      }
+    }
 
     const focused = nodes.find((node) => node.focused);
     const startId = options.startId ?? focused?.id ?? CURSOR_ANCHOR_ID;
@@ -121,6 +148,7 @@ export class InteractionEngine {
       status: execution.status,
       target: this.model.getNode(target.id) ?? target,
       execution,
+      ...(reveal ? { reveal } : {}),
     };
   }
 
