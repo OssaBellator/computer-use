@@ -5,6 +5,7 @@ export * from './graphBuilder.js';
 export * from './browser/domSnapshot.js';
 export * from './focus/focusTopology.js';
 export * from './planner/actionPlanner.js';
+export * from './model/interactionModel.js';
 export * from './verification/actionVerifier.js';
 export * from './input/browserInput.js';
 export * from './input/playwrightInputAdapter.js';
