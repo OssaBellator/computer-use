@@ -1,8 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import {
-  InteractionGraph,
-  bestDirectionalCandidate,
-} from '../src/graph.js';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { InteractionGraph, bestDirectionalCandidate, directionalScore } from '../src/graph.js';
 import type { InteractionNode } from '../src/types.js';
 
 function node(id: string, x: number, y: number, confidence = 1): InteractionNode {
@@ -21,34 +19,42 @@ function node(id: string, x: number, y: number, confidence = 1): InteractionNode
   };
 }
 
-describe('directional navigation', () => {
-  it('prefers aligned candidates over diagonally closer ones', () => {
-    const origin = node('origin', 0, 0);
-    const aligned = node('aligned', 100, 0);
-    const diagonal = node('diagonal', 55, 65);
-
-    expect(bestDirectionalCandidate(origin, [diagonal, aligned], 'right')?.id).toBe('aligned');
-  });
+test('directional navigation prefers alignment over diagonally closer candidates', () => {
+  const origin = node('origin', 0, 0);
+  assert.equal(
+    bestDirectionalCandidate(origin, [node('diagonal', 55, 65), node('aligned', 100, 0)], 'right')?.id,
+    'aligned',
+  );
 });
 
-describe('InteractionGraph', () => {
-  it('finds the lowest weighted interaction path', () => {
-    const graph = new InteractionGraph();
-    for (const n of [node('a', 0, 0), node('b', 10, 0), node('c', 20, 0)]) {
-      graph.upsertNode(n);
-    }
+test('directional navigation rejects candidates in the opposite half-plane', () => {
+  assert.equal(
+    directionalScore(node('origin', 50, 50), node('left', 0, 50), 'right'),
+    Number.POSITIVE_INFINITY,
+  );
+});
 
-    graph.addEdge({
-      from: 'a',
-      to: 'c',
-      kind: 'pointer-move',
-      estimatedTimeMs: 100,
-      failureProbability: 0.8,
-    });
-    graph.addEdge({ from: 'a', to: 'b', kind: 'focus-next', estimatedTimeMs: 120 });
-    graph.addEdge({ from: 'b', to: 'c', kind: 'activate', estimatedTimeMs: 120 });
+test('directional navigation penalizes lower-confidence candidates', () => {
+  const origin = node('origin', 0, 0);
+  assert.ok(
+    directionalScore(origin, node('high', 100, 0, 1), 'right') <
+      directionalScore(origin, node('low', 100, 0, 0.1), 'right'),
+  );
+});
 
-    const path = graph.shortestPath('a', 'c');
-    expect(path?.map((edge) => edge.to)).toEqual(['b', 'c']);
-  });
+test('graph chooses lowest weighted route rather than fewest edges', () => {
+  const graph = new InteractionGraph();
+  for (const n of [node('a', 0, 0), node('b', 10, 0), node('c', 20, 0)]) graph.upsertNode(n);
+  graph.addEdge({ from: 'a', to: 'c', kind: 'pointer-move', estimatedTimeMs: 100, failureProbability: 0.8 });
+  graph.addEdge({ from: 'a', to: 'b', kind: 'focus-next', estimatedTimeMs: 120 });
+  graph.addEdge({ from: 'b', to: 'c', kind: 'activate', estimatedTimeMs: 120 });
+  assert.deepEqual(graph.shortestPath('a', 'c')?.map((edge) => edge.to), ['b', 'c']);
+});
+
+test('graph returns null for unreachable and unknown targets', () => {
+  const graph = new InteractionGraph();
+  graph.upsertNode(node('a', 0, 0));
+  graph.upsertNode(node('b', 10, 0));
+  assert.equal(graph.shortestPath('a', 'b'), null);
+  assert.equal(graph.shortestPath('a', 'missing'), null);
 });
