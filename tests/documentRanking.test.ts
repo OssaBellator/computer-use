@@ -78,6 +78,19 @@ test('ranks main article content above generic boilerplate while preserving sour
   assert.ok(view.primaryContentConfidence > 0.5);
 });
 
+test('does not broaden a lexical boilerplate seed across a small main article', () => {
+  const seedId = 'main:body:nth-of-type(1) > main:nth-of-type(1) > article:nth-of-type(1) > p:nth-of-type(1)';
+  const articleId = 'main:body:nth-of-type(1) > main:nth-of-type(1) > article:nth-of-type(1) > p:nth-of-type(2)';
+  const view = rankDocumentContent(snapshot([
+    block(seedId, 'The article discusses how sites ask visitors to accept cookies and manage consent preferences.'),
+    block(articleId, 'The substantive analysis continues here with enough sentence-like prose to remain primary content.'),
+  ]));
+  const classes = new Map(view.assessments.map((item) => [item.blockId, item.classification]));
+
+  assert.notEqual(classes.get(articleId), 'cookie-banner');
+  assert.ok(view.primaryContentBlockIds.includes(articleId));
+});
+
 test('derives table row/column header relationships from existing extractor paths', () => {
   const source = snapshot([
     block('main:body:nth-of-type(1) > main:nth-of-type(1) > table:nth-of-type(1) > caption:nth-of-type(1)', 'Quarterly totals', { kind: 'table-caption', tagName: 'caption' }),
