@@ -113,6 +113,33 @@ test('stale control is rejected before native dispatch', async () => {
   assert.equal(backend.actions.length,0);
 });
 
+test('control focus fails closed when the accessibility root is replaced within the same window generation', async () => {
+  const {backend,adapter} = fixture();
+  const originalObserveSystem = backend.observeSystem.bind(backend);
+  let systemCalls = 0;
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const enteredFinalWindowCheck = new Promise<void>((resolve) => { entered = resolve; });
+  backend.observeSystem = async (limits) => {
+    systemCalls += 1;
+    if (systemCalls === 2) {
+      entered();
+      await gate;
+    }
+    return originalObserveSystem(limits);
+  };
+  const pending = adapter.act({adapterId:'desktop:test',actionId:'focus-reused-control',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:save});
+  await enteredFinalWindowCheck;
+  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'replacement-root',children:[{controlId:'save',role:'textbox',name:'Replacement'}]}});
+  release();
+  const result = await pending;
+  assert.equal(result.status,'rejected');
+  assert.equal(result.dispatch,'not-dispatched');
+  assert.deepEqual(result.evidence,['synthetic-control-stale']);
+  assert.equal(backend.actions.length,0);
+});
+
 test('window-level input rejects ui-control targets it cannot bind exactly', async () => {
   for (const [capability,payload] of [
     ['desktop.keyboard',{kind:'key-down',key:'A'}],
