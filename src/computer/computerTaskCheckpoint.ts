@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import type { ComputerTaskProgram } from './computerTask.js';
+import { validateComputerTaskProgram, type ComputerTaskProgram } from './computerTask.js';
 
 export const COMPUTER_TASK_CHECKPOINT_VERSION = 1 as const;
 export const COMPUTER_TASK_CHECKPOINT_FORMAT = 'browser-automation/computer-task-checkpoint' as const;
@@ -103,10 +103,6 @@ export function computerTaskProgramHash(program: ComputerTaskProgram): string {
   return sha256(canonicalJson(programProjection(program)));
 }
 
-/**
- * Central checkpoint validator used by create, encode, decode, and direct runtime resume.
- * When program/execution context is supplied it also validates resume compatibility.
- */
 export function validateComputerTaskCheckpoint(
   value: unknown,
   options: ComputerTaskCheckpointValidationOptions = {},
@@ -143,6 +139,8 @@ export function validateComputerTaskCheckpoint(
     if (checkpoint.execution.id !== options.executionId) throw new Error('computer task checkpoint belongs to another execution');
   }
   if (options.program) {
+    const programErrors = validateComputerTaskProgram(options.program);
+    if (programErrors.length > 0) throw new Error(`invalid computer task program: ${programErrors.join('; ')}`);
     if (checkpoint.program.id !== options.program.id || checkpoint.program.hash !== computerTaskProgramHash(options.program)) {
       throw new Error('computer task checkpoint does not match program');
     }
@@ -165,6 +163,8 @@ export function createComputerTaskCheckpoint(options: {
   stepsExecuted: number;
   actions: ReadonlyMap<string, ComputerTaskActionCheckpointState> | Readonly<Record<string, ComputerTaskActionCheckpointState>>;
 }): ComputerTaskCheckpoint {
+  const programErrors = validateComputerTaskProgram(options.program);
+  if (programErrors.length > 0) throw new Error(`invalid computer task program: ${programErrors.join('; ')}`);
   const entries = options.actions instanceof Map ? [...options.actions.entries()] : Object.entries(options.actions);
   const actions = entries.map(([stepId, state]) => ({ stepId, state })).sort((a, b) => a.stepId < b.stepId ? -1 : a.stepId > b.stepId ? 1 : 0);
   const checkpoint: ComputerTaskCheckpoint = {
