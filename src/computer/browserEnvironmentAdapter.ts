@@ -46,6 +46,11 @@ const MAX_RUNTIME_POLL_INTERVAL_MS = 5_000;
 const MAX_FRAME_DOCUMENT_TOKENS = 32;
 const MAX_FRAME_DOCUMENT_TOKEN_BYTES = 4 * 1024;
 const FRAME_DOCUMENT_TOKENS_INCOMPLETE = '__browser_identity_incomplete__';
+const BOUNDED_ACTION_SEMANTIC_LIMITS: Readonly<BoundedSemanticSnapshotLimits> = Object.freeze({
+  maxItems: MAX_OBSERVATION_ITEMS,
+  maxTextBytes: MAX_OBSERVATION_TEXT_BYTES,
+  maxDepth: MAX_OBSERVATION_DEPTH,
+});
 
 type BrowserRuntimePolicy = Omit<TaskRuntimeOptions, 'maxSteps' | 'maxVisitsPerStep' | 'commitmentDetection' | 'commitmentVerification'>;
 const RUNTIME_POLICY_KEYS = [
@@ -81,6 +86,26 @@ export interface BrowserPressKeyPayload { key: string; }
 export interface BrowserScrollPayload { deltaX?: number; deltaY?: number; }
 export interface BrowserFrameDocumentTokenLimits { maxFrames: number; maxTextBytes: number; }
 
+interface BrowserBoundedActivateOptions {
+  requireUnambiguous?: boolean;
+  autoReveal?: boolean;
+  method?: 'auto' | 'keyboard' | 'pointer';
+  key?: string;
+}
+interface BrowserBoundedHoverOptions {
+  requireUnambiguous?: boolean;
+  autoReveal?: boolean;
+  timeoutMs?: number;
+  maxSamples?: number;
+  pollIntervalMs?: number;
+}
+interface BrowserBoundedTypeOptions {
+  requireUnambiguous?: boolean;
+  autoReveal?: boolean;
+  delayMs?: number;
+  expectedValue?: string;
+}
+
 /** Browser-specific runtime hooks stay outside the neutral computer contracts. */
 export interface BrowserComputerRuntime extends TaskRuntimeEngine {
   browserTargets?(): BrowserTargetState[];
@@ -92,6 +117,30 @@ export interface BrowserComputerRuntime extends TaskRuntimeEngine {
     targetId: string | undefined,
     limits: BoundedSemanticSnapshotLimits,
   ): Promise<BoundedSemanticSnapshotResult | undefined>;
+  resolveBoundedSemanticTarget?(
+    targetId: string | undefined,
+    entityId: string,
+    limits: BoundedSemanticSnapshotLimits,
+  ): Promise<InteractionNode | undefined>;
+  activateBoundedSemantic?(
+    targetId: string | undefined,
+    entityId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: BrowserBoundedActivateOptions,
+  ): Promise<{ status: string; target: InteractionNode | null }>;
+  hoverBoundedSemantic?(
+    targetId: string | undefined,
+    entityId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: BrowserBoundedHoverOptions,
+  ): Promise<{ status: string; target: InteractionNode | null }>;
+  typeBoundedSemantic?(
+    targetId: string | undefined,
+    entityId: string,
+    text: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: BrowserBoundedTypeOptions,
+  ): Promise<{ status: string; target: InteractionNode | null }>;
   visualSnapshot?(targetId: string | undefined, options?: VisualCaptureOptions): Promise<VisualSnapshot | undefined>;
   mediaSnapshot?(targetId: string | undefined, options?: ObserveMediaStateOptions): Promise<MediaStateSnapshot | undefined>;
 }
@@ -123,6 +172,7 @@ interface ResolvedEntity {
   surface: ComputerSurfaceRef;
   identity: BrowserDocumentIdentity;
   frameToken: string;
+  structuralId: string;
 }
 
 function utf8Bytes(value: string): number { return new TextEncoder().encode(value).byteLength; }
@@ -433,37 +483,34 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   }
   private async resolveEntity(target: ComputerEntityRef | undefined): Promise<ResolvedEntity | undefined> {
     if (!target || target.adapterId !== this.descriptor.id || target.environment !== 'browser' || target.kind !== 'ui-control' || !target.surfaceId || target.generation === undefined) return undefined;
+    if (!this.runtime.resolveBoundedSemanticTarget) return undefined;
     const browserTarget = this.targetById(target.surfaceId);
     if (!browserTarget || target.generation !== browserTarget.sequence || this.runtime.activePageTargetId?.() !== target.surfaceId) return undefined;
     const surface = this.surfaceForTarget(browserTarget);
     const match = /^doc:([^:]+):frame:([^:]+)(?::gen:([^:]+))?:(backend:(\d+)|node:(.+))$/.exec(target.entityId);
-    if (!match) return undefined;
-    let frameId: string, explicitFrameToken: string | undefined;
+    if (!match || match[6] === undefined) return undefined;
+    let frameId: string, explicitFrameToken: string | undefined, structuralId: string;
     try {
       frameId = decodeURIComponent(match[2]);
       explicitFrameToken = match[3] === undefined ? undefined : decodeURIComponent(match[3]);
+      structuralId = decodeURIComponent(match[6]);
     } catch { return undefined; }
     if (frameId !== 'main' && explicitFrameToken === undefined) return undefined;
     if (frameId === 'main' && explicitFrameToken !== undefined) return undefined;
     const expectedFrameToken = explicitFrameToken ?? match[1];
     const before = await this.activeDocumentIdentity(surface);
     if (!before || (frameId !== 'main' && !before.complete) || before.topToken !== match[1] || before.frameTokens[frameId] !== expectedFrameToken) return undefined;
-    const nodes = await this.runtime.refresh();
+    const node = await this.runtime.resolveBoundedSemanticTarget(surface.surfaceId, structuralId, BOUNDED_ACTION_SEMANTIC_LIMITS);
     const after = await this.activeDocumentIdentity(surface);
     if (!after || (frameId !== 'main' && !after.complete) || !sameDocumentIdentity(before, after) || after.topToken !== match[1] || after.frameTokens[frameId] !== expectedFrameToken) return undefined;
-    const backendNodeId = match[5] !== undefined ? Number(match[5]) : undefined;
-    let nodeId: string | undefined;
-    if (match[6] !== undefined) { try { nodeId = decodeURIComponent(match[6]); } catch { return undefined; } }
-    const node = backendNodeId !== undefined
-      ? nodes.find((candidate) => candidate.frameId === frameId && candidate.backendNodeId === backendNodeId)
-      : nodes.find((candidate) => candidate.frameId === frameId && (candidate.id === nodeId || candidate.structuralId === nodeId));
-    return node ? { node, surface, identity: after, frameToken: expectedFrameToken } : undefined;
+    if (!node || node.frameId !== frameId || (node.id !== structuralId && node.structuralId !== structuralId)) return undefined;
+    return { node, surface, identity: after, frameToken: expectedFrameToken, structuralId };
   }
-  private boundedObservedTarget(
+  private async boundedObservedTarget(
     target: ComputerEntityRef,
     nodes: readonly InteractionNode[],
     identity: BrowserDocumentIdentity,
-  ): InteractionNode | undefined {
+  ): Promise<InteractionNode | undefined> {
     const match = /^doc:([^:]+):frame:([^:]+)(?::gen:([^:]+))?:node:(.+)$/.exec(target.entityId);
     if (!match) return undefined;
     let frameId: string, explicitFrameToken: string | undefined, nodeId: string;
@@ -543,7 +590,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
       if (!after || !sameDocumentIdentity(before, after)) throw new Error('browser.document.identity-changed');
       let nodes = snapshot.nodes;
       if (request.target) {
-        const exact = this.boundedObservedTarget(request.target, nodes, after);
+        const exact = await this.boundedObservedTarget(request.target, nodes, after);
         if (!exact) throw new Error('browser.observation.target-stale');
         nodes = [exact];
       }
@@ -602,13 +649,32 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const adapter = this;
     return new Proxy(this.runtime, {
       get(target, property) {
+        if (property === 'refresh') {
+          return async () => {
+            const before = await adapter.activeDocumentIdentity(resolved.surface);
+            if (!before || before.topToken !== resolved.identity.topToken || before.frameTokens[resolved.node.frameId] !== resolved.frameToken) return [];
+            const snapshot = await target.semanticSnapshot?.(resolved.surface.surfaceId, BOUNDED_ACTION_SEMANTIC_LIMITS);
+            const after = await adapter.activeDocumentIdentity(resolved.surface);
+            if (!snapshot || !after || !sameDocumentIdentity(before, after)) return [];
+            return snapshot.nodes;
+          };
+        }
         if (property === 'activate') {
-          return async (...args: Parameters<TaskRuntimeEngine['activate']>) => {
+          return async (_query: unknown, options?: BrowserBoundedActivateOptions) => {
             if (!(await adapter.entityIdentityCurrent(resolved))) {
               onStaleBeforeDispatch();
               return { status: 'target-not-found', target: null };
             }
-            return target.activate(...args);
+            if (!target.activateBoundedSemantic) {
+              onStaleBeforeDispatch();
+              return { status: 'target-not-found', target: null };
+            }
+            return target.activateBoundedSemantic(
+              resolved.surface.surfaceId,
+              resolved.structuralId,
+              BOUNDED_ACTION_SEMANTIC_LIMITS,
+              options,
+            );
           };
         }
         const value = Reflect.get(target, property, target);
@@ -625,7 +691,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const runtime = new TaskRuntime(this.runtimeForCommitment(resolved, () => { staleBeforeDispatch = true; }));
     const risk = request.effect === 'local-reversible' ? 'interaction' : 'external-side-effect';
     const action = request.capability === 'browser.activate'
-      ? { id: 'act' as const, kind: 'activate' as const, target: { backendNodeId: resolved!.node.backendNodeId, frameId: resolved!.node.frameId }, method: (payload as BrowserActivatePayload).method, key: (payload as BrowserActivatePayload).key, risk, next: 'done' as const }
+      ? { id: 'act' as const, kind: 'activate' as const, target: { id: resolved!.structuralId, frameId: resolved!.node.frameId }, method: (payload as BrowserActivatePayload).method, key: (payload as BrowserActivatePayload).key, risk, next: 'done' as const }
       : { id: 'act' as const, kind: 'press-key' as const, key: (payload as BrowserPressKeyPayload).key, risk, next: 'done' as const };
     const result = await runtime.run({ version: 1, name: `computer-adapter:${request.actionId}`, entry: 'act', steps: [action, { id: 'done', kind: 'complete' }] }, {}, {
       ...this.options.runtimeOptions, maxSteps: 2, maxVisitsPerStep: 1, commitmentDetection: 'auto', commitmentVerification: 'auto',
@@ -649,9 +715,9 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     if (authority.capability === 'browser.activate') {
       const payload = validateActivatePayload(authority.payload);
       if (!payload) return failedPreDispatch('browser.payload.invalid');
+      if (!this.runtime.resolveBoundedSemanticTarget || !this.runtime.activateBoundedSemantic) return failedPreDispatch('browser.bounded-action.unsupported', 'unsupported');
       const resolved = await this.resolveEntity(authority.target);
       if (!resolved) return failedPreDispatch('browser.target.stale');
-      if (resolved.node.backendNodeId === undefined) return failedPreDispatch('browser.target.identity-unavailable');
       try { return await this.runCommitmentAwareAction(authority as ComputerActionRequest, payload, resolved); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
     if (authority.capability === 'browser.press-key') {
@@ -665,20 +731,32 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     let invoked = false;
     try {
       if (authority.capability === 'browser.hover') {
+        if (!this.runtime.resolveBoundedSemanticTarget || !this.runtime.hoverBoundedSemantic) return failedPreDispatch('browser.bounded-action.unsupported', 'unsupported');
         const resolved = await this.resolveEntity(authority.target);
         if (!resolved || !(await this.entityIdentityCurrent(resolved))) return failedPreDispatch('browser.target.stale');
         invoked = true;
-        const result = await this.runtime.hover?.({ backendNodeId: resolved.node.backendNodeId, frameId: resolved.node.frameId }, { requireUnambiguous: true, autoReveal: true });
-        if (!result) return unknownAfterInvocation('browser.hover.unsupported-after-invocation');
+        const result = await this.runtime.hoverBoundedSemantic(
+          resolved.surface.surfaceId,
+          resolved.structuralId,
+          BOUNDED_ACTION_SEMANTIC_LIMITS,
+          { requireUnambiguous: true, autoReveal: true },
+        );
         return result.status === 'verified' ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] } : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
       if (authority.capability === 'browser.type') {
         const payload = validateTypePayload(authority.payload);
         if (!payload) return failedPreDispatch('browser.payload.invalid');
+        if (!this.runtime.resolveBoundedSemanticTarget || !this.runtime.typeBoundedSemantic) return failedPreDispatch('browser.bounded-action.unsupported', 'unsupported');
         const resolved = await this.resolveEntity(authority.target);
         if (!resolved || !(await this.entityIdentityCurrent(resolved))) return failedPreDispatch('browser.target.stale');
         invoked = true;
-        const result = await this.runtime.typeInto({ backendNodeId: resolved.node.backendNodeId, frameId: resolved.node.frameId }, payload.text, { requireUnambiguous: true, autoReveal: true, delayMs: payload.delayMs, expectedValue: payload.expectedValue });
+        const result = await this.runtime.typeBoundedSemantic(
+          resolved.surface.surfaceId,
+          resolved.structuralId,
+          payload.text,
+          BOUNDED_ACTION_SEMANTIC_LIMITS,
+          { requireUnambiguous: true, autoReveal: true, delayMs: payload.delayMs, expectedValue: payload.expectedValue },
+        );
         return result.status === 'verified' ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] } : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
       if (authority.capability === 'browser.scroll-viewport') {
