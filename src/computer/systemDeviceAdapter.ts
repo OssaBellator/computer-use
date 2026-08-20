@@ -167,6 +167,9 @@ const SAFE_MACHINE_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
 const SAFE_SETTING = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 const SYSTEM_STATES = new Set(['known', 'unsupported', 'permission-denied', 'unknown']);
 const SECURITY_VALUES = new Set(['enabled', 'disabled', 'managed', 'not-configured', 'unknown']);
+const VERIFICATION_STATES = new Set<SystemDeviceMutationVerification['state']>([
+  'verified', 'pending', 'rejected', 'mismatch', 'unverified',
+]);
 const HIGH_RISK_UNSUPPORTED_CAPABILITIES = new Set([
   'device.disk.partition',
   'device.storage.destructive',
@@ -204,9 +207,6 @@ function sameIdentity(left: SystemDeviceIdentity, right: SystemDeviceIdentity): 
 }
 function validRevision(value: string): boolean {
   return boundedText(value, MAX_ID_BYTES);
-}
-function validEvidence(evidence: readonly string[]): boolean {
-  return evidence.length <= MAX_EVIDENCE && evidence.every((entry) => SAFE_MACHINE_CODE.test(entry));
 }
 function safeMachineCode(value: string | undefined, fallback: string): string {
   return value !== undefined && SAFE_MACHINE_CODE.test(value) ? value : fallback;
@@ -249,13 +249,32 @@ function boundVolume(volume: BoundedVolumeMetadata): BoundedVolumeMetadata | und
 function accessFromFailure(failure: SystemDeviceBackendFailure): SystemDevicePrivilegeState {
   return { state: failure.state, reason: safeMachineCode(failure.evidence, 'backend-access-unavailable') };
 }
+
+function snapshotEvidence(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length > MAX_EVIDENCE) return undefined;
+  const captured: string[] = [];
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return undefined;
+      if (typeof descriptor.value !== 'string' || !SAFE_MACHINE_CODE.test(descriptor.value)) return undefined;
+      captured.push(descriptor.value);
+    }
+  } catch {
+    return undefined;
+  }
+  return Object.freeze(captured);
+}
+
 function actionResult(
   status: ComputerActionResult['status'],
   dispatch: ComputerActionResult['dispatch'],
   verification: ComputerActionResult['verification'],
-  evidence: readonly string[],
+  evidence: unknown,
 ): ComputerActionResult {
-  return { status, dispatch, verification, evidence: validEvidence(evidence) ? evidence : ['evidence-redacted'] };
+  const ownedEvidence = snapshotEvidence(evidence) ?? Object.freeze(['evidence-redacted']);
+  return Object.freeze({ status, dispatch, verification, evidence: ownedEvidence });
 }
 function requiredEffect(payload: SystemDeviceMutationPayload): Exclude<ComputerEffectClass, 'observe-only'> {
   switch (payload.operation) {
@@ -357,6 +376,18 @@ function snapshotMutationPayload(value: unknown): Readonly<SystemDeviceMutationP
   });
 }
 
+function snapshotMutationVerification(value: unknown): Readonly<SystemDeviceMutationVerification> | undefined {
+  const captured = snapshotOwnDataProperties(value, ['state', 'evidence']);
+  if (!captured || typeof captured.state !== 'string' ||
+      !VERIFICATION_STATES.has(captured.state as SystemDeviceMutationVerification['state'])) return undefined;
+  const evidence = snapshotEvidence(captured.evidence);
+  if (!evidence) return undefined;
+  return Object.freeze({
+    state: captured.state as SystemDeviceMutationVerification['state'],
+    evidence,
+  });
+}
+
 function neutralTargetMatchesPayload(
   request: ComputerActionRequest,
   payloadTarget: Readonly<SystemDeviceIdentity>,
@@ -416,7 +447,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'device' as const,
-      version: 'system-device-foundation-v6',
+      version: 'system-device-foundation-v7',
       capabilities: Object.freeze([
         'device.observe',
         'system.observe',
@@ -686,9 +717,9 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
       return uncertain;
     }
 
-    let verification: SystemDeviceMutationVerification;
+    let rawVerification: SystemDeviceMutationVerification;
     try {
-      verification = await this.backend.verifyMutation(
+      rawVerification = await this.backend.verifyMutation(
         payload as SystemDeviceMutationPayload,
         baseline as SystemDeviceMutationBaseline,
         dispatch,
@@ -698,12 +729,17 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
       await this.recordBestEffort(action.actionId, result);
       return result;
     }
-    const evidence = validEvidence(verification.evidence) ? verification.evidence : ['evidence-redacted'];
+    const verification = snapshotMutationVerification(rawVerification);
+    if (!verification) {
+      const result = actionResult('unknown', 'dispatched-once', 'unverified', ['invalid-backend-verification']);
+      await this.recordBestEffort(action.actionId, result);
+      return result;
+    }
     const result = verification.state === 'verified'
-      ? actionResult('completed', 'dispatched-once', 'verified', evidence)
+      ? actionResult('completed', 'dispatched-once', 'verified', verification.evidence)
       : actionResult(
           verification.state === 'rejected' || verification.state === 'mismatch' ? 'rejected' : 'unknown',
-          'dispatched-once', verification.state, evidence,
+          'dispatched-once', verification.state, verification.evidence,
         );
     await this.recordBestEffort(action.actionId, result);
     return result;
