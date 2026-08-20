@@ -27,6 +27,8 @@ export interface ComputerTaskCheckpoint {
 export interface ComputerTaskCheckpointValidationOptions {
   program?: ComputerTaskProgram;
   executionId?: string;
+  /** Runtime resume accepts only checkpoints produced by this module's create/decode paths. */
+  requireRuntimeProvenance?: boolean;
 }
 
 interface ComputerTaskCheckpointEnvelope {
@@ -43,6 +45,8 @@ const ACTION_STATES: readonly ComputerTaskActionCheckpointState[] = [
   'dispatched-unverified',
   'unknown-dispatch',
 ];
+const CHECKPOINT_PROVENANCE = Symbol('computer-task-checkpoint-provenance');
+type ProvenancedCheckpoint = ComputerTaskCheckpoint & { readonly [CHECKPOINT_PROVENANCE]: true };
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
@@ -103,12 +107,42 @@ export function computerTaskProgramHash(program: ComputerTaskProgram): string {
   return sha256(canonicalJson(programProjection(program)));
 }
 
+function actionStepIds(program: ComputerTaskProgram): string[] {
+  return program.steps.filter((step) => step.kind === 'action').map((step) => step.id).sort();
+}
+
+function markCheckpointProvenance(checkpoint: ComputerTaskCheckpoint): ComputerTaskCheckpoint {
+  const mutable = checkpoint as ProvenancedCheckpoint;
+  Object.defineProperty(mutable, CHECKPOINT_PROVENANCE, {
+    value: true,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return checkpoint;
+}
+
+function freezeCheckpoint(checkpoint: ComputerTaskCheckpoint): ComputerTaskCheckpoint {
+  const frozen: ComputerTaskCheckpoint = {
+    version: checkpoint.version,
+    program: Object.freeze({ ...checkpoint.program }),
+    execution: Object.freeze({ ...checkpoint.execution }),
+    cursor: Object.freeze({ ...checkpoint.cursor }),
+    actions: Object.freeze(checkpoint.actions.map((action) => Object.freeze({ ...action }))),
+  };
+  markCheckpointProvenance(frozen);
+  return Object.freeze(frozen);
+}
+
 export function validateComputerTaskCheckpoint(
   value: unknown,
   options: ComputerTaskCheckpointValidationOptions = {},
 ): asserts value is ComputerTaskCheckpoint {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid computer task checkpoint');
   const checkpoint = value as Partial<ComputerTaskCheckpoint>;
+  if (options.requireRuntimeProvenance && (value as Partial<ProvenancedCheckpoint>)[CHECKPOINT_PROVENANCE] !== true) {
+    throw new Error('computer task checkpoint lacks runtime provenance; use create/decode checkpoint APIs');
+  }
   if (checkpoint.version !== COMPUTER_TASK_CHECKPOINT_VERSION) throw new Error('unsupported computer task checkpoint version');
   if (!checkpoint.program || !boundedIdentifier(checkpoint.program.id, 128) || !SHA256.test(checkpoint.program.hash)) {
     throw new Error('invalid computer task checkpoint program identity');
@@ -153,6 +187,19 @@ export function validateComputerTaskCheckpoint(
         throw new Error('computer task checkpoint action names a missing or non-action step');
       }
     }
+    const expectedActionIds = actionStepIds(options.program);
+    const actualActionIds = [...seen].sort();
+    if (expectedActionIds.length !== actualActionIds.length || expectedActionIds.some((id, index) => id !== actualActionIds[index])) {
+      throw new Error('computer task checkpoint must include explicit state for every action step');
+    }
+    const cursor = checkpoint.cursor.nextStepId ? stepById.get(checkpoint.cursor.nextStepId) : undefined;
+    if (cursor?.kind === 'action') {
+      const cursorState = checkpoint.actions.find((action) => action.stepId === cursor.id)?.state;
+      if (!cursorState) throw new Error('computer task checkpoint cursor action is missing history state');
+      if (cursorState === 'unknown-dispatch' || cursorState === 'dispatched-unverified') {
+        return;
+      }
+    }
   }
 }
 
@@ -165,8 +212,16 @@ export function createComputerTaskCheckpoint(options: {
 }): ComputerTaskCheckpoint {
   const programErrors = validateComputerTaskProgram(options.program);
   if (programErrors.length > 0) throw new Error(`invalid computer task program: ${programErrors.join('; ')}`);
-  const entries = options.actions instanceof Map ? [...options.actions.entries()] : Object.entries(options.actions);
-  const actions = entries.map(([stepId, state]) => ({ stepId, state })).sort((a, b) => a.stepId < b.stepId ? -1 : a.stepId > b.stepId ? 1 : 0);
+  const supplied = options.actions instanceof Map ? new Map(options.actions) : new Map(Object.entries(options.actions));
+  const actions = actionStepIds(options.program).map((stepId) => ({
+    stepId,
+    state: supplied.get(stepId) ?? 'not-started',
+  }));
+  for (const suppliedStepId of supplied.keys()) {
+    if (!actions.some((action) => action.stepId === suppliedStepId)) {
+      throw new Error('computer task checkpoint action names a missing or non-action step');
+    }
+  }
   const checkpoint: ComputerTaskCheckpoint = {
     version: COMPUTER_TASK_CHECKPOINT_VERSION,
     program: { id: options.program.id, hash: computerTaskProgramHash(options.program) },
@@ -175,13 +230,7 @@ export function createComputerTaskCheckpoint(options: {
     actions,
   };
   validateComputerTaskCheckpoint(checkpoint, { program: options.program, executionId: options.executionId });
-  return Object.freeze({
-    version: checkpoint.version,
-    program: Object.freeze({ ...checkpoint.program }),
-    execution: Object.freeze({ ...checkpoint.execution }),
-    cursor: Object.freeze({ ...checkpoint.cursor }),
-    actions: Object.freeze(checkpoint.actions.map((action) => Object.freeze({ ...action }))),
-  });
+  return freezeCheckpoint(checkpoint);
 }
 
 export function encodeComputerTaskCheckpoint(checkpoint: ComputerTaskCheckpoint): string {
@@ -207,11 +256,5 @@ export function decodeComputerTaskCheckpoint(encoded: string): ComputerTaskCheck
   const expected = Buffer.from(sha256(canonicalJson(envelope.payload)), 'hex');
   const actual = Buffer.from(envelope.integrity.digest, 'hex');
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error('computer task checkpoint integrity mismatch');
-  return Object.freeze({
-    version: COMPUTER_TASK_CHECKPOINT_VERSION,
-    program: Object.freeze({ ...envelope.payload.program }),
-    execution: Object.freeze({ ...envelope.payload.execution }),
-    cursor: Object.freeze({ ...envelope.payload.cursor }),
-    actions: Object.freeze(envelope.payload.actions.map((entry) => Object.freeze({ ...entry }))),
-  });
+  return freezeCheckpoint(envelope.payload);
 }
