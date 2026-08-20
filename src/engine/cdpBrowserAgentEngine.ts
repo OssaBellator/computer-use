@@ -65,7 +65,8 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   async frameDocumentTokens(): Promise<Readonly<Record<string, string>> | undefined> {
     if (!this.snapshotPage) return undefined;
     const frames = this.snapshotPage.frames();
-    const boundedFrames = frames.slice(0, MAX_FRAME_DOCUMENT_TOKEN_FRAMES);
+    const incompleteByCount = frames.length > MAX_FRAME_DOCUMENT_TOKEN_FRAMES;
+    const boundedFrames = incompleteByCount ? frames.slice(0, 1) : frames;
     const entries = await Promise.all(boundedFrames.map(async (frame, index) => {
       const timeOrigin = await frame.evaluate(() => performance.timeOrigin);
       if (!Number.isFinite(timeOrigin) || timeOrigin < 0) return undefined;
@@ -73,16 +74,21 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     }));
     const result: Record<string, string> = {};
     let bytes = 0;
-    let complete = frames.length <= MAX_FRAME_DOCUMENT_TOKEN_FRAMES;
+    let complete = !incompleteByCount;
     for (const entry of entries) {
       if (!entry) { complete = false; continue; }
       const [frameId, token] = entry;
-      const entryBytes = Buffer.byteLength(frameId) + Buffer.byteLength(token);
+      const entryBytes = new TextEncoder().encode(frameId).byteLength + new TextEncoder().encode(token).byteLength;
       if (bytes + entryBytes > MAX_FRAME_DOCUMENT_TOKEN_BYTES) { complete = false; break; }
       bytes += entryBytes;
       result[frameId] = token;
     }
-    if (!complete) result[FRAME_DOCUMENT_TOKENS_INCOMPLETE] = '1';
+    if (!complete) {
+      const main = result.main;
+      for (const key of Object.keys(result)) delete result[key];
+      if (main !== undefined) result.main = main;
+      result[FRAME_DOCUMENT_TOKENS_INCOMPLETE] = '1';
+    }
     return result;
   }
 
