@@ -46,6 +46,10 @@ async function observed(adapter:DesktopUiEnvironmentAdapter) {
 function surfaceTarget(adapter:DesktopUiEnvironmentAdapter,window:Awaited<ReturnType<typeof observed>>) {
   return {adapterId:adapter.descriptor.id,environment:'desktop-ui' as const,kind:'surface' as const,entityId:window.nativeWindowId,surfaceId:window.nativeWindowId,generation:window.generation};
 }
+async function backendRef(backend:PlatformDesktopUiBackend) {
+  const system = await backend.observeSystem({maxItems:1,maxTextBytes:256,maxDepth:2});
+  return {nativeWindowId:system.windows[0]!.nativeWindowId,generation:system.windows[0]!.generation};
+}
 
 test('independent platform backend instances never recreate the same public window authority',async()=>{
   const first = new DesktopUiEnvironmentAdapter(new PlatformDesktopUiBackend(new ContractBridge()),'desktop:first');
@@ -95,6 +99,48 @@ test('native acquisition receives caller bounds before enumeration/tree material
   assert.equal(bridge.lastAccessibilityLimits?.maxItems,3);
   assert.equal(bridge.lastAccessibilityLimits?.maxTextBytes,96);
   assert.equal(bridge.lastAccessibilityLimits?.maxDepth,1);
+});
+
+test('platform backend rejects over-budget accessibility children before traversing them',async()=>{
+  const bridge = new ContractBridge();
+  let childGetterCalls = 0;
+  bridge.accessibility = async (window)=>{
+    const children = new Array(3);
+    Object.defineProperty(children,'0',{enumerable:true,get(){ childGetterCalls += 1; return {nativeId:'a',instanceToken:'a'}; }});
+    Object.defineProperty(children,'1',{enumerable:true,get(){ childGetterCalls += 1; return {nativeId:'b',instanceToken:'b'}; }});
+    Object.defineProperty(children,'2',{enumerable:true,get(){ childGetterCalls += 1; return {nativeId:'c',instanceToken:'c'}; }});
+    return {status:'available' as const,windowInstanceToken:window.instanceToken,root:{nativeId:'root',instanceToken:'root',children} as never};
+  };
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  await assert.rejects(()=>backend.observeAccessibility(ref,{maxItems:2,maxTextBytes:256,maxDepth:2}),/exceeded accessibility acquisition budget/);
+  assert.equal(childGetterCalls,0);
+});
+
+test('platform backend rejects accessibility accessors without invoking them',async()=>{
+  const bridge = new ContractBridge();
+  let getterCalls = 0;
+  bridge.accessibility = async (window)=>{
+    const root:Record<string,unknown> = {instanceToken:'root'};
+    Object.defineProperty(root,'nativeId',{enumerable:true,get(){ getterCalls += 1; return 'root'; }});
+    return {status:'available' as const,windowInstanceToken:window.instanceToken,root:root as never};
+  };
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  await assert.rejects(()=>backend.observeAccessibility(ref,{maxItems:2,maxTextBytes:256,maxDepth:2}),/accessor field rejected/);
+  assert.equal(getterCalls,0);
+});
+
+test('platform backend rejects cyclic accessibility material before leasing controls',async()=>{
+  const bridge = new ContractBridge();
+  bridge.accessibility = async (window)=>{
+    const root:{nativeId:string;instanceToken:string;children?:unknown[]} = {nativeId:'root',instanceToken:'root'};
+    root.children = [root];
+    return {status:'available' as const,windowInstanceToken:window.instanceToken,root:root as never};
+  };
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  await assert.rejects(()=>backend.observeAccessibility(ref,{maxItems:3,maxTextBytes:256,maxDepth:3}),/cycle invalid/);
 });
 
 test('malformed native dispatch result maps conservatively to unknown',async()=>{
