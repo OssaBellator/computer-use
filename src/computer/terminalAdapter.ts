@@ -309,6 +309,45 @@ function snapshotActionRequest(value: unknown): ComputerActionRequest | undefine
   });
 }
 
+function snapshotExecutionPathIdentity(
+  value: unknown,
+  expectedKind: 'file' | 'directory',
+): ExecutionPathIdentity | undefined {
+  const descriptors = ownDataDescriptors(value, [
+    'realPath', 'kind', 'dev', 'ino', 'mode', 'size', 'mtimeNs', 'birthtimeNs', 'ctimeNs',
+  ]);
+  if (!descriptors) return undefined;
+  const realPath = descriptorValue(descriptors, 'realPath');
+  const kind = descriptorValue(descriptors, 'kind');
+  const dev = descriptorValue(descriptors, 'dev');
+  const ino = descriptorValue(descriptors, 'ino');
+  const mode = descriptorValue(descriptors, 'mode');
+  const size = descriptorValue(descriptors, 'size');
+  const mtimeNs = descriptorValue(descriptors, 'mtimeNs');
+  const birthtimeNs = descriptorValue(descriptors, 'birthtimeNs');
+  const ctimeNs = descriptorValue(descriptors, 'ctimeNs');
+  if (typeof realPath !== 'string' || !isAbsolute(realPath) || realPath.includes('\0') || utf8Bytes(realPath) > MAX_EXECUTABLE_BYTES) return undefined;
+  if (kind !== expectedKind) return undefined;
+  if (typeof dev !== 'string' || dev.length === 0 || utf8Bytes(dev) > 256) return undefined;
+  if (typeof ino !== 'string' || ino.length === 0 || utf8Bytes(ino) > 256) return undefined;
+  if (typeof mode !== 'string' || mode.length === 0 || utf8Bytes(mode) > 256) return undefined;
+  for (const optional of [size, mtimeNs, birthtimeNs, ctimeNs]) {
+    if (optional !== undefined && (typeof optional !== 'string' || optional.length === 0 || utf8Bytes(optional) > 256)) return undefined;
+  }
+  if (expectedKind === 'file' && (typeof size !== 'string' || typeof mtimeNs !== 'string')) return undefined;
+  return Object.freeze({
+    realPath,
+    kind: expectedKind,
+    dev,
+    ino,
+    mode,
+    ...(size === undefined ? {} : { size: size as string }),
+    ...(mtimeNs === undefined ? {} : { mtimeNs: mtimeNs as string }),
+    ...(birthtimeNs === undefined ? {} : { birthtimeNs: birthtimeNs as string }),
+    ...(ctimeNs === undefined ? {} : { ctimeNs: ctimeNs as string }),
+  });
+}
+
 function validateString(value: unknown, maxBytes: number): value is string {
   return typeof value === 'string' && value.length > 0 && utf8Bytes(value) <= maxBytes && !value.includes('\0');
 }
@@ -465,9 +504,9 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     const timeoutMs = payload.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const mode = payload.mode;
 
-    const preflightExecutable = await this.pathBinder.bind(executableInput, 'file');
+    const preflightExecutable = snapshotExecutionPathIdentity(await this.pathBinder.bind(executableInput, 'file'), 'file');
     if (!preflightExecutable) return this.prelaunchFailure('terminal.executable.unavailable');
-    const preflightCwd = await this.pathBinder.bind(cwdInput, 'directory');
+    const preflightCwd = snapshotExecutionPathIdentity(await this.pathBinder.bind(cwdInput, 'directory'), 'directory');
     if (!preflightCwd) return this.prelaunchFailure('terminal.cwd.unavailable');
 
     const executable = preflightExecutable.realPath;
@@ -477,8 +516,8 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     let child: SpawnedProcessLike;
     let invocationStarted = false;
 
-    const refreshedExecutable = await this.pathBinder.bind(executableInput, 'file');
-    const refreshedCwd = await this.pathBinder.bind(cwdInput, 'directory');
+    const refreshedExecutable = snapshotExecutionPathIdentity(await this.pathBinder.bind(executableInput, 'file'), 'file');
+    const refreshedCwd = snapshotExecutionPathIdentity(await this.pathBinder.bind(cwdInput, 'directory'), 'directory');
     if (!refreshedExecutable || !sameExecutionPath(preflightExecutable, refreshedExecutable)) {
       return this.prelaunchFailure('terminal.executable.replaced');
     }
