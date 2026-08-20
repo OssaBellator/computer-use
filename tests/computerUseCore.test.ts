@@ -80,6 +80,7 @@ test('browser bridge preserves browser strengths without pretending to be a gene
   assert.equal(computerCapabilityState(profile, 'document-editing').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'media-playback').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'game-control').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'communication-control').support, 'partial');
 
   for (const capability of [
     'filesystem-observation', 'file-read', 'file-write', 'terminal-execution', 'process-observation',
@@ -88,6 +89,14 @@ test('browser bridge preserves browser strengths without pretending to be a gene
   ] as const) {
     assert.equal(computerCapabilityState(profile, capability).support, 'unsupported');
   }
+});
+
+test('browser bridge never invents partial communication or game control from an empty browser profile', () => {
+  const profile = computerProfileFromBrowserProfile({ id: 'empty-browser', capabilities: {} });
+  assert.equal(computerCapabilityState(profile, 'semantic-ui-observation').support, 'unsupported');
+  assert.equal(computerCapabilityState(profile, 'communication-control').support, 'unsupported');
+  assert.equal(computerCapabilityState(profile, 'game-control').support, 'unsupported');
+  assert.equal(computerCapabilityState(profile, 'filesystem-observation').support, 'unsupported');
 });
 
 test('broad native-computer categories remain unsupported through the browser adapter alone', () => {
