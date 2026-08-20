@@ -73,6 +73,14 @@ function boundedIdentifier(value: unknown, max = 256): value is string {
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf8') <= max && !/[\r\n\0]/.test(value);
 }
 
+function assertAllowedKeys(value: unknown, allowed: readonly string[], field: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`invalid ${field}`);
+  const accepted = new Set(allowed);
+  for (const key of Object.keys(value)) {
+    if (!accepted.has(key)) throw new Error(`${field} contains unsupported fields`);
+  }
+}
+
 function programProjection(program: ComputerTaskProgram): unknown {
   return {
     id: program.id,
@@ -166,12 +174,19 @@ function markCheckpointProvenance(checkpoint: ComputerTaskCheckpoint): ComputerT
 }
 
 function freezeCheckpoint(checkpoint: ComputerTaskCheckpoint): ComputerTaskCheckpoint {
+  const cursor = checkpoint.cursor.nextStepId === undefined
+    ? { stepsExecuted: checkpoint.cursor.stepsExecuted }
+    : { nextStepId: checkpoint.cursor.nextStepId, stepsExecuted: checkpoint.cursor.stepsExecuted };
   const frozen: ComputerTaskCheckpoint = {
     version: checkpoint.version,
-    program: Object.freeze({ ...checkpoint.program }),
-    execution: Object.freeze({ ...checkpoint.execution }),
-    cursor: Object.freeze({ ...checkpoint.cursor }),
-    actions: Object.freeze(checkpoint.actions.map((action) => Object.freeze({ ...action }))),
+    program: Object.freeze({ id: checkpoint.program.id, hash: checkpoint.program.hash }),
+    execution: Object.freeze({ id: checkpoint.execution.id }),
+    cursor: Object.freeze(cursor),
+    actions: Object.freeze(checkpoint.actions.map((action) => Object.freeze(
+      action.uncertainty === undefined
+        ? { stepId: action.stepId, state: action.state }
+        : { stepId: action.stepId, state: action.state, uncertainty: action.uncertainty },
+    ))),
   };
   markCheckpointProvenance(frozen);
   return Object.freeze(frozen);
@@ -181,18 +196,25 @@ export function validateComputerTaskCheckpoint(
   value: unknown,
   options: ComputerTaskCheckpointValidationOptions = {},
 ): asserts value is ComputerTaskCheckpoint {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid computer task checkpoint');
-  const checkpoint = value as Partial<ComputerTaskCheckpoint>;
+  assertAllowedKeys(value, ['version', 'program', 'execution', 'cursor', 'actions'], 'computer task checkpoint');
+  const checkpoint = value as unknown as Partial<ComputerTaskCheckpoint>;
   if (options.requireRuntimeProvenance && (value as Partial<ProvenancedCheckpoint>)[CHECKPOINT_PROVENANCE] !== true) {
     throw new Error('computer task checkpoint lacks runtime provenance; use create/decode checkpoint APIs');
   }
   if (checkpoint.version !== COMPUTER_TASK_CHECKPOINT_VERSION) throw new Error('unsupported computer task checkpoint version');
-  if (!checkpoint.program || !boundedIdentifier(checkpoint.program.id, 128) || !SHA256.test(checkpoint.program.hash)) {
+
+  assertAllowedKeys(checkpoint.program, ['id', 'hash'], 'computer task checkpoint program identity');
+  if (!boundedIdentifier(checkpoint.program.id, 128) || typeof checkpoint.program.hash !== 'string' || !SHA256.test(checkpoint.program.hash)) {
     throw new Error('invalid computer task checkpoint program identity');
   }
-  if (!checkpoint.execution || !EXECUTION_ID.test(checkpoint.execution.id)) throw new Error('invalid computer task checkpoint execution identity');
+
+  assertAllowedKeys(checkpoint.execution, ['id'], 'computer task checkpoint execution identity');
+  if (typeof checkpoint.execution.id !== 'string' || !EXECUTION_ID.test(checkpoint.execution.id)) {
+    throw new Error('invalid computer task checkpoint execution identity');
+  }
+
+  assertAllowedKeys(checkpoint.cursor, ['nextStepId', 'stepsExecuted'], 'computer task checkpoint cursor');
   if (
-    !checkpoint.cursor ||
     !Number.isSafeInteger(checkpoint.cursor.stepsExecuted) ||
     checkpoint.cursor.stepsExecuted < 0 ||
     checkpoint.cursor.stepsExecuted > COMPUTER_TASK_CHECKPOINT_MAX_STEPS_EXECUTED
@@ -202,10 +224,12 @@ export function validateComputerTaskCheckpoint(
   if (checkpoint.cursor.nextStepId !== undefined && !boundedIdentifier(checkpoint.cursor.nextStepId, 128)) {
     throw new Error('invalid computer task checkpoint cursor step');
   }
+
   if (!Array.isArray(checkpoint.actions) || checkpoint.actions.length > 512) throw new Error('invalid computer task checkpoint actions');
   const seen = new Set<string>();
   for (const action of checkpoint.actions) {
-    if (!boundedIdentifier(action?.stepId, 128) || !ACTION_STATES.includes(action.state) || seen.has(action.stepId)) {
+    assertAllowedKeys(action, ['stepId', 'state', 'uncertainty'], 'computer task checkpoint action entry');
+    if (!boundedIdentifier(action.stepId, 128) || !ACTION_STATES.includes(action.state) || seen.has(action.stepId)) {
       throw new Error('invalid computer task checkpoint action entry');
     }
     if (action.uncertainty !== undefined) {
@@ -288,7 +312,9 @@ export function createComputerTaskCheckpoint(options: {
     version: COMPUTER_TASK_CHECKPOINT_VERSION,
     program: { id: options.program.id, hash: computerTaskProgramHash(options.program) },
     execution: { id: options.executionId },
-    cursor: { nextStepId: options.nextStepId, stepsExecuted: options.stepsExecuted },
+    cursor: options.nextStepId === undefined
+      ? { stepsExecuted: options.stepsExecuted }
+      : { nextStepId: options.nextStepId, stepsExecuted: options.stepsExecuted },
     actions,
   };
   validateComputerTaskCheckpoint(checkpoint, { program: options.program, executionId: options.executionId });
@@ -297,11 +323,12 @@ export function createComputerTaskCheckpoint(options: {
 
 export function encodeComputerTaskCheckpoint(checkpoint: ComputerTaskCheckpoint): string {
   validateComputerTaskCheckpoint(checkpoint);
-  const payload = canonicalJson(checkpoint);
+  const normalized = freezeCheckpoint(checkpoint);
+  const payload = canonicalJson(normalized);
   const envelope: ComputerTaskCheckpointEnvelope = {
     format: COMPUTER_TASK_CHECKPOINT_FORMAT,
     integrity: { algorithm: 'sha256', digest: sha256(payload) },
-    payload: checkpoint,
+    payload: normalized,
   };
   const encoded = canonicalJson(envelope);
   if (Buffer.byteLength(encoded, 'utf8') > COMPUTER_TASK_CHECKPOINT_MAX_BYTES) throw new Error('computer task checkpoint exceeds size limit');
@@ -310,8 +337,11 @@ export function encodeComputerTaskCheckpoint(checkpoint: ComputerTaskCheckpoint)
 
 export function decodeComputerTaskCheckpoint(encoded: string): ComputerTaskCheckpoint {
   if (Buffer.byteLength(encoded, 'utf8') > COMPUTER_TASK_CHECKPOINT_MAX_BYTES) throw new Error('computer task checkpoint exceeds size limit');
-  const envelope = JSON.parse(encoded) as Partial<ComputerTaskCheckpointEnvelope>;
-  if (envelope.format !== COMPUTER_TASK_CHECKPOINT_FORMAT || envelope.integrity?.algorithm !== 'sha256' || !SHA256.test(envelope.integrity.digest)) {
+  const parsed = JSON.parse(encoded) as unknown;
+  assertAllowedKeys(parsed, ['format', 'integrity', 'payload'], 'computer task checkpoint envelope');
+  const envelope = parsed as unknown as Partial<ComputerTaskCheckpointEnvelope>;
+  assertAllowedKeys(envelope.integrity, ['algorithm', 'digest'], 'computer task checkpoint integrity');
+  if (envelope.format !== COMPUTER_TASK_CHECKPOINT_FORMAT || envelope.integrity.algorithm !== 'sha256' || typeof envelope.integrity.digest !== 'string' || !SHA256.test(envelope.integrity.digest)) {
     throw new Error('invalid computer task checkpoint envelope');
   }
   validateComputerTaskCheckpoint(envelope.payload);
