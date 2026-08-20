@@ -4,10 +4,13 @@ import {
   sameComputerSurface,
   type ComputerActionRequest,
   type ComputerActionResult,
+  type ComputerEntityRef,
   type ComputerEnvironmentAdapter,
   type ComputerEnvironmentAdapterDescriptor,
   type ComputerObservationEnvelope,
+  type ComputerObservationLimits,
   type ComputerObservationRequest,
+  type ComputerSurfaceRef,
   validComputerCapabilityId,
   validateComputerActionRequest,
   validateComputerEntityRef,
@@ -62,6 +65,62 @@ function cloneDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): Comp
     kind: descriptor.kind,
     version: descriptor.version,
     capabilities: Object.freeze([...descriptor.capabilities]),
+  });
+}
+
+function snapshotSurface(surface: ComputerSurfaceRef): ComputerSurfaceRef {
+  return Object.freeze({
+    adapterId: surface.adapterId,
+    environment: surface.environment,
+    surfaceId: surface.surfaceId,
+    ...(surface.generation === undefined ? {} : { generation: surface.generation }),
+    ...(surface.parentSurfaceId === undefined ? {} : { parentSurfaceId: surface.parentSurfaceId }),
+  });
+}
+
+function snapshotEntity(entity: ComputerEntityRef): ComputerEntityRef {
+  return Object.freeze({
+    adapterId: entity.adapterId,
+    environment: entity.environment,
+    kind: entity.kind,
+    entityId: entity.entityId,
+    ...(entity.surfaceId === undefined ? {} : { surfaceId: entity.surfaceId }),
+    ...(entity.generation === undefined ? {} : { generation: entity.generation }),
+  });
+}
+
+function snapshotLimits(limits: ComputerObservationLimits): ComputerObservationLimits {
+  return Object.freeze({
+    ...(limits.maxItems === undefined ? {} : { maxItems: limits.maxItems }),
+    ...(limits.maxTextBytes === undefined ? {} : { maxTextBytes: limits.maxTextBytes }),
+    ...(limits.maxDepth === undefined ? {} : { maxDepth: limits.maxDepth }),
+  });
+}
+
+function snapshotObservationRequest(request: ComputerObservationRequest): ComputerObservationRequest {
+  const surface = request.surface;
+  const target = request.target;
+  const limits = request.limits;
+  return Object.freeze({
+    adapterId: request.adapterId,
+    channel: request.channel,
+    ...(surface === undefined ? {} : { surface: snapshotSurface(surface) }),
+    ...(target === undefined ? {} : { target: snapshotEntity(target) }),
+    ...(limits === undefined ? {} : { limits: snapshotLimits(limits) }),
+  });
+}
+
+function snapshotActionRequest(request: ComputerActionRequest): ComputerActionRequest {
+  const target = request.target;
+  const payload = request.payload;
+  return Object.freeze({
+    adapterId: request.adapterId,
+    actionId: request.actionId,
+    capability: request.capability,
+    effect: request.effect,
+    idempotency: request.idempotency,
+    ...(target === undefined ? {} : { target: snapshotEntity(target) }),
+    ...(payload === undefined ? {} : { payload }),
   });
 }
 
@@ -139,7 +198,10 @@ function coherentActionResult(result: ComputerActionResult): boolean {
  * Adapter registry/router for the environment-neutral core.
  *
  * Descriptors are snapshotted at registration so an adapter cannot mutate its
- * validated identity/kind/capability authority after registration.
+ * validated identity/kind/capability authority after registration. Neutral
+ * request routing/safety fields are also snapshotted before validation and any
+ * adapter await so caller mutation cannot create TOCTOU drift. Opaque action
+ * payloads remain adapter-owned and adapters must snapshot their own schema.
  *
  * Observation contract violations throw because observations are read-only.
  * Action adapter failures after invocation never throw through this boundary:
@@ -177,16 +239,17 @@ export class ComputerEnvironmentRegistry {
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    const registered = this.adapters.get(request.adapterId);
+    const snapshot = snapshotObservationRequest(request);
+    const registered = this.adapters.get(snapshot.adapterId);
     if (!registered) {
-      throw new ComputerAdapterRoutingError('adapter-not-found', `adapter not found: ${request.adapterId}`);
+      throw new ComputerAdapterRoutingError('adapter-not-found', `adapter not found: ${snapshot.adapterId}`);
     }
-    const requestErrors = validateComputerObservationRequest(request, registered.descriptor);
+    const requestErrors = validateComputerObservationRequest(snapshot, registered.descriptor);
     if (requestErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-request', requestErrors.join('; '));
     }
-    const response = await registered.adapter.observe(request);
-    const responseErrors = invalidObservationResponse(request, registered.descriptor, response);
+    const response = await registered.adapter.observe(snapshot);
+    const responseErrors = invalidObservationResponse(snapshot, registered.descriptor, response);
     if (responseErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-response', responseErrors.join('; '));
     }
@@ -194,17 +257,18 @@ export class ComputerEnvironmentRegistry {
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    const registered = this.adapters.get(request.adapterId);
+    const snapshot = snapshotActionRequest(request);
+    const registered = this.adapters.get(snapshot.adapterId);
     if (!registered) return nondispatched('unsupported', 'adapter-not-found');
 
-    const requestErrors = validateComputerActionRequest(request, registered.descriptor);
+    const requestErrors = validateComputerActionRequest(snapshot, registered.descriptor);
     if (requestErrors.length > 0) return nondispatched('rejected', 'invalid-action-request');
-    if (!registered.descriptor.capabilities.includes(request.capability)) {
+    if (!registered.descriptor.capabilities.includes(snapshot.capability)) {
       return nondispatched('unsupported', 'capability-not-advertised');
     }
 
     try {
-      const result = await registered.adapter.act(request);
+      const result = await registered.adapter.act(snapshot);
       if (
         !['completed', 'rejected', 'unsupported', 'failed', 'unknown'].includes(result.status) ||
         !['not-dispatched', 'dispatched-once', 'unknown'].includes(result.dispatch) ||
