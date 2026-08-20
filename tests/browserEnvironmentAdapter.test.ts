@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { BoundedSemanticSnapshotLimits } from '../src/browser/boundedSemanticSnapshot.js';
 import type { BrowserTargetState } from '../src/browser/targetController.js';
 import {
   BrowserComputerEnvironmentAdapter,
@@ -11,7 +12,7 @@ import type { InteractionNode } from '../src/types.js';
 
 function node(overrides: Partial<InteractionNode> = {}): InteractionNode {
   return {
-    id: 'backend:41', structuralId: 'main:button:nth-of-type(1)', backendNodeId: 41, frameId: 'main',
+    id: 'main:button:nth-of-type(1)', structuralId: 'main:button:nth-of-type(1)', backendNodeId: 41, frameId: 'main',
     focused: false, disabled: false,
     rect: { x: 1, y: 1, width: 20, height: 10 }, visibleRect: { x: 1, y: 1, width: 20, height: 10 }, viewportVisible: true,
     mainViewportRect: { x: 1, y: 1, width: 20, height: 10 }, mainViewportVisibleRect: { x: 1, y: 1, width: 20, height: 10 }, mainViewportVisible: true,
@@ -34,6 +35,8 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
   typeCalls = 0;
   pressKeyCalls = 0;
   scrollCalls = 0;
+  refreshCalls = 0;
+  semanticOptions: BoundedSemanticSnapshotLimits | undefined;
   documentOptions: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number } | undefined;
   visualOptions: { maxBytes?: number } | undefined;
   mediaOptions: { maxMediaElements?: number; maxFrames?: number; maxTextLength?: number } | undefined;
@@ -45,7 +48,12 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
     const unattached = pages.filter((target) => !target.attached);
     return { total: this.targets.length, pages: pages.length, unattachedPages: unattached.length, latestPage: pages.at(-1), latestUnattachedPage: unattached.at(-1) };
   }
-  async refresh(): Promise<InteractionNode[]> { return this.nodes.map((item) => ({ ...item })); }
+  async semanticSnapshot(_targetId: string | undefined, limits: BoundedSemanticSnapshotLimits) {
+    this.semanticOptions = limits;
+    const nodes = this.nodes.slice(0, limits.maxItems).map((item) => ({ ...item, backendNodeId: undefined }));
+    return { nodes, complete: this.nodes.length <= limits.maxItems, truncated: this.nodes.length > limits.maxItems };
+  }
+  async refresh(): Promise<InteractionNode[]> { this.refreshCalls += 1; return this.nodes.map((item) => ({ ...item })); }
   async activate(): Promise<{ status: string; target: InteractionNode | null }> { this.activateCalls += 1; return { status: this.activationResult, target: this.nodes[0] ?? null }; }
   async hover(): Promise<{ status: string; target: InteractionNode | null }> { this.hoverCalls += 1; return { status: 'verified', target: this.nodes[0] ?? null }; }
   async typeInto(): Promise<{ status: string; target: InteractionNode | null }> { this.typeCalls += 1; if (this.throwOnType) throw new Error('transport failed after invocation'); return { status: 'verified', target: this.nodes[0] ?? null }; }
@@ -85,7 +93,8 @@ test('browser computer adapter preserves stable surface and document-bound targe
   const first = adapter.currentSurface(), second = adapter.currentSurface();
   assert.deepEqual(first, second); assert.equal(first?.surfaceId, 'page-a'); assert.equal(first?.generation, 7);
   const target = await observedTarget(adapter);
-  assert.match(target.entityId, /^doc:[^:]+:frame:main:backend:41$/); assert.equal(target.surfaceId, 'page-a'); assert.equal(target.generation, 7);
+  assert.match(target.entityId, /^doc:[^:]+:frame:main:node:/); assert.equal(target.surfaceId, 'page-a'); assert.equal(target.generation, 7);
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('browser computer adapter rejects stale surface generation and document replacement before dispatch', async () => {
@@ -111,15 +120,19 @@ test('browser computer adapter preserves non-latest target identity from the ful
   assert.equal(surface?.surfaceId, 'page-a'); assert.equal(surface?.generation, 7);
 });
 
-test('browser computer adapter bounds semantic observations and reports truncation', async () => {
-  const runtime = new FakeBrowserRuntime(); runtime.nodes = [node({ backendNodeId: 1, id: 'backend:1', name: 'abcdefghij' }), node({ backendNodeId: 2, id: 'backend:2', name: 'klmnopqrst' })];
+test('browser computer adapter bounds semantic observations and reports truncation without full refresh', async () => {
+  const runtime = new FakeBrowserRuntime(); runtime.nodes = [node({ id: 'main:button:nth-of-type(1)', structuralId: 'main:button:nth-of-type(1)', name: 'abcdefghij' }), node({ id: 'main:button:nth-of-type(2)', structuralId: 'main:button:nth-of-type(2)', backendNodeId: 42, name: 'klmnopqrst' })];
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
-  const observed = await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface: adapter.currentSurface(), limits: { maxItems: 1, maxTextBytes: 5 } });
+  const observed = await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface: adapter.currentSurface(), limits: { maxItems: 1, maxTextBytes: 5, maxDepth: 2 } });
   assert.equal((observed.data as Array<{ name?: string }>)[0].name, 'abcde'); assert.equal(observed.truncated, true); assert.equal(observed.complete, false);
+  assert.deepEqual(runtime.semanticOptions, { maxItems: 1, maxTextBytes: 5, maxDepth: 2 });
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('browser computer adapter applies hard observation ceilings before backend calls', async () => {
   const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), huge = 1_000_000_000;
+  await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface: adapter.currentSurface(), limits: { maxItems: huge, maxTextBytes: huge, maxDepth: huge } });
+  assert.deepEqual(runtime.semanticOptions, { maxItems: 256, maxTextBytes: 64 * 1024, maxDepth: 32 });
   await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'document', surface: adapter.currentSurface(), limits: { maxItems: huge, maxTextBytes: huge, maxDepth: huge } });
   assert.deepEqual(runtime.documentOptions, { maxBlocks: 256, maxTextBytes: 64 * 1024, maxDepth: 32 });
   await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'visual', surface: adapter.currentSurface(), limits: { maxTextBytes: huge } });
@@ -131,7 +144,7 @@ test('browser computer adapter applies hard observation ceilings before backend 
 test('browser computer adapter supports exact targeted semantic observation and rejects unsupported targeted channels before backend work', async () => {
   const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), target = await observedTarget(adapter);
   const observed = await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', target });
-  assert.deepEqual(observed.target, target); assert.equal((observed.data as unknown[]).length, 1);
+  assert.deepEqual(observed.target, target); assert.equal((observed.data as unknown[]).length, 1); assert.equal(runtime.refreshCalls, 0);
   runtime.documentOptions = undefined;
   await assert.rejects(adapter.observe({ adapterId: adapter.descriptor.id, channel: 'document', target }), /target-unsupported/);
   assert.equal(runtime.documentOptions, undefined);
