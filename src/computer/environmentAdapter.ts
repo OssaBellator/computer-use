@@ -46,6 +46,7 @@ export const COMPUTER_EFFECT_CLASSES = [
   'observe-only',
   'local-reversible',
   'local-destructive',
+  'process-execution',
   'system-configuration',
   'external-communication',
   'external-transaction',
