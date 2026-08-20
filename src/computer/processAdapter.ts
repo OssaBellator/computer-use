@@ -80,6 +80,8 @@ function safeGeneration(startTicks: number): number {
 }
 
 export class HostProcessSnapshotSource implements ProcessSnapshotSource {
+  private readonly currentStartTicks = Math.max(0, Math.floor(Date.now() - process.uptime() * 1000));
+
   async listPids(): Promise<readonly number[]> {
     if (process.platform !== 'linux') return [process.pid];
     const entries = await readdir('/proc');
@@ -97,7 +99,7 @@ export class HostProcessSnapshotSource implements ProcessSnapshotSource {
       return {
         pid,
         parentPid: process.ppid,
-        startTicks: Math.max(0, Math.floor(Date.now() - process.uptime() * 1000)),
+        startTicks: this.currentStartTicks,
         name: process.title || 'node',
         executable: basename(process.execPath),
         state: 'running',
