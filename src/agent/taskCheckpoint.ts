@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { validateTaskProgram, type TaskProgram } from './taskProgram.js';
 
 export const TASK_CHECKPOINT_VERSION = 1 as const;
 export const TASK_CHECKPOINT_FORMAT = 'browser-automation/task-checkpoint' as const;
@@ -10,13 +11,8 @@ export const TASK_CHECKPOINT_MAX_BUDGET = 1_000_000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const FINGERPRINT_HEX = /^[0-9a-f]{8,128}$/;
 
-export interface CheckpointableTaskProgram {
-  version: number;
-  name?: string;
-  entry: string;
-  inputs?: readonly string[];
-  steps: readonly { id: string }[];
-}
+/** The exact task-program model is hashed; callers cannot pass an id-only projection by accident. */
+export type CheckpointableTaskProgram = TaskProgram;
 
 export interface TaskCheckpointProgramIdentity {
   id: string;
@@ -69,7 +65,9 @@ export type TaskCheckpointCodecErrorCode =
   | 'malformed-json'
   | 'invalid-schema'
   | 'unsupported-version'
-  | 'integrity-mismatch';
+  | 'integrity-mismatch'
+  | 'invalid-program'
+  | 'invalid-state';
 
 export class TaskCheckpointCodecError extends Error {
   constructor(
@@ -84,6 +82,7 @@ export class TaskCheckpointCodecError extends Error {
 export type TaskCheckpointCompatibilityIssueCode =
   | 'wrong-program'
   | 'modified-program'
+  | 'invalid-program'
   | 'impossible-step'
   | 'exhausted-budget'
   | 'malformed-counters'
@@ -109,6 +108,8 @@ export interface TaskCheckpointCompatibilityResult {
 export interface TaskResumeInputBindingResult {
   ok: boolean;
   missingInputs: string[];
+  /** Program validation failures contain program metadata only, never trusted input values. */
+  validationErrors?: string[];
   /** Ephemeral trusted values for the resumed runtime. Never serialize this object. */
   inputs?: Readonly<Record<string, string>>;
 }
@@ -264,13 +265,24 @@ function visitEntries(visits: CreateTaskCheckpointOptions['visits']): TaskCheckp
   return entries.map(([stepId, count]) => ({ stepId, count }));
 }
 
+function safeProgramValidation(program: CheckpointableTaskProgram): ReturnType<typeof validateTaskProgram> {
+  try { return validateTaskProgram(program); }
+  catch { return { valid: false, errors: ['task program shape is invalid'], warnings: [] }; }
+}
+
+function assertValidTaskProgram(program: CheckpointableTaskProgram): void {
+  const validation = safeProgramValidation(program);
+  if (!validation.valid) codecError('invalid-program', `cannot checkpoint invalid task program: ${validation.errors.join('; ')}`);
+}
+
 /** Deterministic SHA-256 over a canonical JSON representation of the complete task program. */
 export function hashTaskProgram(program: CheckpointableTaskProgram): string {
   return sha256Hex(canonicalJson(program));
 }
 
 export function createTaskCheckpoint(options: CreateTaskCheckpointOptions): TaskCheckpoint {
-  const checkpoint: TaskCheckpoint = {
+  assertValidTaskProgram(options.program);
+  const checkpoint = normalizeCheckpoint({
     version: TASK_CHECKPOINT_VERSION,
     program: {
       id: options.programId,
@@ -288,8 +300,16 @@ export function createTaskCheckpoint(options: CreateTaskCheckpointOptions): Task
       maxConsecutiveNoProgress: options.budgets.maxConsecutiveNoProgress,
     },
     browserStateFingerprint: options.browserStateFingerprint,
-  };
-  return normalizeCheckpoint(checkpoint);
+  });
+  const compatibility = checkTaskCheckpointCompatibility(checkpoint, {
+    programId: options.programId,
+    program: options.program,
+    currentBrowserStateFingerprint: options.browserStateFingerprint,
+  });
+  if (!compatibility.compatible) {
+    codecError('invalid-state', `cannot create non-resumable checkpoint: ${compatibility.issues.map((issue) => issue.code).join(', ')}`);
+  }
+  return checkpoint;
 }
 
 export function serializeTaskCheckpoint(checkpoint: TaskCheckpoint): string {
@@ -331,13 +351,13 @@ export function deserializeTaskCheckpoint(encoded: string): TaskCheckpoint {
     codecError('invalid-schema', 'checkpoint integrity block is invalid');
   }
 
-  const payload = normalizeCheckpoint(parsed.payload);
-  const expected = Buffer.from(sha256Hex(canonicalJson(payload)), 'hex');
+  const canonicalPayload = canonicalJson(parsed.payload);
+  const expected = Buffer.from(sha256Hex(canonicalPayload), 'hex');
   const actual = Buffer.from(parsed.integrity.digest, 'hex');
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
     codecError('integrity-mismatch', 'checkpoint integrity validation failed');
   }
-  return payload;
+  return normalizeCheckpoint(parsed.payload);
 }
 
 export function checkTaskCheckpointCompatibility(
@@ -346,15 +366,21 @@ export function checkTaskCheckpointCompatibility(
 ): TaskCheckpointCompatibilityResult {
   assertCheckpointSchema(checkpoint);
   const issues: TaskCheckpointCompatibilityIssue[] = [];
+  const programValidation = safeProgramValidation(options.program);
+  if (!programValidation.valid) {
+    issues.push({ code: 'invalid-program', message: 'current task program is invalid and cannot be resumed safely' });
+  }
 
   if (checkpoint.program.id !== options.programId) {
     issues.push({ code: 'wrong-program', message: 'checkpoint program identity does not match the requested program' });
-  } else if (checkpoint.program.hash !== hashTaskProgram(options.program)) {
+  } else if (programValidation.valid && checkpoint.program.hash !== hashTaskProgram(options.program)) {
     issues.push({ code: 'modified-program', message: 'checkpoint program hash does not match the current program definition' });
   }
 
-  const programStepIds = new Set(options.program.steps.map((step) => step.id));
-  if (!programStepIds.has(checkpoint.cursor.stepId)) {
+  const programStepIds = programValidation.valid
+    ? new Set(options.program.steps.map((step) => step.id))
+    : undefined;
+  if (programStepIds && !programStepIds.has(checkpoint.cursor.stepId)) {
     issues.push({ code: 'impossible-step', message: 'checkpoint current step does not exist in the current program' });
   }
 
@@ -368,7 +394,7 @@ export function checkTaskCheckpointCompatibility(
     visitTotal += visit.count;
     if (visit.count > checkpoint.budgets.maxVisitsPerStep) countersMalformed = true;
     if (visit.stepId === checkpoint.cursor.stepId) currentStepVisits = visit.count;
-    if (!programStepIds.has(visit.stepId)) {
+    if (programStepIds && !programStepIds.has(visit.stepId)) {
       issues.push({ code: 'impossible-step', message: `checkpoint visit counter references unknown step: ${visit.stepId}` });
     }
   }
@@ -398,17 +424,20 @@ export function checkTaskCheckpointCompatibility(
 
 /**
  * Re-bind trusted input values after restart without ever persisting them in the checkpoint.
- * Only inputs declared by the current program are copied into the returned ephemeral object.
+ * Only own properties matching inputs declared by the current valid program are copied.
  */
 export function bindTrustedTaskResumeInputs(
   program: CheckpointableTaskProgram,
   trustedInputs: Readonly<Record<string, string>>,
 ): TaskResumeInputBindingResult {
+  const validation = safeProgramValidation(program);
+  if (!validation.valid) return { ok: false, missingInputs: [], validationErrors: [...validation.errors] };
   const declared = program.inputs ?? [];
   const missingInputs: string[] = [];
   const selected: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const name of declared) {
-    const value = trustedInputs[name];
+    const hasOwn = Object.prototype.hasOwnProperty.call(trustedInputs, name);
+    const value = hasOwn ? trustedInputs[name] : undefined;
     if (typeof value !== 'string') missingInputs.push(name);
     else selected[name] = value;
   }
