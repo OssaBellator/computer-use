@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rmdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { ComputerActionResult } from '../src/computer/environmentAdapter.js';
 import {
   HostFilesystemMutationDispatcher,
   type FilesystemMutationDispatcher,
@@ -12,7 +13,7 @@ import {
   mutationAction,
 } from './helpers/filesystemMutationHarness.js';
 
-function assertMismatch(result: Awaited<ReturnType<ReturnType<typeof filesystemMutationFixture>['adapter']['act']>>) {
+function assertMismatch(result: ComputerActionResult) {
   assert.equal(result.status, 'unknown');
   assert.equal(result.dispatch, 'dispatched-once');
   assert.equal(result.verification, 'mismatch');
