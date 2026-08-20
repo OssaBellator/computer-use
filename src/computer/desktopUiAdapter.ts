@@ -433,43 +433,68 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
     const requestErrors = validateComputerActionRequest(request, this.descriptor);
     if (requestErrors.length > 0) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-action-request']};
-    if (request.effect === 'observe-only') return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-input-effect-invalid']};
-    const ref = this.requestedWindow(request);
-    if (!ref) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['surface-generation-required']};
+
+    const target = request.target ? Object.freeze({...request.target}) : undefined;
+    const authority = Object.freeze({
+      actionId:request.actionId,
+      capability:request.capability,
+      effect:request.effect,
+      idempotency:request.idempotency,
+      target,
+    });
+    if (authority.effect === 'observe-only') return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-input-effect-invalid']};
+
+    let keyboardInput: DesktopKeyboardInput | undefined;
+    let absoluteInput: DesktopAbsolutePointerInput | undefined;
+    let relativeInput: DesktopRelativePointerInput | undefined;
+    switch (authority.capability) {
+      case 'desktop.focus':
+        break;
+      case 'desktop.keyboard':
+        keyboardInput = validateKeyboardPayload(request.payload);
+        if (!keyboardInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
+        break;
+      case 'desktop.pointer.absolute':
+        absoluteInput = validateAbsolutePointerPayload(request.payload);
+        if (!absoluteInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
+        break;
+      case 'desktop.pointer.relative':
+        if (!this.backend.supportsRelativePointer || !this.backend.pointerRelative) return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['relative-pointer-unsupported']};
+        relativeInput = validateRelativePointerPayload(request.payload);
+        if (!relativeInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
+        break;
+      default:
+        return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-capability-unsupported']};
+    }
+
+    const surfaceId = authority.target?.kind === 'surface' ? authority.target.entityId : authority.target?.surfaceId;
+    const generation = authority.target?.generation;
+    if (!surfaceId || generation === undefined) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['surface-generation-required']};
+    const ref:DesktopNativeWindowRef = {nativeWindowId:surfaceId,generation};
+
     let window:DesktopWindowSurface|undefined;
     try { window = await this.currentWindow(ref); }
     catch { return {status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-preflight-failed']}; }
     if (!window) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['stale-window']};
-    if (request.target?.kind === 'ui-control') {
+    if (authority.target?.kind === 'ui-control') {
       let exists = false;
-      try { exists = await this.controlExists(window, request.target); }
+      try { exists = await this.controlExists(window, authority.target); }
       catch { return {status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-preflight-failed']}; }
       if (!exists) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['stale-control']};
-    } else if (request.target?.kind !== 'surface') {
+    } else if (authority.target?.kind !== 'surface') {
       return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-target-kind-invalid']};
     }
+
     try {
-      switch (request.capability) {
+      switch (authority.capability) {
         case 'desktop.focus':
-          return this.map(await this.backend.focus({window:ref,controlId:request.target.kind === 'ui-control' ? request.target.entityId : undefined}, request.effect), request.effect);
-        case 'desktop.keyboard': {
-          const input = validateKeyboardPayload(request.payload);
-          if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
-          return this.map(await this.backend.keyboard(ref, input, request.effect), request.effect);
-        }
-        case 'desktop.pointer.absolute': {
-          const input = validateAbsolutePointerPayload(request.payload);
-          if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
-          return this.map(await this.backend.pointerAbsolute(ref, input, request.effect), request.effect);
-        }
-        case 'desktop.pointer.relative': {
-          if (!this.backend.supportsRelativePointer || !this.backend.pointerRelative) return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['relative-pointer-unsupported']};
-          const input = validateRelativePointerPayload(request.payload);
-          if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
-          return this.map(await this.backend.pointerRelative(ref, input, request.effect), request.effect);
-        }
-        default:
-          return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-capability-unsupported']};
+          return this.map(await this.backend.focus({window:ref,controlId:authority.target.kind === 'ui-control' ? authority.target.entityId : undefined}, authority.effect), authority.effect);
+        case 'desktop.keyboard':
+          return this.map(await this.backend.keyboard(ref, keyboardInput!, authority.effect), authority.effect);
+        case 'desktop.pointer.absolute':
+          return this.map(await this.backend.pointerAbsolute(ref, absoluteInput!, authority.effect), authority.effect);
+        case 'desktop.pointer.relative':
+          return this.map(await this.backend.pointerRelative!(ref, relativeInput!, authority.effect), authority.effect);
       }
     } catch {
       return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['desktop-backend-threw-after-invocation']};
