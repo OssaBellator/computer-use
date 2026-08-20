@@ -120,7 +120,10 @@ async function activePageContext(
   const stateAfter = await engine.browserState?.();
   if (!sameBrowserDocument(stateBefore, stateAfter)) return undefined;
   const scoped = document ? documentForFrame(document, frameId) : undefined;
-  return scoped ? pageContext(scoped, stateAfter ?? stateBefore, 'same-page') : undefined;
+  // browserState describes the top-level page. Never attribute its origin to a
+  // child-frame commitment when no frame-local browser-state channel exists.
+  const frameBrowserState = frameId === 'main' ? stateAfter ?? stateBefore : undefined;
+  return scoped ? pageContext(scoped, frameBrowserState, 'same-page') : undefined;
 }
 
 async function associatedPopupContext(
