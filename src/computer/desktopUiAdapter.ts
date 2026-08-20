@@ -833,6 +833,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       try { window = await this.currentWindow(ref); }
       catch { return {status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-preflight-failed']}; }
       if (!window) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['stale-window']};
+      if (authority.capability !== 'desktop.focus') return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-control-target-unsupported']};
     } else if (authority.target?.kind !== 'surface') {
       return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-target-kind-invalid']};
     }
