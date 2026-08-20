@@ -38,6 +38,8 @@ export type RemoteDispatchOutcome<T> =
 export interface RemoteSessionBackend {
   readonly protocol: RemoteProtocolKind;
   connect(endpoint: RemoteEndpointIdentity, credential?: RemoteSecretHandle): Promise<RemoteSessionConnection>;
+  /** Cleanup for a post-connect result whose semantic identity cannot be trusted/snapshotted. Implementations must use backend-private ownership, not semantic fields on candidate. */
+  cleanupFailedConnection(candidate: unknown): Promise<void>;
   disconnect(connection: RemoteSessionConnection): Promise<void>;
   observeMetadata(connection: RemoteSessionConnection, limits: { maxItems: number; maxTextBytes: number }): Promise<readonly RemoteMetadataItem[]>;
   captureDisplay?(connection: RemoteSessionConnection, limits: RemoteDisplayCaptureLimits): Promise<RemoteDisplayFrame>;
@@ -236,11 +238,12 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
     return this.unsupported('remote-capability-unsupported');}
   private enqueueLifecycle<T>(operation:()=>Promise<T>):Promise<T>{const result=this.lifecycleTail.then(operation,operation);this.lifecycleTail=result.then(()=>undefined,()=>undefined);return result;}
   private async connectTransition(credential?:Readonly<RemoteSecretHandle>):Promise<RemoteSessionAuthority>{const prior=this.connection;this.lifecycle=prior?'reconnecting':'connecting';let rawCandidate:unknown;try{rawCandidate=await this.backend.connect(this.endpoint,credential);}catch(error){if(prior){this.connection=prior;this.discoveredCapabilities=prior.capabilities;this.lifecycle='connected';}else this.failClosed();throw error;}
-    const candidate=snapshotConnectionCandidate(rawCandidate);if(!candidate){this.failClosed();throw new Error('invalid remote identity');}
+    const candidate=snapshotConnectionCandidate(rawCandidate);if(!candidate){const cleaned=await this.cleanupUntrustedCandidate(rawCandidate);if(cleaned&&prior){this.connection=prior;this.discoveredCapabilities=prior.capabilities;this.lifecycle='connected';}else this.failClosed();if(!cleaned)throw new Error('remote candidate cleanup failed');throw new Error('invalid remote identity');}
     const committed=validatedConnectionCandidate(candidate);if(!committed){const cleaned=await this.cleanupCandidate(candidate);if(cleaned&&prior){this.connection=prior;this.discoveredCapabilities=prior.capabilities;this.lifecycle='connected';}else if(cleaned)this.failClosed();if(!cleaned)throw new Error('remote candidate cleanup failed');throw new Error('invalid remote identity');}
     if(prior){try{await this.backend.disconnect(prior);}catch(error){const cleaned=await this.cleanupCandidate(committed);this.failClosed();if(!cleaned)throw new Error('remote candidate cleanup failed');throw error;}}
     this.connection=committed;this.generation+=1;this.discoveredCapabilities=committed.capabilities;this.lifecycle='connected';return Object.freeze(this.currentAuthority());}
   private async disconnectTransition():Promise<void>{const connection=this.connection;if(!connection){this.discoveredCapabilities=[];this.lifecycle='disconnected';return;}this.lifecycle='reconnecting';try{await this.backend.disconnect(connection);}catch(error){this.failClosed();throw error;}this.connection=undefined;this.discoveredCapabilities=[];this.lifecycle='disconnected';}
+  private async cleanupUntrustedCandidate(candidate:unknown):Promise<boolean>{try{await this.backend.cleanupFailedConnection(candidate);return true;}catch{this.failClosed();return false;}}
   private async cleanupCandidate(candidate:Readonly<RemoteSessionConnection>):Promise<boolean>{try{await this.backend.disconnect(candidate);return true;}catch{this.failClosed();return false;}}
   private failClosed():void{this.connection=undefined;this.discoveredCapabilities=[];this.lifecycle='failed';}
   private currentAuthority():RemoteSessionAuthority{const c=this.requireConnection();return{endpointId:this.endpoint.endpointId,remoteHostId:c.remoteHostId,sessionId:c.sessionId,generation:this.generation};}
