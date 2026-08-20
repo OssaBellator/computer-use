@@ -271,3 +271,49 @@ test('browser envelope snapshots capture changing data descriptors exactly once'
   assert.equal(reads.get('maxDepth'), 1);
   assert.equal(ownKeysCalls, 0);
 });
+
+test('browser semantic capability rebuilding touches only the bounded indexed prefix', async () => {
+  const runtime = new ObservationRuntime();
+  let iteratorReads = 0;
+  let ownKeysCalls = 0;
+  let indexedDescriptorReads = 0;
+  const backing = Array.from({ length: 10_000 }, () => 'activate' as const);
+  const capabilities = new Proxy(backing, {
+    ownKeys() {
+      ownKeysCalls += 1;
+      throw new Error('capability own-key enumeration must not run');
+    },
+    get(target, property, receiver) {
+      if (property === Symbol.iterator) {
+        iteratorReads += 1;
+        throw new Error('capability iterator must not run');
+      }
+      return Reflect.get(target, property, receiver);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) {
+        const index = Number(property);
+        if (index >= 32) throw new Error('capability acquisition exceeded bounded prefix');
+        indexedDescriptorReads += 1;
+      }
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+  });
+  runtime.nodes[0].capabilities = capabilities;
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+
+  const observed = await adapter.observe({
+    adapterId: adapter.descriptor.id,
+    channel: 'semantic-ui',
+    surface: adapter.currentSurface(),
+    limits: { maxItems: 1, maxTextBytes: 64, maxDepth: 1 },
+  });
+  const first = (observed.data as Array<{ capabilities: readonly string[] }>)[0];
+  assert.equal(first.capabilities.length, 32);
+  assert.ok(first.capabilities.every((value) => value === 'activate'));
+  assert.equal(observed.truncated, true);
+  assert.equal(observed.complete, false);
+  assert.equal(indexedDescriptorReads, 32);
+  assert.equal(iteratorReads, 0);
+  assert.equal(ownKeysCalls, 0);
+});
