@@ -19,7 +19,7 @@ class ClosingChild extends EventEmitter implements SpawnedProcessLike {
 }
 
 const hangingSource: ProcessSnapshotSource = {
-  async listPids() { return []; },
+  async listPids() { return { pids: [], truncated: false }; },
   async inspect() { return await new Promise<never>(() => {}); },
 };
 
