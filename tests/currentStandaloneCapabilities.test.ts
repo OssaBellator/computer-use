@@ -6,7 +6,18 @@ import {
 import {
   STANDALONE_CHROMIUM_CAPABILITY_PROFILE,
   assessWebTaskCategory,
+  type BrowserCapabilityProfile,
+  type BrowserTaskCapability,
+  type CapabilitySupport,
 } from '../src/capabilities/webTaskCapabilities.js';
+
+function supportOf(
+  profile: BrowserCapabilityProfile,
+  capability: BrowserTaskCapability,
+): CapabilitySupport {
+  const state = profile.capabilities[capability];
+  return typeof state === 'string' ? state : state?.support ?? 'unsupported';
+}
 
 test('current standalone profile promotes document reading without rewriting historical capability state', () => {
   const historical = assessWebTaskCategory(
@@ -43,17 +54,17 @@ test('current standalone profile promotes document reading without rewriting his
 test('current standalone 0.42 profile keeps merged foundations conservative', () => {
   const current = CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE;
   assert.equal(current.id, 'standalone-chromium-0.42');
-  assert.equal(current.capabilities['document-content-observation']?.support, 'supported');
-  assert.equal(current.capabilities['relative-pointer-input']?.support, 'supported');
-  assert.equal(current.capabilities['realtime-control']?.support, 'supported');
-  assert.equal(current.capabilities['rich-text-editing']?.support, 'partial');
-  assert.equal(current.capabilities['media-playback-control']?.support, 'partial');
-  assert.equal(current.capabilities['fullscreen-control']?.support, 'partial');
-  assert.equal(current.capabilities['permissions-control']?.support, 'partial');
-  assert.equal(current.capabilities['long-running-task-checkpointing']?.support, 'partial');
-  assert.equal(current.capabilities['external-side-effect-verification']?.support, 'partial');
-  assert.equal(current.capabilities['process-trigger-verification']?.support, 'partial');
-  assert.equal(current.capabilities['clipboard-write'], 'unsupported');
+  assert.equal(supportOf(current, 'document-content-observation'), 'supported');
+  assert.equal(supportOf(current, 'relative-pointer-input'), 'supported');
+  assert.equal(supportOf(current, 'realtime-control'), 'supported');
+  assert.equal(supportOf(current, 'rich-text-editing'), 'partial');
+  assert.equal(supportOf(current, 'media-playback-control'), 'partial');
+  assert.equal(supportOf(current, 'fullscreen-control'), 'partial');
+  assert.equal(supportOf(current, 'permissions-control'), 'partial');
+  assert.equal(supportOf(current, 'long-running-task-checkpointing'), 'partial');
+  assert.equal(supportOf(current, 'external-side-effect-verification'), 'partial');
+  assert.equal(supportOf(current, 'process-trigger-verification'), 'partial');
+  assert.equal(supportOf(current, 'clipboard-write'), 'unsupported');
 });
 
 test('content creation remains blocked by unsupported clipboard requirements', () => {
