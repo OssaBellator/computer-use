@@ -106,6 +106,8 @@ export interface ComputerObservationLimits {
 }
 
 export interface ComputerObservationRequest {
+  /** Explicit even for global adapter observations such as process/filesystem roots. */
+  adapterId: string;
   channel: ComputerObservationChannel;
   surface?: ComputerSurfaceRef;
   target?: ComputerEntityRef;
@@ -134,6 +136,8 @@ export interface ComputerObservationEnvelope {
  * operations instead of asking task authors to manufacture opaque payloads.
  */
 export interface ComputerActionRequest {
+  /** Required because actions like process launch do not have a target entity yet. */
+  adapterId: string;
   actionId: string;
   capability: string;
   effect: ComputerEffectClass;
@@ -167,6 +171,7 @@ export interface ComputerEnvironmentAdapter {
 }
 
 const MAX_OPAQUE_ID_BYTES = 256;
+const MAX_LIMIT = 1_000_000_000;
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -178,6 +183,10 @@ function validOpaqueId(value: string): boolean {
 
 function validGeneration(value: number | undefined): boolean {
   return value === undefined || (Number.isSafeInteger(value) && value >= 0);
+}
+
+function validLimit(value: number | undefined): boolean {
+  return value === undefined || (Number.isSafeInteger(value) && value >= 1 && value <= MAX_LIMIT);
 }
 
 export function validateComputerSurfaceRef(surface: ComputerSurfaceRef): string[] {
@@ -202,6 +211,57 @@ export function validateComputerEntityRef(entity: ComputerEntityRef): string[] {
     errors.push('surfaceId must be a bounded opaque identifier');
   }
   if (!validGeneration(entity.generation)) errors.push('generation must be a non-negative safe integer');
+  return errors;
+}
+
+export function validateComputerObservationRequest(
+  request: ComputerObservationRequest,
+  descriptor?: ComputerEnvironmentAdapterDescriptor,
+): string[] {
+  const errors: string[] = [];
+  if (!validOpaqueId(request.adapterId)) errors.push('request adapterId must be a bounded opaque identifier');
+  if (!COMPUTER_OBSERVATION_CHANNELS.includes(request.channel)) errors.push('observation channel is unsupported');
+  if (request.surface) errors.push(...validateComputerSurfaceRef(request.surface).map((error) => `surface: ${error}`));
+  if (request.target) errors.push(...validateComputerEntityRef(request.target).map((error) => `target: ${error}`));
+  if (request.surface?.adapterId !== undefined && request.surface.adapterId !== request.adapterId) {
+    errors.push('surface adapterId does not match request adapterId');
+  }
+  if (request.target?.adapterId !== undefined && request.target.adapterId !== request.adapterId) {
+    errors.push('target adapterId does not match request adapterId');
+  }
+  if (request.surface && request.target && request.surface.environment !== request.target.environment) {
+    errors.push('surface and target environments do not match');
+  }
+  if (request.surface && request.target?.surfaceId !== undefined && request.surface.surfaceId !== request.target.surfaceId) {
+    errors.push('target surfaceId does not match request surface');
+  }
+  if (!validLimit(request.limits?.maxItems)) errors.push('maxItems must be a positive bounded safe integer');
+  if (!validLimit(request.limits?.maxTextBytes)) errors.push('maxTextBytes must be a positive bounded safe integer');
+  if (!validLimit(request.limits?.maxDepth)) errors.push('maxDepth must be a positive bounded safe integer');
+  if (descriptor) {
+    if (descriptor.id !== request.adapterId) errors.push('descriptor id does not match request adapterId');
+    if (request.surface && request.surface.environment !== descriptor.kind) errors.push('surface environment does not match adapter kind');
+    if (request.target && request.target.environment !== descriptor.kind) errors.push('target environment does not match adapter kind');
+  }
+  return errors;
+}
+
+export function validateComputerActionRequest(
+  request: ComputerActionRequest,
+  descriptor?: ComputerEnvironmentAdapterDescriptor,
+): string[] {
+  const errors: string[] = [];
+  if (!validOpaqueId(request.adapterId)) errors.push('request adapterId must be a bounded opaque identifier');
+  if (!validOpaqueId(request.actionId)) errors.push('actionId must be a bounded opaque identifier');
+  if (!validOpaqueId(request.capability)) errors.push('capability must be a bounded identifier');
+  if (request.target) errors.push(...validateComputerEntityRef(request.target).map((error) => `target: ${error}`));
+  if (request.target?.adapterId !== undefined && request.target.adapterId !== request.adapterId) {
+    errors.push('target adapterId does not match request adapterId');
+  }
+  if (descriptor) {
+    if (descriptor.id !== request.adapterId) errors.push('descriptor id does not match request adapterId');
+    if (request.target && request.target.environment !== descriptor.kind) errors.push('target environment does not match adapter kind');
+  }
   return errors;
 }
 
