@@ -339,10 +339,19 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       active.add(value);
       const children: DesktopControlEntity[] = [];
       try {
-        for (const child of node.children ?? []) {
-          const bounded = visit(child, depth + 1);
-          if (bounded) children.push(bounded);
-          if (truncated && itemCount >= l.maxItems) break;
+        const rawChildren = node.children ?? [];
+        if (rawChildren.length > 0 && (depth >= l.maxDepth || itemCount >= l.maxItems || bytes >= l.maxTextBytes)) {
+          truncated = true;
+        } else {
+          for (let index = 0; index < rawChildren.length; index += 1) {
+            if (itemCount >= l.maxItems || bytes >= l.maxTextBytes) { truncated = true; break; }
+            const bounded = visit(rawChildren[index], depth + 1);
+            if (!bounded) {
+              if (truncated) break;
+              continue;
+            }
+            children.push(bounded);
+          }
         }
       } finally {
         active.delete(value);
@@ -402,20 +411,34 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     const raw = await this.backend.observeAccessibility({nativeWindowId:window.nativeWindowId,generation:window.generation}, DEFAULT_LIMITS);
     if (raw.window.nativeWindowId !== window.nativeWindowId || raw.window.generation !== window.generation) return false;
     if (raw.status !== 'available' || !raw.root) return false;
-    const queue: unknown[] = [raw.root];
+    const queue: {value:unknown;depth:number}[] = [{value:raw.root,depth:0}];
     const seenNodes = new Set<object>();
     let seen = 0;
-    while (queue.length && seen < DEFAULT_LIMITS.maxItems) {
-      const value = queue.shift();
+    let bytes = 0;
+    let cursor = 0;
+    while (cursor < queue.length && seen < DEFAULT_LIMITS.maxItems) {
+      const {value,depth} = queue[cursor++]!;
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('desktop accessibility node invalid');
       if (seenNodes.has(value)) throw new Error('desktop accessibility cycle invalid');
       seenNodes.add(value);
-      const node = value as {controlId?:unknown;children?:unknown};
+      const node = value as {controlId?:unknown;role?:unknown;name?:unknown;value?:unknown;children?:unknown};
       if (!validBoundedString(node.controlId, MAX_CONTROL_ID_BYTES)) throw new Error('desktop accessibility node invalid');
+      if (node.role !== undefined && !validBoundedString(node.role, MAX_ACCESSIBILITY_ROLE_BYTES, true)) throw new Error('desktop accessibility node invalid');
+      if (node.name !== undefined && !validBoundedString(node.name, MAX_ACCESSIBILITY_TEXT_BYTES, true)) throw new Error('desktop accessibility node invalid');
+      if (node.value !== undefined && !validBoundedString(node.value, MAX_ACCESSIBILITY_TEXT_BYTES, true)) throw new Error('desktop accessibility node invalid');
       if (node.children !== undefined && !Array.isArray(node.children)) throw new Error('desktop accessibility node invalid');
+      const ownBytes = textBytes(node.controlId) + textBytes(node.role as string|undefined) + textBytes(node.name as string|undefined) + textBytes(node.value as string|undefined);
+      if (bytes + ownBytes > DEFAULT_LIMITS.maxTextBytes) return false;
+      bytes += ownBytes;
       seen += 1;
       if (node.controlId === target.entityId) return true;
-      queue.push(...(node.children ?? []));
+      if (depth >= DEFAULT_LIMITS.maxDepth || seen >= DEFAULT_LIMITS.maxItems || bytes >= DEFAULT_LIMITS.maxTextBytes) continue;
+      const rawChildren = node.children ?? [];
+      const remainingSlots = DEFAULT_LIMITS.maxItems - seen - (queue.length - cursor);
+      const childLimit = Math.min(rawChildren.length, Math.max(0, remainingSlots));
+      for (let index = 0; index < childLimit; index += 1) {
+        queue.push({value:rawChildren[index],depth:depth + 1});
+      }
     }
     return false;
   }
