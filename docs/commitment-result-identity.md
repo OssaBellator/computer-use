@@ -14,10 +14,11 @@ The snapshot is deliberately narrow:
 - at most 8 unique identifiers are retained;
 - each identifier is bounded to at most 96 UTF-8 bytes;
 - arbitrary URLs, titles, page excerpts, cookies, tokens, card numbers, and account numbers are not retained;
-- 12–19 digit all-numeric values are rejected even when a page gives them a generic reference label;
+- all-numeric values of 12 or more digits, compact/spaced IBAN-shaped values, common credential-shaped token prefixes, JWT-shaped values, and URL-shaped values are rejected even when a page gives them a generic reference label;
+- short ordinary identifiers are not rejected merely for sharing a prefix with a credential family (for example, `SK-42` remains a valid order reference);
 - whitespace-only labels require an ID-shaped value, preventing prose such as `Order number will be assigned` from being treated as an identifier.
 
-The browser-side provider signal is the page origin. Full URLs are not part of the identity snapshot.
+The browser-side provider signal is the page origin. Opaque `null` origins are treated as unknown, and full URLs are not part of the identity snapshot. Top-level browser state is never attributed to a child-frame commitment when no frame-local browser-state channel exists.
 
 ## Relations
 
@@ -77,10 +78,10 @@ They do not contain identifier values, amounts, counterparties, page text, or pr
 
 ## Validation scope
 
-Validation for this layer is intentionally local and synthetic:
+Repository coverage for this layer is intentionally local and synthetic:
 
 - strict TypeScript/Node seams for extraction, identity comparison, verifier policy, and task/popup binding;
-- synthetic unit fixtures for matching, fresh, conflicting, ambiguous, unrelated-tab, redirect, and opener-bound popup cases;
+- synthetic unit fixtures for matching, fresh, conflicting, ambiguous, unrelated-tab, redirect, opener-bound popup, child-frame, and privacy-filter cases;
 - the existing raw-Chromium synthetic checkout fixture carries a fake order reference through the receipt and asserts exactly one activation plus trace privacy.
 
 No real purchase, payment, booking, transfer, publication, account/security change, deletion, deployment, or external process trigger is used for validation.
