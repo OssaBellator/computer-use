@@ -128,8 +128,7 @@ process.once('message', async (raw: unknown) => {
     if (Date.now() >= deadlineEpochMs) throw new Error('deadline-expired');
     const parsed = JSON.parse(inputEncoded) as Json;
     const inputCheck = canonicalize(parsed, byteLength(inputEncoded), limits.maxJsonDepth, limits.maxJsonItems);
-    if (inputCheck.encoded !== inputEncoded) throw new Error('input-canonical-mismatch');
-    const input = deepFreeze(parsed);
+    const input = deepFreeze(JSON.parse(inputCheck.encoded) as Json);
     let moduleProtocol: string;
     try { moduleProtocol = new URL(moduleUrl).protocol; }
     catch { throw new Error('registered-module-url-invalid'); }
@@ -145,8 +144,7 @@ process.once('message', async (raw: unknown) => {
     if (byteLength(outputEncoded) > limits.maxOutputBytes) throw new Error('json-byte-limit');
     const outputParsed = JSON.parse(outputEncoded) as Json;
     const canonical = canonicalize(outputParsed, limits.maxOutputBytes, limits.maxJsonDepth, limits.maxJsonItems);
-    if (canonical.encoded !== outputEncoded) throw new Error('output-canonical-mismatch');
-    sendAndExit({ type: 'result', token, outputEncoded, outputHash: sha256(outputEncoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
+    sendAndExit({ type: 'result', token, outputEncoded: canonical.encoded, outputHash: sha256(canonical.encoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'worker-error';
     sendAndExit({ type: 'error', token, code: code === 'json-byte-limit' ? 'output-limit' : 'execution-failed', diagnostics });
