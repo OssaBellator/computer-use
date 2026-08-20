@@ -26,6 +26,7 @@ import type {
 
 const DEFAULT_LIMITS: Required<ComputerObservationLimits> = { maxItems: 256, maxTextBytes: 16_384, maxDepth: 16 };
 const MAX_LIMIT = 10_000;
+const SYSTEM_PREFLIGHT_LIMITS: Required<ComputerObservationLimits> = { maxItems: MAX_LIMIT, maxTextBytes: 1_000_000, maxDepth: 1 };
 const MAX_KEY_BYTES = 128;
 const MAX_TEXT_INPUT_BYTES = 4_096;
 const MAX_VISUAL_TOKEN_BYTES = 256;
@@ -194,15 +195,16 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     };
   }
 
-  private async system(): Promise<{ raw:DesktopSystemObservation; windows:DesktopWindowSurface[] }> {
-    const raw = await this.backend.observeSystem();
+  private async system(l: Required<ComputerObservationLimits>): Promise<{ raw:DesktopSystemObservation; windows:DesktopWindowSurface[] }> {
+    const raw = await this.backend.observeSystem(l);
+    if (raw.windows.length > l.maxItems) throw new Error('desktop backend exceeded system item limit');
     return { raw, windows: raw.windows.map((window) => this.surface(window)) };
   }
 
   private boundSystem(raw: DesktopSystemObservation, windows: DesktopWindowSurface[], l: Required<ComputerObservationLimits>): { data:DesktopSystemObservationData; truncated:boolean } {
     const bounded: DesktopWindowSurface[] = [];
     let bytes = 0;
-    let truncated = false;
+    let truncated = raw.truncated;
     for (const window of windows) {
       if (bounded.length >= l.maxItems) { truncated = true; break; }
       const ownBytes = textBytes(window.nativeWindowId) + textBytes(window.title) + textBytes(window.application?.applicationId) + textBytes(window.application?.processId);
@@ -234,7 +236,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   private async currentWindow(ref: DesktopNativeWindowRef): Promise<DesktopWindowSurface | undefined> {
-    const { windows } = await this.system();
+    const { windows } = await this.system(SYSTEM_PREFLIGHT_LIMITS);
     return windows.find((window) => window.nativeWindowId === ref.nativeWindowId && window.generation === ref.generation);
   }
 
@@ -266,8 +268,9 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     const requestErrors = validateComputerObservationRequest(request, this.descriptor);
     if (requestErrors.length > 0) throw new Error(`invalid desktop observation request: ${requestErrors.join('; ')}`);
     if (request.channel === 'system') {
-      const { raw, windows } = await this.system();
-      const bounded = this.boundSystem(raw, windows, limits(request.limits));
+      const l = limits(request.limits);
+      const { raw, windows } = await this.system(l);
+      const bounded = this.boundSystem(raw, windows, l);
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'system', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, data:bounded.data };
     }
     if (request.channel !== 'semantic-ui' && request.channel !== 'visual') throw new Error(`desktop observation channel unsupported: ${request.channel}`);
