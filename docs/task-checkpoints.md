@@ -37,6 +37,8 @@ For recovery code, prefer `prepareTaskCheckpointResume(checkpoint, options)`. It
 
 `serializeTaskCheckpoint()` emits canonical JSON with sorted object keys and visit counters sorted by locale-independent JavaScript string code-unit order. Re-serializing a decoded checkpoint produces the same byte string regardless of host locale settings.
 
+Created and decoded checkpoints are deeply frozen across the checkpoint object, identity records, cursor, visit table/entries, and budgets. This preserves the validated counters and execution ceilings against accidental in-process mutation between decode, compatibility checks, and future resume integration.
+
 The serialized envelope includes a SHA-256 digest over the canonical checkpoint payload. `deserializeTaskCheckpoint()` rejects malformed JSON, unknown schema fields, malformed digests, unsupported checkpoint versions, payloads larger than 64 KiB, and integrity mismatches before returning a normalized checkpoint.
 
 The SHA-256 envelope is corruption detection, not an authenticated signature. A party that can rewrite both the payload and digest can forge a new internally consistent checkpoint. Persist checkpoints in trusted storage, or add an external authenticated-storage/MAC layer at the later integration boundary if adversarial storage is in scope.

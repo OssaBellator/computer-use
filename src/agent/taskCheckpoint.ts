@@ -275,9 +275,19 @@ function assertCheckpointSchema(value: unknown): asserts value is TaskCheckpoint
   }
 }
 
+function freezeCheckpoint(checkpoint: TaskCheckpoint): TaskCheckpoint {
+  for (const visit of checkpoint.cursor.visits) Object.freeze(visit);
+  Object.freeze(checkpoint.cursor.visits);
+  Object.freeze(checkpoint.program);
+  Object.freeze(checkpoint.execution);
+  Object.freeze(checkpoint.cursor);
+  Object.freeze(checkpoint.budgets);
+  return Object.freeze(checkpoint);
+}
+
 function normalizeCheckpoint(checkpoint: TaskCheckpoint): TaskCheckpoint {
   assertCheckpointSchema(checkpoint);
-  return {
+  return freezeCheckpoint({
     version: TASK_CHECKPOINT_VERSION,
     program: { id: checkpoint.program.id, hash: checkpoint.program.hash },
     execution: { id: checkpoint.execution.id },
@@ -295,7 +305,7 @@ function normalizeCheckpoint(checkpoint: TaskCheckpoint): TaskCheckpoint {
       maxConsecutiveNoProgress: checkpoint.budgets.maxConsecutiveNoProgress,
     },
     browserStateFingerprint: checkpoint.browserStateFingerprint,
-  };
+  });
 }
 
 function visitEntries(visits: CreateTaskCheckpointOptions['visits']): TaskCheckpointVisitCounter[] {
@@ -560,6 +570,13 @@ export function prepareTaskCheckpointResume(
   }
   const binding = bindTrustedTaskResumeInputs(options.program, options.trustedInputs);
   if (!binding.ok) {
+    if (binding.validationErrors?.length) {
+      return {
+        ready: false,
+        issues: [{ code: 'invalid-program', message: 'current task program became invalid during resume preparation' }],
+        missingInputs: [],
+      };
+    }
     return { ready: false, issues: [], missingInputs: binding.missingInputs };
   }
   return { ready: true, issues: [], missingInputs: [], inputs: binding.inputs };
