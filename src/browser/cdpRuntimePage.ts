@@ -118,6 +118,17 @@ export class CdpRuntimeSnapshotPage implements SnapshotPageLike {
       .filter((frame): frame is CdpRuntimeSnapshotFrame => frame !== undefined);
   }
 
+  boundedFrames(maxFrames: number): { frames: readonly SnapshotFrameLike[]; complete: boolean } {
+    const limit = Math.max(1, Math.floor(maxFrames));
+    const frames: SnapshotFrameLike[] = [];
+    const count = Math.min(limit, this.orderedFrameIds.length);
+    for (let index = 0; index < count; index += 1) {
+      const frame = this.framesById.get(this.orderedFrameIds[index]);
+      if (frame) frames.push(frame);
+    }
+    return { frames, complete: this.orderedFrameIds.length <= limit };
+  }
+
   frameById(frameId: string): CdpRuntimeSnapshotFrame | undefined {
     return this.framesById.get(frameId);
   }
