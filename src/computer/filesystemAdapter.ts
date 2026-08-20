@@ -208,7 +208,7 @@ interface PreparedPlan {
   readonly material?: FilesystemMaterialSnapshot;
   readonly expectedSource?: ComputerEntityRef;
   readonly expectedDestination?: ComputerEntityRef;
-  state: 'prepared' | 'dispatching' | 'done' | 'unknown';
+  state: 'prepared' | 'authorizing' | 'dispatching' | 'done' | 'unknown';
 }
 
 export type FilesystemMutationDispatch =
@@ -509,14 +509,27 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     if (!plan || plan.capability !== request.capability) return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-plan-stale'] };
     if (plan.state !== 'prepared') return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-plan-consumed'] };
     if (request.effect !== plan.effect || request.idempotency !== plan.idempotency) return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-invalid-request'] };
+    plan.state = 'authorizing';
     if (plan.effect === 'local-destructive') {
-      if (!approval || approval.planId !== plan.id || !this.approvalVerifier) return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-approval-required'] };
+      if (!approval || approval.planId !== plan.id || !this.approvalVerifier) {
+        plan.state = 'prepared';
+        return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-approval-required'] };
+      }
       let approved = false;
       try { approved = await this.approvalVerifier.verify(Object.freeze({ actionId: request.actionId, capability: request.capability, effect: request.effect }), approval, this.summaryForPlan(plan)); } catch { approved = false; }
-      if (!approved) return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-approval-required'] };
-    } else if (approval !== undefined) return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-invalid-request'] };
+      if (!approved) {
+        plan.state = 'prepared';
+        return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-approval-required'] };
+      }
+    } else if (approval !== undefined) {
+      plan.state = 'prepared';
+      return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: ['filesystem-invalid-request'] };
+    }
     try { await this.ensureInitialized(); await this.revalidatePlan(plan); }
-    catch (error) { return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: [evidenceFor(error)] }; }
+    catch (error) {
+      plan.state = 'prepared';
+      return { status: 'rejected', dispatch: 'not-dispatched', verification: 'rejected', evidence: [evidenceFor(error)] };
+    }
     plan.state = 'dispatching';
     try { await this.mutationDispatcher.dispatch(this.toDispatch(plan), this.rootDevice); }
     catch (error) {
