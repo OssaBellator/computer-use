@@ -37,8 +37,8 @@ interface RegisteredAdapter {
   descriptor: ComputerEnvironmentAdapterDescriptor;
 }
 
-function boundedIdentifier(value: string, max = 256): boolean {
-  return value.length > 0 && value.length <= max && !/[\r\n\0]/.test(value);
+function boundedIdentifier(value: unknown, max = 256): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max && !/[\r\n\0]/.test(value);
 }
 
 function validateDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): string[] {
@@ -52,7 +52,10 @@ function validateDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): s
   }
   const seen = new Set<string>();
   for (const capability of descriptor.capabilities) {
-    if (!validComputerCapabilityId(capability)) errors.push('adapter capability must be a bounded machine identifier');
+    if (typeof capability !== 'string' || !validComputerCapabilityId(capability)) {
+      errors.push('adapter capability must be a bounded machine identifier');
+      continue;
+    }
     if (seen.has(capability)) errors.push(`duplicate adapter capability: ${capability}`);
     seen.add(capability);
   }
@@ -250,7 +253,7 @@ function nondispatched(
 function validEvidence(evidence: readonly string[] | undefined): boolean {
   if (evidence === undefined) return true;
   if (!Array.isArray(evidence) || evidence.length > 32) return false;
-  return evidence.every((code) => /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(code));
+  return evidence.every((code) => typeof code === 'string' && /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(code));
 }
 
 function coherentActionResult(result: ComputerActionResult): boolean {
@@ -276,7 +279,8 @@ function coherentActionResult(result: ComputerActionResult): boolean {
  * after the await, so validation never rereads mutable adapter-owned envelopes.
  * Snapshot acquisition failures before action invocation remain explicitly
  * not-dispatched; response snapshot failures after action invocation remain
- * conservatively unknown-dispatch.
+ * conservatively unknown-dispatch. Neutral identifiers, capability IDs, and
+ * evidence codes are validated as strings without runtime coercion.
  * Opaque request payloads and response data/details remain adapter-owned.
  *
  * Observation contract violations throw because observations are read-only.
