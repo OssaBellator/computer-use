@@ -10,13 +10,13 @@ function fixture() {
   const backend = new SyntheticDesktopUiBackend();
   backend.windows = [{nativeWindowId:'win-1',generation:1,foreground:true,focused:true}];
   backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root'}});
-  backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},width:10,height:10});
+  backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},width:10,height:10,artifact:{token:'fixture',byteLength:1}});
   return {backend,adapter:new DesktopUiEnvironmentAdapter(backend,'desktop:test')};
 }
 
 test('backend observation generation mismatch is rejected', async () => {
   const {backend,adapter} = fixture();
-  backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:2},width:10,height:10});
+  backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:2},width:10,height:10,artifact:{token:'mismatch',byteLength:1}});
   await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}));
 });
 
@@ -149,7 +149,7 @@ test('backend-owned nested observation metadata is rebuilt before return', async
 test('invalid visual dimensions are rejected at the neutral boundary', async () => {
   for (const [width,height] of [[0,10],[10,-1],[100001,10],[1.5,10],[10,Number.POSITIVE_INFINITY]]) {
     const {backend,adapter} = fixture();
-    backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},width,height});
+    backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},width,height,artifact:{token:'invalid-dimensions',byteLength:1}});
     await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /visual dimensions invalid/);
   }
 });
