@@ -10,6 +10,38 @@ class Input implements BrowserInput {
   async movePointer(point: Point): Promise<void> {
     this.events.push(`move:${point.x},${point.y}`);
   }
+  async movePointerBy(delta: Point): Promise<void> {
+    this.events.push(`moveBy:${delta.x},${delta.y}`);
+  }
+  async pointerDown(button: MouseButton = 'left'): Promise<void> {
+    this.events.push(`pointerDown:${button}`);
+  }
+  async pointerUp(button: MouseButton = 'left'): Promise<void> {
+    this.events.push(`pointerUp:${button}`);
+  }
+  async pressKey(key: string): Promise<void> {
+    this.events.push(`press:${key}`);
+  }
+  async keyDown(key: string): Promise<void> {
+    this.events.push(`keyDown:${key}`);
+  }
+  async keyUp(key: string): Promise<void> {
+    this.events.push(`keyUp:${key}`);
+  }
+  async typeText(text: string): Promise<void> {
+    this.events.push(`type:${text}`);
+  }
+  async scroll(delta: Point): Promise<void> {
+    this.events.push(`scroll:${delta.x},${delta.y}`);
+  }
+}
+
+class InputWithoutRelative implements BrowserInput {
+  readonly events: string[] = [];
+
+  async movePointer(point: Point): Promise<void> {
+    this.events.push(`move:${point.x},${point.y}`);
+  }
   async pointerDown(button: MouseButton = 'left'): Promise<void> {
     this.events.push(`pointerDown:${button}`);
   }
@@ -63,6 +95,60 @@ test('realtime loop diffs held controls instead of repeating keyDown', async () 
     'keyDown:ArrowLeft',
     'keyUp:ArrowLeft',
   ]);
+});
+
+test('realtime loop emits relative mouse-look every tick without repeating held keyDown', async () => {
+  const input = new Input();
+  let now = 0;
+  const result = await new RealtimeControlLoop(input, {
+    observe: async () => null,
+    decide: ({ tick }) => {
+      if (tick < 2) return { heldKeys: ['w'], pointerDelta: { x: 5, y: -2 } };
+      return { stop: true, reason: 'look-complete' };
+    },
+    tickIntervalMs: 1,
+    maxTicks: 5,
+    maxDurationMs: 100,
+    now: () => now,
+    sleep: async (ms) => { now += ms; },
+  }).run();
+
+  assert.equal(result.status, 'stopped');
+  assert.equal(result.reason, 'look-complete');
+  assert.deepEqual(input.events, [
+    'moveBy:5,-2',
+    'keyDown:w',
+    'moveBy:5,-2',
+    'keyUp:w',
+  ]);
+});
+
+test('realtime loop rejects ambiguous absolute and relative pointer intents before dispatch', async () => {
+  const input = new Input();
+  const loop = new RealtimeControlLoop(input, {
+    observe: async () => null,
+    decide: () => ({ pointer: { x: 1, y: 2 }, pointerDelta: { x: 3, y: 4 } }),
+    tickIntervalMs: 0,
+    maxTicks: 1,
+    maxDurationMs: 100,
+  });
+
+  await assert.rejects(loop.run(), /mutually exclusive/);
+  assert.deepEqual(input.events, []);
+});
+
+test('realtime loop rejects relative movement when the input adapter lacks the capability', async () => {
+  const input = new InputWithoutRelative();
+  const loop = new RealtimeControlLoop(input, {
+    observe: async () => null,
+    decide: () => ({ pointerDelta: { x: 3, y: 4 } }),
+    tickIntervalMs: 0,
+    maxTicks: 1,
+    maxDurationMs: 100,
+  });
+
+  await assert.rejects(loop.run(), /does not support relative pointer movement/);
+  assert.deepEqual(input.events, []);
 });
 
 test('realtime loop releases held keys and buttons when the policy throws', async () => {
@@ -176,5 +262,19 @@ test('invalid intents fail closed before dispatching new input', async () => {
   });
 
   await assert.rejects(loop.run(), /non-empty strings/);
+  assert.deepEqual(input.events, []);
+});
+
+test('non-finite relative pointer intents fail closed before dispatch', async () => {
+  const input = new Input();
+  const loop = new RealtimeControlLoop(input, {
+    observe: async () => null,
+    decide: () => ({ pointerDelta: { x: Number.NaN, y: 2 } }),
+    tickIntervalMs: 0,
+    maxTicks: 1,
+    maxDurationMs: 100,
+  });
+
+  await assert.rejects(loop.run(), /pointer delta coordinates must be finite/);
   assert.deepEqual(input.events, []);
 });
