@@ -58,18 +58,27 @@ export interface DesktopVisualArtifactRef {
   token: string;
   /** Optional bounded media-type hint, for example image/png. */
   mediaType?: string;
-  /** Optional size of the backend-owned capture, not inline bytes. */
-  byteLength?: number;
+  /** Exact encoded size of the backend-owned capture. */
+  byteLength: number;
 }
 
-export interface DesktopVisualObservation {
-  status: DesktopVisualStatus;
-  window: DesktopNativeWindowRef;
-  width?: number;
-  height?: number;
-  artifact?: DesktopVisualArtifactRef;
-  reason?: string;
-}
+export type DesktopVisualObservation =
+  | {
+      status: 'available';
+      window: DesktopNativeWindowRef;
+      width: number;
+      height: number;
+      artifact: DesktopVisualArtifactRef;
+      reason?: never;
+    }
+  | {
+      status: 'unavailable' | 'unsupported';
+      window: DesktopNativeWindowRef;
+      reason?: string;
+      width?: never;
+      height?: never;
+      artifact?: never;
+    };
 
 export interface DesktopSystemObservation {
   /** Already bounded by the limits supplied to observeSystem(). */
