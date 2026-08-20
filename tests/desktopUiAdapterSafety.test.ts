@@ -365,3 +365,51 @@ test('visual and accessibility backend accessors are rejected without invoking n
     assert.equal(getterCalls,0);
   }
 });
+
+test('observation request authority and limits cannot drift during asynchronous preflight', async () => {
+  const {backend,adapter} = fixture();
+  const originalObserveSystem = backend.observeSystem.bind(backend);
+  const originalObserveAccessibility = backend.observeAccessibility.bind(backend);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const enteredPreflight = new Promise<void>((resolve) => { entered = resolve; });
+  let firstSystem = true;
+  backend.observeSystem = async (limits) => {
+    if (firstSystem) {
+      firstSystem = false;
+      entered();
+      await gate;
+    }
+    return originalObserveSystem(limits);
+  };
+  let accessibilityLimits:any;
+  backend.observeAccessibility = async (window,limits) => {
+    accessibilityLimits = limits;
+    return originalObserveAccessibility(window,limits);
+  };
+  const request:any = {
+    adapterId:'desktop:test',
+    channel:'semantic-ui',
+    surface:{...surface},
+    target:{adapterId:'desktop:test',environment:'desktop-ui',kind:'ui-control',entityId:'root',surfaceId:'win-1',generation:1},
+    limits:{maxItems:1,maxTextBytes:100,maxDepth:1},
+  };
+  const pending = adapter.observe(request);
+  await enteredPreflight;
+  request.channel = 'visual';
+  request.surface.surfaceId = 'mutated-window';
+  request.target.entityId = 'mutated-control';
+  request.target.surfaceId = 'mutated-window';
+  request.limits.maxItems = 100;
+  request.limits.maxTextBytes = 10000;
+  request.limits.maxDepth = 10;
+  release();
+  const result = await pending;
+  assert.equal(result.channel,'semantic-ui');
+  assert.equal(result.surface?.surfaceId,'win-1');
+  assert.equal(result.target?.entityId,'root');
+  assert.equal(result.target?.surfaceId,'win-1');
+  assert.deepEqual(accessibilityLimits,{maxItems:1,maxTextBytes:100,maxDepth:1});
+  assert.equal(Object.isFrozen(result.target),true);
+});
