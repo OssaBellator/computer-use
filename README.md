@@ -2,7 +2,7 @@
 
 A TypeScript foundation for closed-loop browser interaction research, accessibility tooling, reproducible UI testing, and permitted interactive-page/game experiments.
 
-The engine models a page as a semantic/spatial interaction graph, combines DOM semantics with CDP-backed identity and geometry, learns observed keyboard topology, plans across input modalities, verifies browser state after execution instead of assuming an issued command succeeded, and now includes a bounded realtime loop for controls that must stay held across multiple browser frames.
+The engine models a page as a semantic/spatial interaction graph, combines DOM semantics with CDP-backed identity and geometry, learns observed keyboard topology, plans across input modalities, verifies browser state after execution instead of assuming an issued command succeeded, and includes bounded realtime control with lower-frequency spatial visual perception for fast-changing canvas state.
 
 ## Scope
 
@@ -28,6 +28,9 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - viewport-clipped and main-viewport geometry
 - paint-order target validation before pointer acquisition
 - bounded screenshot capture for canvas/paint-only state, with crop/format/size controls and content hashes
+- clipped screenshot downscaling before image bytes cross the CDP boundary
+- local PNG differencing with sampled changed-pixel fractions, motion tiles, and coarse motion bounds
+- viewport-coordinate mapping for motion regions extracted from downscaled crops
 
 ### Interaction model and planning
 
@@ -52,6 +55,8 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - CDP input adapter for Chromium testing
 - persistent `keyDown`/`keyUp` and pointer-button state for controls held across multiple frames
 - bounded realtime control loop that diffs desired held state instead of repeatedly issuing key presses
+- independently configurable visual/semantic observation cadence versus faster control-tick cadence
+- explicit observation freshness and age metadata on each realtime policy decision
 - hard realtime tick/time budgets and guaranteed held-input cleanup on stop, failure, or budget exhaustion
 - deterministic US-keyboard mapping for letters, digits, punctuation, modifiers, and chords
 - modifier-aware suppression of printable text for control/meta/alt shortcuts
@@ -97,30 +102,30 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not at `/usr/bin/chromium`.
 
-The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner, roving-tabindex ownership that keeps speculative Arrow planning inside the widget, and an animated canvas fixture driven by a held CDP key across multiple game updates with visual-change verification and cleanup keyup.
+The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner, roving-tabindex ownership that keeps speculative Arrow planning inside the widget, held CDP controls across animated canvas frames, and a downscaled visual-motion fixture where control ticks outnumber screenshot captures.
 
 ## Architecture
 
 ```text
 semantic goal / realtime policy
     |
-    +-----------------------------+
-    |                             |
-    v                             v
-DOM + AX + frame + geometry    visual capture / caller perception
-observer                         |
-    |                            |
-    +---- overflow clipping      |
-    |                            |
-    +---- DOM focus ---- state-anchor ---- active descendant
-    |                            |
-    v                            |
-InteractionModel <---- observed focus/directional topology
-    |                            |
-    v                            v
-modality-aware A* planner    RealtimeControlLoop
-    |                            |
-    +---- keyboard --------------+
+    +-------------------------------------+
+    |                                     |
+    v                                     v
+DOM + AX + frame + geometry        clipped/downscaled visual capture
+observer                                  |
+    |                                     v
+    +---- overflow clipping         PNG tile/motion differ
+    |                                     |
+    +---- DOM focus ---- state-anchor      |
+    |                    |                 |
+    v                    v                 v
+InteractionModel <---- observed topology  cached observation
+    |                                     |
+    v                                     v
+modality-aware A* planner          RealtimeControlLoop
+    |                              (fast control ticks)
+    +---- keyboard -----------------------+
     |
     +---- pointer -> trajectory -> bounded touchpad
     |
@@ -132,26 +137,24 @@ browser input adapter
     v
 page / game state
     |
-    v
-snapshot diff / action verification / next realtime observation
+    +---- next semantic snapshot
     |
-    +---- edge performance update
-    |
-    +---- refresh model / replan / next control tick
+    +---- next scheduled visual sample
 ```
 
 ## Regression coverage
 
-The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, modifier semantics, screenshot capture/change detection, realtime held-input diffs and cleanup, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
+The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
 
-See [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for the realtime interactive control API and Chromium canvas regression fixture.
+See [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling, motion differencing, and decoupled perception/control cadence.
 
 ## Current limitations / next slices
 
-1. **Realtime perception efficiency:** add lower-cost cropped frame sampling, frame differencing, and motion-region extraction so canvas policies do not need full image capture every tick.
-2. **Composite key semantics:** ownership and roving tabindex now bound speculative Arrow space; model orientation, wrapping, Home/End, PageUp/PageDown, and richer grid/menu/tree-specific transitions explicitly.
-3. **Explicit frame traversal edges:** pointer geometry is normalized across frames, but keyboard/frame ownership should be represented as first-class enter/exit-frame graph transitions.
-4. **Snapshot efficiency:** reduce full-tree observation cost through incremental invalidation and targeted refresh while preserving stable backend/AX identity.
-5. **Control scheduling and replay:** separate perception/control frequencies, record deterministic non-sensitive control traces, and support replay without storing screenshot bytes by default.
-6. **Multi-level scroll planning:** nested reveal handles the nearest reachable scroll scope; plan explicitly through multiple nested scroll scopes and page scrolling when more than one level must move.
-7. **Action semantics:** expand verification for navigation, dialogs, selection commits, and form submission while retaining fail-closed observation rules.
+1. **Temporal visual state:** motion regions are frame-pair observations; add short bounded tracks, velocity estimates, and confidence decay so policies can reason about moving entities between visual captures.
+2. **Game-region acquisition:** clips are currently caller-supplied; add deterministic canvas/video/known-element region discovery and safe region refresh when layout changes.
+3. **Composite key semantics:** ownership and roving tabindex bound speculative Arrow space; model orientation, wrapping, Home/End, PageUp/PageDown, and richer grid/menu/tree-specific transitions explicitly.
+4. **Explicit frame traversal edges:** pointer geometry is normalized across frames, but keyboard/frame ownership should be represented as first-class enter/exit-frame graph transitions.
+5. **Snapshot efficiency:** reduce full-tree observation cost through incremental invalidation and targeted refresh while preserving stable backend/AX identity.
+6. **Control trace/replay:** record deterministic non-sensitive control/perception metadata and support replay without storing screenshot bytes by default.
+7. **Multi-level scroll planning:** nested reveal handles the nearest reachable scroll scope; plan explicitly through multiple nested scroll scopes and page scrolling when more than one level must move.
+8. **Action semantics:** expand verification for navigation, dialogs, selection commits, and form submission while retaining fail-closed observation rules.
