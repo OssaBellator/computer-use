@@ -109,6 +109,49 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     return engine?.semanticSnapshot(limits);
   }
 
+  async resolveBoundedSemanticTarget(
+    targetId: string | undefined,
+    entityId: string,
+    limits: BoundedSemanticSnapshotLimits,
+  ): Promise<InteractionNode | undefined> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.resolveBoundedSemanticTarget(entityId, limits);
+  }
+
+  async activateBoundedSemantic(
+    targetId: string | undefined,
+    entityId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: SemanticActivateOptions,
+  ): Promise<TaskEngineActionResult> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.activateBoundedSemantic(entityId, limits, options) ??
+      { status: 'target-not-found', target: null };
+  }
+
+  async hoverBoundedSemantic(
+    targetId: string | undefined,
+    entityId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: SemanticHoverOptions,
+  ): Promise<TaskEngineActionResult> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.hoverBoundedSemantic(entityId, limits, options) ??
+      { status: 'target-not-found', target: null };
+  }
+
+  async typeBoundedSemantic(
+    targetId: string | undefined,
+    entityId: string,
+    text: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: SemanticTypeOptions,
+  ): Promise<TaskEngineActionResult> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.typeBoundedSemantic(entityId, text, limits, options) ??
+      { status: 'target-not-found', target: null };
+  }
+
   async documentContentForPage(
     targetId: string,
     options?: DocumentContentOptions,
