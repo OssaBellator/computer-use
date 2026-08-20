@@ -63,8 +63,6 @@ export * from './computer/environmentRegistry.js';
 export * from './computer/computerCapabilities.js';
 export * from './computer/browserCapabilityBridge.js';
 export * from './computer/profileComposition.js';
-export * from './computer/documentModels.js';
-export * from './application/structuredTextSemanticAdapter.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
 export * from './input/browserInput.js';
