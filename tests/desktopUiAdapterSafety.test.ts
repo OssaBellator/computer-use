@@ -215,11 +215,14 @@ test('validated action authority cannot drift while asynchronous preflight is in
 
 function millionChildren(counter:{reads:number}) {
   const backing:any[] = [];
+  backing.length = 1_000_000;
   return new Proxy(backing, {
-    get(target, prop, receiver) {
-      if (prop === 'length') return 1_000_000;
-      if (typeof prop === 'string' && /^\d+$/.test(prop)) { counter.reads += 1; return {controlId:`child-${prop}`}; }
-      return Reflect.get(target,prop,receiver);
+    getOwnPropertyDescriptor(target, prop) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+        counter.reads += 1;
+        return {configurable:true,enumerable:true,writable:true,value:{controlId:`child-${prop}`}};
+      }
+      return Reflect.getOwnPropertyDescriptor(target,prop);
     },
   });
 }
@@ -312,4 +315,53 @@ test('malformed backend action result cannot become retry-safe after native emis
   assert.equal(result.status,'unknown');
   assert.equal(result.dispatch,'unknown');
   assert.equal(result.verification,'unverified');
+});
+
+test('accessor-backed system observation envelope is rejected without invoking windows getter', async () => {
+  const {backend,adapter} = fixture();
+  let getterCalls = 0;
+  backend.observeSystem = async () => {
+    const raw:any = {truncated:false};
+    Object.defineProperty(raw,'windows',{enumerable:true,get(){getterCalls += 1; return getterCalls === 1 ? [] : new Array(1_000_000);}});
+    return raw;
+  };
+  await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'system',limits:{maxItems:2}}), /system observation invalid/);
+  assert.equal(getterCalls,0);
+});
+
+test('proxy observation get traps cannot drift bounded system windows or nested identity', async () => {
+  const {backend,adapter} = fixture();
+  let getCalls = 0;
+  const window = new Proxy({nativeWindowId:'win-1',generation:1,foreground:true,focused:true} as any, {
+    get(target,prop,receiver) { if (prop === 'nativeWindowId') { getCalls += 1; return 'mutated'; } return Reflect.get(target,prop,receiver); },
+  });
+  const raw = new Proxy({windows:[window],truncated:false} as any, {
+    get(target,prop,receiver) { if (prop === 'windows') { getCalls += 1; return new Array(1_000_000); } return Reflect.get(target,prop,receiver); },
+  });
+  backend.observeSystem = async () => raw;
+  const obs = await adapter.observe({adapterId:'desktop:test',channel:'system',limits:{maxItems:2,maxTextBytes:1000}});
+  assert.equal(getCalls,0);
+  assert.equal((obs.data as any).windows.length,1);
+  assert.equal((obs.data as any).windows[0].nativeWindowId,'win-1');
+});
+
+test('visual and accessibility backend accessors are rejected without invoking nested getters', async () => {
+  {
+    const {backend,adapter} = fixture();
+    let getterCalls = 0;
+    const raw:any = {status:'available',width:10,height:10};
+    Object.defineProperty(raw,'window',{enumerable:true,get(){getterCalls += 1; return {nativeWindowId:'win-1',generation:1};}});
+    backend.observeVisual = async () => raw;
+    await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /visual observation invalid/);
+    assert.equal(getterCalls,0);
+  }
+  {
+    const {backend,adapter} = fixture();
+    let getterCalls = 0;
+    const ref:any = {generation:1};
+    Object.defineProperty(ref,'nativeWindowId',{enumerable:true,get(){getterCalls += 1; return 'win-1';}});
+    backend.observeAccessibility = async () => ({status:'available',window:ref,root:{controlId:'root'}} as any);
+    await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface}), /accessibility observation invalid/);
+    assert.equal(getterCalls,0);
+  }
 });
