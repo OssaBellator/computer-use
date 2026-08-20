@@ -220,12 +220,13 @@ function boundedPositive(value: number | undefined, fallback: number, ceiling: n
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-function plainDataRecord(value: unknown, label: string): Record<string, unknown> {
+function plainDataRecord(value: unknown, label: string, knownKeys: readonly string[]): Record<string, unknown> {
   if (!isRecord(value)) throw new TypeError(`${label} must be a plain data object`);
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} must be a plain data object`);
-  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-    if (!('value' in descriptor)) throw new TypeError(`${label}.${key} must be a data property`);
+  for (const key of knownKeys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor && !('value' in descriptor)) throw new TypeError(`${label}.${key} must be a data property`);
   }
   return value;
 }
@@ -234,7 +235,7 @@ function dataProperty(record: Record<string, unknown>, key: string): unknown {
 }
 function snapshotEntityRef(value: unknown): Readonly<ComputerEntityRef> | undefined {
   if (value === undefined) return undefined;
-  const source = plainDataRecord(value, 'browser action target');
+  const source = plainDataRecord(value, 'browser action target', ['adapterId', 'environment', 'kind', 'entityId', 'surfaceId', 'generation']);
   return Object.freeze({
     adapterId: dataProperty(source, 'adapterId'),
     environment: dataProperty(source, 'environment'),
@@ -245,7 +246,7 @@ function snapshotEntityRef(value: unknown): Readonly<ComputerEntityRef> | undefi
   } as ComputerEntityRef);
 }
 function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> {
-  const source = plainDataRecord(value, 'browser action request');
+  const source = plainDataRecord(value, 'browser action request', ['adapterId', 'actionId', 'capability', 'effect', 'idempotency', 'target', 'payload']);
   const target = snapshotEntityRef(dataProperty(source, 'target'));
   return Object.freeze({
     adapterId: dataProperty(source, 'adapterId'),
@@ -259,7 +260,7 @@ function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> 
 }
 function snapshotObservationSurface(value: unknown): Readonly<ComputerSurfaceRef> | undefined {
   if (value === undefined) return undefined;
-  const source = plainDataRecord(value, 'browser observation surface');
+  const source = plainDataRecord(value, 'browser observation surface', ['adapterId', 'environment', 'surfaceId', 'generation', 'parentSurfaceId']);
   return Object.freeze({
     adapterId: dataProperty(source, 'adapterId'),
     environment: dataProperty(source, 'environment'),
@@ -270,7 +271,7 @@ function snapshotObservationSurface(value: unknown): Readonly<ComputerSurfaceRef
 }
 function snapshotObservationTarget(value: unknown): Readonly<ComputerEntityRef> | undefined {
   if (value === undefined) return undefined;
-  const source = plainDataRecord(value, 'browser observation target');
+  const source = plainDataRecord(value, 'browser observation target', ['adapterId', 'environment', 'kind', 'entityId', 'surfaceId', 'generation']);
   return Object.freeze({
     adapterId: dataProperty(source, 'adapterId'),
     environment: dataProperty(source, 'environment'),
@@ -282,7 +283,7 @@ function snapshotObservationTarget(value: unknown): Readonly<ComputerEntityRef> 
 }
 function snapshotObservationLimits(value: unknown): Readonly<NonNullable<ComputerObservationRequest['limits']>> | undefined {
   if (value === undefined) return undefined;
-  const source = plainDataRecord(value, 'browser observation limits');
+  const source = plainDataRecord(value, 'browser observation limits', ['maxItems', 'maxTextBytes', 'maxDepth']);
   return Object.freeze({
     ...(dataProperty(source, 'maxItems') !== undefined ? { maxItems: dataProperty(source, 'maxItems') } : {}),
     ...(dataProperty(source, 'maxTextBytes') !== undefined ? { maxTextBytes: dataProperty(source, 'maxTextBytes') } : {}),
@@ -290,7 +291,7 @@ function snapshotObservationLimits(value: unknown): Readonly<NonNullable<Compute
   } as NonNullable<ComputerObservationRequest['limits']>);
 }
 function snapshotObservationRequest(value: unknown): Readonly<ComputerObservationRequest> {
-  const source = plainDataRecord(value, 'browser observation request');
+  const source = plainDataRecord(value, 'browser observation request', ['adapterId', 'channel', 'surface', 'target', 'limits']);
   const surface = snapshotObservationSurface(dataProperty(source, 'surface'));
   const target = snapshotObservationTarget(dataProperty(source, 'target'));
   const limits = snapshotObservationLimits(dataProperty(source, 'limits'));
@@ -302,9 +303,9 @@ function snapshotObservationRequest(value: unknown): Readonly<ComputerObservatio
     ...(limits ? { limits } : {}),
   } as ComputerObservationRequest);
 }
-function plainPayload(value: unknown): Record<string, unknown> | undefined {
+function plainPayload(value: unknown, knownKeys: readonly string[]): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
-  try { return plainDataRecord(value, 'browser action payload'); } catch { return undefined; }
+  try { return plainDataRecord(value, 'browser action payload', knownKeys); } catch { return undefined; }
 }
 function validateRuntimePolicyValue(key: keyof BrowserRuntimePolicy, value: unknown): void {
   if (value === undefined) return;
@@ -342,7 +343,7 @@ function validateRuntimePolicyValue(key: keyof BrowserRuntimePolicy, value: unkn
   }
 }
 function snapshotAdapterOptions(options: BrowserComputerEnvironmentAdapterOptions): Readonly<BrowserComputerEnvironmentAdapterOptions> {
-  const root = plainDataRecord(options, 'browser adapter options');
+  const root = plainDataRecord(options, 'browser adapter options', ['adapterId', 'version', 'runtimeOptions']);
   const adapterId = Object.getOwnPropertyDescriptor(root, 'adapterId')?.value;
   const version = Object.getOwnPropertyDescriptor(root, 'version')?.value;
   const runtimeCandidate = Object.getOwnPropertyDescriptor(root, 'runtimeOptions')?.value;
@@ -350,7 +351,7 @@ function snapshotAdapterOptions(options: BrowserComputerEnvironmentAdapterOption
   if (version !== undefined && typeof version !== 'string') throw new TypeError('browser adapter options.version must be a string');
   let runtimeOptions: Readonly<BrowserRuntimePolicy> | undefined;
   if (runtimeCandidate !== undefined) {
-    const source = plainDataRecord(runtimeCandidate, 'browser runtime options');
+    const source = plainDataRecord(runtimeCandidate, 'browser runtime options', RUNTIME_POLICY_KEYS);
     const snapshot: Partial<BrowserRuntimePolicy> = {};
     for (const key of RUNTIME_POLICY_KEYS) {
       const descriptor = Object.getOwnPropertyDescriptor(source, key);
@@ -372,7 +373,7 @@ function boundedKey(value: unknown): value is string {
 }
 function validateActivatePayload(value: unknown): BrowserActivatePayload | undefined {
   if (value === undefined) return {};
-  const record = plainPayload(value);
+  const record = plainPayload(value, ['method', 'key']);
   if (!record) return undefined;
   const method = dataProperty(record, 'method'), key = dataProperty(record, 'key');
   if (method !== undefined && method !== 'auto' && method !== 'keyboard' && method !== 'pointer') return undefined;
@@ -380,7 +381,7 @@ function validateActivatePayload(value: unknown): BrowserActivatePayload | undef
   return { ...(method !== undefined ? { method } : {}), ...(key !== undefined ? { key } : {}) } as BrowserActivatePayload;
 }
 function validateTypePayload(value: unknown): BrowserTypePayload | undefined {
-  const record = plainPayload(value);
+  const record = plainPayload(value, ['text', 'expectedValue', 'delayMs']);
   if (!record) return undefined;
   const text = dataProperty(record, 'text');
   const expectedValue = dataProperty(record, 'expectedValue');
@@ -397,13 +398,13 @@ function validateTypePayload(value: unknown): BrowserTypePayload | undefined {
   };
 }
 function validatePressKeyPayload(value: unknown): BrowserPressKeyPayload | undefined {
-  const record = plainPayload(value);
+  const record = plainPayload(value, ['key']);
   const key = record ? dataProperty(record, 'key') : undefined;
   return boundedKey(key) ? { key } : undefined;
 }
 function validateScrollPayload(value: unknown): BrowserScrollPayload | undefined {
   if (value === undefined) return undefined;
-  const record = plainPayload(value);
+  const record = plainPayload(value, ['deltaX', 'deltaY']);
   if (!record) return undefined;
   const deltaX = dataProperty(record, 'deltaX') ?? 0, deltaY = dataProperty(record, 'deltaY') ?? 0;
   if (typeof deltaX !== 'number' || typeof deltaY !== 'number' || !Number.isFinite(deltaX) || !Number.isFinite(deltaY) ||
