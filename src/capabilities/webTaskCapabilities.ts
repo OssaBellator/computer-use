@@ -427,6 +427,9 @@ function addPredicateCapabilities(
     case 'browser':
       into.add('browser-state-observation');
       return;
+    case 'document':
+      into.add('document-content-observation');
+      return;
     case 'dialog':
       into.add('dialog-observation');
       return;
