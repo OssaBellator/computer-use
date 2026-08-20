@@ -118,6 +118,21 @@ function payload(): SystemDeviceMutationPayload {
   };
 }
 
+function validMutationRequest(actionId: string): ComputerActionRequest {
+  return {
+    adapterId: 'system-device-boundary',
+    actionId,
+    capability: 'device.peripheral.configure',
+    effect: 'hardware-affecting',
+    idempotency: 'non-idempotent',
+    target: {
+      adapterId: 'system-device-boundary', environment: 'device', kind: 'peripheral',
+      entityId: target.id, generation: target.generation,
+    },
+    payload: payload(),
+  };
+}
+
 test('tiny observation limit is pushed into acquisition and does not materialize a large inventory', async () => {
   const backend = new BoundaryBackend();
   const adapter = new SystemDeviceEnvironmentAdapter('system-device-boundary', backend);
@@ -202,5 +217,41 @@ test('invalid direct action envelope fails closed before approval ledger or back
     assert.equal(verifierCalls, 0);
     assert.deepEqual(ledger.claims, []);
     assert.equal(backend.mutationCalls, 0);
+  }
+});
+
+test('mutation requires an exactly matching generation-bearing neutral target before approval or backend work', async () => {
+  const cases: Array<{ name: string; mutate(request: ComputerActionRequest): void }> = [
+    { name: 'missing', mutate(request) { delete request.target; } },
+    { name: 'wrong-id', mutate(request) { if (request.target) request.target.entityId = 'peripheral:other'; } },
+    { name: 'wrong-kind', mutate(request) { if (request.target) request.target.kind = 'device'; } },
+    { name: 'stale-generation', mutate(request) { if (request.target) request.target.generation = 0; } },
+  ];
+
+  for (const scenario of cases) {
+    const backend = new BoundaryBackend();
+    const ledger = new BoundaryLedger();
+    let verifierCalls = 0;
+    const verifier: SystemDeviceApprovalVerifier = {
+      async verify() {
+        verifierCalls += 1;
+        return true;
+      },
+    };
+    const adapter = new SystemDeviceEnvironmentAdapter('system-device-boundary', backend, {
+      enableMutations: true,
+      approvalVerifier: verifier,
+      actionLedger: ledger,
+    });
+    const request = validMutationRequest(`action:target:${scenario.name}`);
+    scenario.mutate(request);
+
+    const result = await adapter.act(request);
+    assert.equal(result.status, 'rejected', scenario.name);
+    assert.equal(result.dispatch, 'not-dispatched', scenario.name);
+    assert.deepEqual(result.evidence, ['mutation-target-binding-mismatch'], scenario.name);
+    assert.equal(verifierCalls, 0, scenario.name);
+    assert.deepEqual(ledger.claims, [], scenario.name);
+    assert.equal(backend.mutationCalls, 0, scenario.name);
   }
 });
