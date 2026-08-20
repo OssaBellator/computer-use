@@ -35,12 +35,50 @@ function snapshotIntent(intent: SpreadsheetNativeEdit): SpreadsheetNativeEdit {
     ? { ...intent, document: cloneDocument(intent.document), target: cloneRange(intent.target), formula: `${intent.formula}` }
     : { ...intent, document: cloneDocument(intent.document), target: cloneRange(intent.target), value: typeof intent.value === 'string' ? `${intent.value}` : intent.value };
 }
-const isSingleCell = (range: CellRange): boolean => range.start.row === range.end.row && range.start.column === range.end.column;
 const expectedInput = (intent: SpreadsheetNativeEdit): SpreadsheetCellInput => intent.kind === 'set-cell-formula' ? { kind: 'formula', formula: intent.formula } : { kind: 'value', value: intent.value };
-const expectationFor = (intent: SpreadsheetNativeEdit): VerificationExpectation => ({ kind: 'cell-input-equals', target: intent.target.sheet, address: cloneAddress(intent.target.start), expected: expectedInput(intent) });
 const cellKey = (address: CellAddress): string => `${address.row}:${address.column}`;
 function renderedInput(input: SpreadsheetCellInput): string { if (input.kind === 'blank') return ''; if (input.kind === 'formula') return `=${input.formula}`; return input.value === null ? 'null' : String(input.value); }
-function totalCellCount(range: CellRange): number { const total = (range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1); if (!Number.isSafeInteger(total) || total < 1) throw new Error('cell observation range is too large'); return total; }
+function totalCellCount(range: CellRange): number {
+  const total = (range.end.row - range.start.row + 1) * (range.end.column - range.start.column + 1);
+  if (!Number.isSafeInteger(total) || total < 1) throw new Error('cell range is too large');
+  return total;
+}
+function addresses(range: CellRange): CellAddress[] {
+  const out: CellAddress[] = [];
+  for (let row = range.start.row; row <= range.end.row; row += 1) {
+    for (let column = range.start.column; column <= range.end.column; column += 1) out.push({ row, column });
+  }
+  return out;
+}
+function verificationCapacityError(intent: SpreadsheetNativeEdit, bounds: ObservationBounds): string | undefined {
+  const boundErrors = validateObservationBounds(bounds);
+  if (boundErrors.length) return boundErrors.join('; ');
+  const total = totalCellCount(intent.target);
+  const perCellBytes = utf8Bytes(renderedInput(expectedInput(intent)));
+  const requiredBytes = perCellBytes * total;
+  if (!Number.isSafeInteger(requiredBytes) || requiredBytes > bounds.maxTextBytes || total > bounds.maxItems) {
+    return 'verification bounds cannot fully observe target cell range';
+  }
+  return undefined;
+}
+function verifyRange(
+  identity: DocumentIdentityState,
+  beforeRevision: number,
+  intent: SpreadsheetNativeEdit,
+  observation: ModelObservation,
+): PostEditVerification {
+  const expected = expectedInput(intent);
+  let firstVerified: PostEditVerification | undefined;
+  for (const address of addresses(intent.target)) {
+    const expectation: VerificationExpectation = { kind: 'cell-input-equals', target: intent.target.sheet, address, expected };
+    const result = verifyPostEdit({ identity, beforeRevision, expectation, observation });
+    if (result.status !== 'verified') return result;
+    firstVerified ??= result;
+  }
+  return addresses(intent.target).length === 1
+    ? firstVerified ?? { status: 'insufficient-observation', evidence: ['target-cell-not-observed'] }
+    : { status: 'verified', evidence: ['cell-range-model-matches'] };
+}
 
 export class SpreadsheetSemanticController {
   constructor(private readonly backend: SpreadsheetNativeBackend) {}
@@ -48,8 +86,14 @@ export class SpreadsheetSemanticController {
   execute(intent: SpreadsheetNativeEdit, verificationBounds: ObservationBounds): Promise<SpreadsheetExecution> { return this.executeSnapshot(snapshotIntent(intent), { ...verificationBounds }); }
   private async executeSnapshot(intent: SpreadsheetNativeEdit, verificationBounds: ObservationBounds): Promise<SpreadsheetExecution> {
     const errors = [...validateIntent(intent), ...validateCellRange(intent.target)];
-    if (!isSingleCell(intent.target)) errors.push('spreadsheet semantic edits currently require a single-cell target');
+    let capacityError: string | undefined;
+    if (!errors.length) {
+      try { capacityError = verificationCapacityError(intent, verificationBounds); }
+      catch (error) { capacityError = error instanceof Error ? error.message : 'verification capacity could not be established'; }
+    }
+    if (capacityError) errors.push(capacityError);
     if (errors.length) return { status: 'rejected', dispatch: 'not-dispatched', reason: errors.join('; ') };
+
     const effect = classifyIntentEffect(intent);
     const beforeRevision = await this.backend.readRevision();
     const identity = await this.backend.readIdentity();
@@ -66,9 +110,8 @@ export class SpreadsheetSemanticController {
       dispatch = 'uncertain';
     }
 
-    const expectation = expectationFor(intent);
     const observation = await this.backend.observeCells(intent.target, verificationBounds);
-    const verification = verifyPostEdit({ identity: await this.backend.readIdentity(), beforeRevision, expectation, observation });
+    const verification = verifyRange(await this.backend.readIdentity(), beforeRevision, intent, observation);
     if (dispatch === 'uncertain') return { status: 'uncertain', effect, dispatch, verification };
     return verification.status === 'verified' ? { status: 'verified', effect, dispatch, verification } : { status: 'verification-failed', effect, dispatch, verification };
   }
@@ -108,8 +151,17 @@ export class DeterministicSpreadsheetBackend implements SpreadsheetNativeBackend
     return { kind: 'cells', target: cloneEntity(this.sheet), revision: this.revision, cells, truncated: exhausted || cells.length < total };
   }
   async dispatchSemanticEdit(intent: SpreadsheetNativeEdit): Promise<SpreadsheetDispatchResult> {
-    const edit = snapshotIntent(intent); if (!isSingleCell(edit.target)) throw new Error('spreadsheet backend requires a single-cell edit'); if (!sameStructuredEntityRef(edit.target.sheet, this.sheet)) throw new Error('spreadsheet sheet is stale or missing');
-    this.dispatchCountValue += 1; const address = cloneAddress(edit.target.start); this.cells.set(cellKey(address), { address, input: cloneInput(expectedInput(edit)) }); this.revision += 1;
-    const result: SpreadsheetDispatchResult = { dispatch: this.uncertainDispatch ? 'uncertain' : 'dispatched', revision: this.revision }; this.uncertainDispatch = false; return { ...result };
+    const edit = snapshotIntent(intent);
+    const errors = validateCellRange(edit.target);
+    if (errors.length) throw new Error(errors.join('; '));
+    if (!sameStructuredEntityRef(edit.target.sheet, this.sheet)) throw new Error('spreadsheet sheet is stale or missing');
+    const input = expectedInput(edit);
+    const targets = addresses(edit.target);
+    this.dispatchCountValue += 1;
+    for (const address of targets) this.cells.set(cellKey(address), { address: cloneAddress(address), input: cloneInput(input) });
+    this.revision += 1;
+    const result: SpreadsheetDispatchResult = { dispatch: this.uncertainDispatch ? 'uncertain' : 'dispatched', revision: this.revision };
+    this.uncertainDispatch = false;
+    return { ...result };
   }
 }
