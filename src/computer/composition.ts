@@ -27,6 +27,14 @@ function snapshotAdapter(
   });
 }
 
+function validateAndSnapshotAdapter(adapter: ComputerEnvironmentAdapter): ComputerEnvironmentAdapter {
+  const validationRegistry = new ComputerEnvironmentRegistry();
+  validationRegistry.register(adapter);
+  const [descriptor] = validationRegistry.descriptors();
+  if (!descriptor) throw new Error('registered adapter descriptor unavailable');
+  return snapshotAdapter(adapter, descriptor);
+}
+
 /**
  * Small environment-neutral composition root for computer-use programs.
  *
@@ -45,9 +53,11 @@ function snapshotAdapter(
  * checkpoint/reconciliation state is part of the no-replay safety boundary and
  * must not be hidden behind a stateless run convenience.
  *
- * Each runtime receives a registry snapshot of the adapters registered when the
- * runtime is constructed. Later composition mutations therefore cannot silently
- * rebind an in-flight task to another adapter instance with the same identity.
+ * Registration installs a descriptor-validated adapter facade with bound methods,
+ * so later mutation of the caller-owned adapter object cannot silently change the
+ * composition's observation route. Each task runtime receives its own registry
+ * snapshot of those facades; later composition registration changes therefore
+ * cannot rebind an in-flight runtime to another adapter instance.
  */
 export class ComputerRuntimeComposition {
   private readonly registry = new ComputerEnvironmentRegistry();
@@ -58,21 +68,10 @@ export class ComputerRuntimeComposition {
   }
 
   register(adapter: ComputerEnvironmentAdapter): this {
-    this.registry.register(adapter);
-    const untracked = this.registry.descriptors().filter(({ id }) => !this.runtimeAdapters.has(id));
-    if (untracked.length !== 1) {
-      for (const descriptor of untracked) this.registry.unregister(descriptor.id);
-      throw new Error('registered adapter descriptor unavailable');
-    }
-
-    const descriptor = untracked[0];
-    try {
-      this.runtimeAdapters.set(descriptor.id, snapshotAdapter(adapter, descriptor));
-      return this;
-    } catch (error) {
-      this.registry.unregister(descriptor.id);
-      throw error;
-    }
+    const snapshot = validateAndSnapshotAdapter(adapter);
+    this.registry.register(snapshot);
+    this.runtimeAdapters.set(snapshot.descriptor.id, snapshot);
+    return this;
   }
 
   unregister(adapterId: string): boolean {
