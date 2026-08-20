@@ -830,6 +830,9 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       try { exists = await this.controlExists(window, authority.target); }
       catch { return {status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-preflight-failed']}; }
       if (!exists) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['stale-control']};
+      try { window = await this.currentWindow(ref); }
+      catch { return {status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-preflight-failed']}; }
+      if (!window) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['stale-window']};
     } else if (authority.target?.kind !== 'surface') {
       return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-target-kind-invalid']};
     }
