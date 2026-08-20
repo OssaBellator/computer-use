@@ -10,10 +10,13 @@ The caller supplies:
 
 - a `BrowserInput` implementation (the standalone Chromium path uses native CDP `Input.*` operations);
 - a finite candidate list containing keys, mouse buttons, wheel axes, or relative pointer axes;
-- an `observe()` function that returns coarse visual-difference and temporal-track observations for the game region; and
-- an explicit `isRealtimeContextActive()` gate.
+- an `observe()` function that returns coarse visual-difference and temporal-track observations for the game region;
+- an explicit `isRealtimeContextActive()` gate; and
+- for key candidates, an explicit `isKeyProbeSafe()` gate that approves both the candidate key and current keyboard-focus ownership.
 
 A candidate is never inferred from page text, DOM semantics, menus, or arbitrary UI. Calibration only dispatches after an observation contains a valid acquired region and the caller confirms the realtime-control context. Before every probe, the pointer is moved to the center of that acquired clip so mouse buttons, wheel input, and relative movement are routed from the intended game surface rather than an unrelated page control.
+
+Pointer centering does **not** establish safe keyboard focus. Key probes therefore fail closed: immediately before native key dispatch, the calibrator requires `isKeyProbeSafe()` to return true for the exact key and latest baseline observation. The caller must reject keys whose browser/default action would be unsafe in the current context (for example activation/navigation keys when focus is not demonstrably owned by the realtime surface). A missing, false, or throwing key-safety gate produces an inconclusive `key-probe-not-safe` result and no `keyDown`/`keyUp` dispatch.
 
 `gameControlObservationFromVisualPipeline()` adapts the structural output of `CdpGameVisualPipeline` without making the calibrator depend on CDP itself. This keeps the calibration model usable with synthetic observations and other browser-native adapters.
 
@@ -28,10 +31,11 @@ For each candidate the calibrator:
 3. centers the pointer inside the acquired clip;
 4. collects a fresh passive baseline tied to the exact preflight region and perception generation;
 5. checks realtime context again immediately before input;
-6. dispatches one bounded actuation; and
-7. collects a bounded after-window tied to the same region/perception generation.
+6. for key candidates, requires `isKeyProbeSafe()` approval on the latest baseline observation;
+7. dispatches one bounded actuation; and
+8. collects a bounded after-window tied to the same region/perception generation.
 
-Renderer replacement, clip movement, perception-generation changes, missing regions, visual incompatibility, observation failure, or insufficient comparable samples produce an **inconclusive** probe. They are never reported as evidence that a control has no effect.
+Renderer replacement, clip movement, perception-generation changes, missing regions, visual incompatibility, observation failure, unsafe/unconfirmed key focus, or insufficient comparable samples produce an **inconclusive** probe. They are never reported as evidence that a control has no effect.
 
 ## Candidate controls
 
@@ -54,9 +58,15 @@ const calibration = await new GameControlCalibrator(input, {
   ),
   isRealtimeContextActive: async (observation) =>
     observation.region !== undefined && gameSessionIsExplicitlyActive,
+  isKeyProbeSafe: async (control, observation) =>
+    observation.region !== undefined &&
+    gameRegionOwnsKeyboardFocus &&
+    keyIsExplicitlySafeForCalibration(control.key),
   resetBetweenProbes: async () => resetSyntheticOrKnownSafeGameState(),
 }).run();
 ```
+
+The key-safety hook is intentionally caller-owned because a framework-independent calibration layer cannot infer keyboard-focus ownership or whether a browser/default key action is acceptable from coarse visual observations alone. It is required for native key probes; mouse, wheel, and relative-pointer probes keep their existing acquired-region/realtime-context gates.
 
 The reset hook is intentionally caller-owned because a generic browser layer cannot know whether an in-game reset is safe. Use it only for an explicitly known-safe game-state reset/rebaseline; do not route transaction, account, publication, deletion, deployment, or other high-consequence actions through calibration.
 
