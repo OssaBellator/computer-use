@@ -112,3 +112,65 @@ test('composition registers peer adapters and runs one neutral task across both'
     { adapterId: 'process:test', channel: 'process' },
   ]);
 });
+
+test('composition requires callers to retain runtime checkpoint state after uncertain dispatch', async () => {
+  let actCount = 0;
+  const uncertainAdapter: ComputerEnvironmentAdapter = {
+    descriptor: {
+      id: 'terminal:test',
+      kind: 'terminal',
+      version: '1.0.0',
+      capabilities: ['terminal.execute.argv'],
+    },
+    async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
+      return {
+        adapterId: 'terminal:test',
+        environment: 'terminal',
+        channel: request.channel,
+        sequence: 1,
+        complete: true,
+        truncated: false,
+        data: {},
+      };
+    },
+    async act(_request: ComputerActionRequest): Promise<ComputerActionResult> {
+      actCount += 1;
+      throw new Error('transport result lost after possible dispatch');
+    },
+  };
+
+  const composition = createComputerRuntimeComposition([uncertainAdapter]);
+  assert.equal('runTask' in composition, false, 'stateless execution convenience must not hide checkpoint state');
+
+  const program: ComputerTaskProgram = {
+    id: 'public-uncertain-dispatch',
+    entry: 'execute',
+    steps: [
+      {
+        kind: 'action',
+        id: 'execute',
+        request: {
+          adapterId: 'terminal:test',
+          actionId: 'execute',
+          capability: 'terminal.execute.argv',
+          effect: 'local-reversible',
+          idempotency: 'non-idempotent',
+        },
+      },
+    ],
+  };
+
+  const executionId = 'fedcba9876543210fedcba9876543210';
+  const runtime = composition.createTaskRuntime(program, { executionId });
+  const first = await runtime.run();
+  assert.equal(first.status, 'unknown-dispatch');
+  assert.equal(actCount, 1);
+
+  const checkpoint = runtime.checkpoint();
+  assert.equal(checkpoint.actions[0]?.state, 'unknown-dispatch');
+
+  const resumed = composition.createTaskRuntime(program, { executionId, checkpoint });
+  const second = await resumed.run();
+  assert.equal(second.status, 'reconciliation-required');
+  assert.equal(actCount, 1, 'resuming from the retained checkpoint must not redispatch');
+});
