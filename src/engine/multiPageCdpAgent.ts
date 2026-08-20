@@ -105,27 +105,44 @@ export class MultiPageCdpAgent {
     return this.attached.get(targetId)?.engine;
   }
 
+  private async attachPage(targetId: string): Promise<AttachedPageAgent | undefined> {
+    const existing = this.attached.get(targetId);
+    if (existing) return existing;
+    let session: RoutedCdpSession | undefined;
+    try {
+      session = await this.router.attach(targetId);
+      const engine = await this.createEngine(session, this.pageOptions);
+      await engine.prepare();
+      const binding = { session, engine };
+      this.attached.set(targetId, binding);
+      return binding;
+    } catch {
+      if (session) await this.router.detach(session).catch(() => {});
+      return undefined;
+    }
+  }
+
+  /**
+   * Attach a known page for bounded observation without activating it. This is
+   * used by post-commit verification to inspect only an explicitly associated
+   * popup while leaving the user's active page unchanged.
+   */
+  async inspectEngine(targetId: string): Promise<CdpBrowserAgentEngine | undefined> {
+    await this.start();
+    const target = this.targets.targets().find((candidate) => candidate.targetId === targetId);
+    if (!target || target.type !== 'page') return undefined;
+    return (await this.attachPage(targetId))?.engine;
+  }
+
   async switchTo(targetId: string): Promise<MultiPageSwitchResult> {
     await this.start();
     const target = this.targets.targets().find((candidate) => candidate.targetId === targetId);
     if (!target) return { status: 'target-not-found', targetId };
     if (target.type !== 'page') return { status: 'not-page', targetId };
 
-    let binding = this.attached.get(targetId);
-    const reused = binding !== undefined;
-    if (!binding) {
-      let session: RoutedCdpSession | undefined;
-      try {
-        session = await this.router.attach(targetId);
-        const engine = await this.createEngine(session, this.pageOptions);
-        await engine.prepare();
-        binding = { session, engine };
-        this.attached.set(targetId, binding);
-      } catch {
-        if (session) await this.router.detach(session).catch(() => {});
-        return { status: 'attach-failed', targetId, reused: false };
-      }
-    }
+    const reused = this.attached.has(targetId);
+    const binding = await this.attachPage(targetId);
+    if (!binding) return { status: 'attach-failed', targetId, reused: false };
 
     try {
       await this.router.activate(targetId);
