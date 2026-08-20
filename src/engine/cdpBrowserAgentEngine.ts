@@ -36,6 +36,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly networkActivity?: CdpNetworkActivityMonitor,
     readonly selects: CdpSelectController = new CdpSelectController(session),
     readonly richText?: RichTextController,
+    private readonly snapshotPage?: SnapshotPageLike,
   ) {}
 
   async prepare(): Promise<void> {
@@ -55,6 +56,18 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   browserState(): Promise<BrowserStateSnapshot> {
     return captureCdpBrowserState(this.session);
+  }
+
+  async frameDocumentTokens(): Promise<Readonly<Record<string, string>> | undefined> {
+    if (!this.snapshotPage) return undefined;
+    const frames = this.snapshotPage.frames();
+    const entries = await Promise.all(frames.map(async (frame, index) => {
+      const timeOrigin = await frame.evaluate(() => performance.timeOrigin);
+      if (!Number.isFinite(timeOrigin) || timeOrigin < 0) return undefined;
+      return [index === 0 ? 'main' : `frame-${index}`, timeOrigin.toString(36)] as const;
+    }));
+    const valid = entries.filter((entry): entry is readonly [string, string] => entry !== undefined);
+    return Object.fromEntries(valid);
   }
 
   documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
@@ -263,5 +276,6 @@ export function createCdpBrowserAgentEngine(
     eventSession && networkActivity === true ? new CdpNetworkActivityMonitor(eventSession) : undefined,
     new CdpSelectController(session),
     richText,
+    page,
   );
 }
