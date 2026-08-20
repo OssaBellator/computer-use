@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ComputerTaskProgram } from './computerTask.js';
 import {
@@ -116,13 +116,23 @@ function sameBinding(
 }
 
 async function readBounded(path: string, maxBytes: number): Promise<string | undefined> {
+  let handle;
   try {
-    const bytes = await readFile(path);
-    if (bytes.byteLength > maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
-    return bytes.toString('utf8');
+    handle = await open(path, 'r');
+    const bytes = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset > maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
+    return bytes.subarray(0, offset).toString('utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
+  } finally {
+    await handle?.close();
   }
 }
 
