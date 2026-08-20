@@ -10,7 +10,6 @@ export interface MediaElementIdentity {
   tagName: 'audio' | 'video' | 'unknown';
   id?: string;
   ariaLabel?: string;
-  currentSrc?: string;
 }
 
 export interface MediaElementState {
@@ -85,7 +84,6 @@ interface RawMediaValue {
   tagName?: unknown;
   id?: unknown;
   ariaLabel?: unknown;
-  currentSrc?: unknown;
   playbackState?: unknown;
   muted?: unknown;
   volume?: unknown;
@@ -224,7 +222,6 @@ function parseMediaState(
       tagName,
       id: boundedText(raw.id, maxTextLength),
       ariaLabel: boundedText(raw.ariaLabel, maxTextLength),
-      currentSrc: boundedText(raw.currentSrc, maxTextLength * 2),
     },
     playbackState,
     muted: typeof raw.muted === 'boolean' ? raw.muted : undefined,
@@ -249,7 +246,6 @@ const MEDIA_STATE_FUNCTION = `function() {
     tagName: this.tagName.toLowerCase(),
     id: text(this.id, 512),
     ariaLabel: text(this.getAttribute('aria-label'), 512),
-    currentSrc: text(this.currentSrc || this.src, 1024),
     playbackState: this.ended ? 'ended' : (this.paused ? 'paused' : 'playing'),
     muted: Boolean(this.muted),
     volume: finite(this.volume),
