@@ -15,11 +15,24 @@ function snapshotAdapter(
   adapter: ComputerEnvironmentAdapter,
   descriptor: ComputerEnvironmentAdapterDescriptor,
 ): ComputerEnvironmentAdapter {
+  const observe = adapter.observe;
+  const act = adapter.act;
+  if (typeof observe !== 'function' || typeof act !== 'function') {
+    throw new TypeError('computer environment adapter must implement observe() and act()');
+  }
   return Object.freeze({
     descriptor,
-    observe: adapter.observe.bind(adapter),
-    act: adapter.act.bind(adapter),
+    observe: observe.bind(adapter),
+    act: act.bind(adapter),
   });
+}
+
+function validateAndSnapshotAdapter(adapter: ComputerEnvironmentAdapter): ComputerEnvironmentAdapter {
+  const validationRegistry = new ComputerEnvironmentRegistry();
+  validationRegistry.register(adapter);
+  const [descriptor] = validationRegistry.descriptors();
+  if (!descriptor) throw new Error('registered adapter descriptor unavailable');
+  return snapshotAdapter(adapter, descriptor);
 }
 
 /**
@@ -53,10 +66,9 @@ export class ComputerRuntimeComposition {
   }
 
   register(adapter: ComputerEnvironmentAdapter): this {
-    this.registry.register(adapter);
-    const descriptor = this.registry.descriptors().find(({ id }) => !this.runtimeAdapters.has(id));
-    if (!descriptor) throw new Error('registered adapter descriptor unavailable');
-    this.runtimeAdapters.set(descriptor.id, snapshotAdapter(adapter, descriptor));
+    const snapshot = validateAndSnapshotAdapter(adapter);
+    this.registry.register(snapshot);
+    this.runtimeAdapters.set(snapshot.descriptor.id, snapshot);
     return this;
   }
 
