@@ -41,8 +41,8 @@ class ControlledPersistence implements ComputerTaskCheckpointPersistence {
   maxInFlight = 0;
   failNext = false;
   private releaseFirstSave?: () => void;
-  readonly firstSaveStarted = new Promise<void>((resolve) => { this.markFirstSaveStarted = resolve; });
   private markFirstSaveStarted!: () => void;
+  readonly firstSaveStarted = new Promise<void>((resolve) => { this.markFirstSaveStarted = resolve; });
 
   async load(_binding: ComputerTaskCheckpointPersistenceBinding): Promise<ComputerTaskCheckpoint | undefined> {
     this.enter('load');
