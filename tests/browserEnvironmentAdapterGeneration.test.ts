@@ -7,6 +7,7 @@ import {
   type BrowserComputerRuntime,
 } from '../src/computer/browserEnvironmentAdapter.js';
 import type { ComputerActionRequest, ComputerEntityRef } from '../src/computer/environmentAdapter.js';
+import { CdpBrowserAgentEngine } from '../src/engine/cdpBrowserAgentEngine.js';
 import type { InteractionNode } from '../src/types.js';
 
 function node(frameId = 'main'): InteractionNode {
@@ -439,6 +440,39 @@ test('ordinary bounded runtime polling policy remains accepted', () => {
     waitPollIntervalMs: 5_000,
     waitMaxPolls: 32,
   });
+});
+
+test('wide frame identity acquisition evaluates only the main frame and retains no child authority', async () => {
+  let evaluations = 0;
+  const frames = Array.from({ length: 100 }, (_, index) => ({
+    evaluate: async () => {
+      evaluations += 1;
+      return index + 1;
+    },
+  }));
+  const page = { frames: () => frames };
+  const engine = new CdpBrowserAgentEngine(
+    {} as any,
+    {} as any,
+    {} as any,
+    undefined,
+    undefined,
+    undefined,
+    {} as any,
+    undefined,
+    undefined,
+    undefined,
+    {} as any,
+    undefined,
+    page as any,
+  );
+
+  const tokens = await engine.frameDocumentTokens();
+  assert.equal(evaluations, 1);
+  assert.equal(tokens?.main, '1');
+  assert.equal(tokens?.['frame-1'], undefined);
+  assert.equal(tokens?.['__browser_identity_incomplete__'], '1');
+  assert.deepEqual(Object.keys(tokens ?? {}).sort(), ['__browser_identity_incomplete__', 'main']);
 });
 
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
