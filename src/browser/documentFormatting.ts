@@ -4,6 +4,7 @@ import type { SnapshotFrameLike, SnapshotPageLike } from './domSnapshot.js';
 
 export type FormattingValue = 'on' | 'off' | 'mixed' | 'unknown';
 export type DocumentListKind = 'ordered' | 'unordered';
+export type DocumentFormattingLinkTargetState = 'none' | 'uniform' | 'mixed' | 'unknown';
 
 export interface DocumentBlockContext {
   kind: 'paragraph' | 'heading' | 'other';
@@ -12,6 +13,10 @@ export interface DocumentBlockContext {
 }
 
 export interface DocumentFormattingLink { url: string; urlTruncated: boolean; }
+export interface DocumentFormattingLinkTargetSummary {
+  state: DocumentFormattingLinkTargetState;
+  link?: DocumentFormattingLink;
+}
 export interface DocumentFormattingRun {
   bold: boolean;
   italic: boolean;
@@ -37,6 +42,7 @@ export interface DocumentFormattingState {
   collapsed: boolean;
   editingHost: DocumentEditingHost;
   summary: DocumentFormattingSummary;
+  linkTarget: DocumentFormattingLinkTargetSummary;
   runs: DocumentFormattingRun[];
   runsTruncated: boolean;
   blocks: DocumentBlockContext[];
@@ -83,20 +89,43 @@ function cloneBlock(block: DocumentBlockContext): DocumentBlockContext {
   return { ...block, ...(block.list ? { list: { ...block.list } } : {}) };
 }
 
+function boundLink(
+  link: DocumentFormattingLink,
+  maxLinkUrlBytes: number,
+): { link: DocumentFormattingLink; truncated: boolean } {
+  const bounded = truncateUtf8(link.url, maxLinkUrlBytes);
+  const urlTruncated = link.urlTruncated || bounded.truncated;
+  return {
+    link: { url: bounded.value, urlTruncated },
+    truncated: urlTruncated,
+  };
+}
+
 function boundRunLink(run: DocumentFormattingRun, maxLinkUrlBytes: number): {
   run: DocumentFormattingRun;
   truncated: boolean;
 } {
   if (!run.link) return { run: { ...run, block: cloneBlock(run.block) }, truncated: false };
-  const bounded = truncateUtf8(run.link.url, maxLinkUrlBytes);
-  const urlTruncated = run.link.urlTruncated || bounded.truncated;
+  const bounded = boundLink(run.link, maxLinkUrlBytes);
   return {
     run: {
       ...run,
       block: cloneBlock(run.block),
-      link: { url: bounded.value, urlTruncated },
+      link: bounded.link,
     },
-    truncated: urlTruncated,
+    truncated: bounded.truncated,
+  };
+}
+
+function boundLinkTarget(
+  target: DocumentFormattingLinkTargetSummary,
+  maxLinkUrlBytes: number,
+): { target: DocumentFormattingLinkTargetSummary; truncated: boolean } {
+  if (!target.link) return { target: { state: target.state }, truncated: false };
+  const bounded = boundLink(target.link, maxLinkUrlBytes);
+  return {
+    target: { state: target.state, link: bounded.link },
+    truncated: bounded.truncated,
   };
 }
 
@@ -128,9 +157,10 @@ export async function snapshotDocumentFormatting(
     }
 
     const boundedRuns = raw.runs.slice(0, maxRuns).map((run) => boundRunLink(run, maxLinkUrlBytes));
+    const boundedTarget = boundLinkTarget(raw.linkTarget, maxLinkUrlBytes);
     const runsTruncated = raw.runsTruncated || raw.runs.length > maxRuns;
     const blocksTruncated = raw.blocksTruncated || raw.blocks.length > maxBlocks;
-    const linkTruncated = boundedRuns.some(({ truncated: wasTruncated }) => wasTruncated);
+    const linkTruncated = boundedRuns.some(({ truncated: wasTruncated }) => wasTruncated) || boundedTarget.truncated;
     truncated ||= runsTruncated || blocksTruncated || linkTruncated;
 
     states.push({
@@ -138,6 +168,7 @@ export async function snapshotDocumentFormatting(
       frameId,
       editingHost: { ...raw.editingHost },
       summary: { ...raw.summary },
+      linkTarget: boundedTarget.target,
       runs: boundedRuns.map(({ run }) => run),
       runsTruncated,
       blocks: raw.blocks.slice(0, maxBlocks).map(cloneBlock),
@@ -197,14 +228,15 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
     }
 
     function nearestEditingHost(node: Node | null): Element | undefined {
+      if (document.designMode?.toLowerCase() === 'on') return document.body ?? undefined;
       let element = node instanceof Element ? node : node?.parentElement ?? undefined;
-      let host: Element | undefined;
-      while (element) {
-        if ((element as HTMLElement).isContentEditable) host = element;
-        else if (host) break;
-        element = composedParent(element) ?? undefined;
+      if (!element || !(element as HTMLElement).isContentEditable) return undefined;
+      let host = element;
+      for (let depth = 0; depth < 260; depth += 1) {
+        const parent = composedParent(host);
+        if (!parent || !(parent as HTMLElement).isContentEditable) break;
+        host = parent;
       }
-      if (!host && document.designMode?.toLowerCase() === 'on') host = document.body ?? undefined;
       return host;
     }
 
@@ -280,8 +312,10 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
       let italic = style.fontStyle === 'italic' || style.fontStyle === 'oblique' || style.fontStyle.startsWith('oblique ');
       let underline = false;
       let strike = false;
-      let code = style.fontFamily.split(',').some((part) =>
-        part.trim().replace(/^['"]|['"]$/g, '').toLowerCase() === 'monospace');
+      let code = style.fontFamily.split(',').some((part) => {
+        const family = part.trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+        return family === 'monospace' || family === 'ui-monospace';
+      });
       let link: DocumentFormattingLink | undefined;
       let current: Element | null = element;
       for (let depth = 0; current && depth < 260; depth += 1) {
@@ -328,6 +362,21 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
       if (anyOn && anyOff) return 'mixed';
       if (!complete) return 'unknown';
       return anyOn ? 'on' : 'off';
+    }
+    function linkTargetFromSamples(
+      values: readonly (DocumentFormattingLink | undefined)[],
+      complete: boolean,
+    ): DocumentFormattingLinkTargetSummary {
+      if (values.length === 0) return { state: 'unknown' };
+      const linked = values.filter((value): value is DocumentFormattingLink => value !== undefined);
+      if (linked.length === 0) return complete ? { state: 'none' } : { state: 'unknown' };
+      if (linked.length !== values.length) return { state: 'mixed' };
+      const first = linked[0];
+      if (linked.some((value) => value.url !== first.url || value.urlTruncated !== first.urlTruncated)) {
+        return { state: 'mixed' };
+      }
+      if (!complete || first.urlTruncated) return { state: 'unknown' };
+      return { state: 'uniform', link: first };
     }
     function collapsedValue(observed: boolean | undefined, fallback: boolean): FormattingValue {
       return (observed ?? fallback) ? 'on' : 'off';
@@ -378,6 +427,7 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
           code: sample.code ? 'on' : 'off',
           link: sample.link ? 'on' : 'off',
         },
+        linkTarget: sample.link ? { state: 'uniform', link: sample.link } : { state: 'none' },
         runs: [{ ...sample, textNodes: 0 }],
         runsTruncated: false,
         blocks: [sample.block],
@@ -394,28 +444,41 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
     const strikeValues: boolean[] = [];
     const codeValues: boolean[] = [];
     const linkValues: boolean[] = [];
+    const linkTargets: (DocumentFormattingLink | undefined)[] = [];
     let visitedTextNodes = 0;
     let selectedTextNodes = 0;
     let runsTruncated = false;
     let blocksTruncated = false;
     let complete = true;
-    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+
+    function observeTextNode(node: Text): boolean {
       visitedTextNodes += 1;
-      if (visitedTextNodes > MAX_VISITED_TEXT_NODES) { complete = false; break; }
-      if (!node.nodeValue || !positivelyIntersects(range, node)) continue;
+      if (visitedTextNodes > MAX_VISITED_TEXT_NODES) { complete = false; return false; }
+      if (!node.nodeValue || !positivelyIntersects(range, node)) return true;
       selectedTextNodes += 1;
-      if (selectedTextNodes > MAX_SELECTED_TEXT_NODES) { complete = false; break; }
+      if (selectedTextNodes > MAX_SELECTED_TEXT_NODES) { complete = false; return false; }
       const element = node.parentElement;
-      if (!element || !isWithinHost(element, host)) { complete = false; break; }
+      if (!element || !isWithinHost(element, host)) { complete = false; return false; }
       const sample = sampleForElement(element, host);
       boldValues.push(sample.bold); italicValues.push(sample.italic); underlineValues.push(sample.underline);
       strikeValues.push(sample.strike); codeValues.push(sample.code); linkValues.push(sample.link !== undefined);
+      linkTargets.push(sample.link);
       blocksTruncated ||= addBlock(blocks, sample.block);
       const last = runs[runs.length - 1];
       if (last && sameSample(last, sample)) last.textNodes += 1;
       else if (runs.length < MAX_RUNS) runs.push({ ...sample, textNodes: 1 });
       else runsTruncated = true;
+      return true;
+    }
+
+    const traversalRoot = range.commonAncestorContainer;
+    if (traversalRoot instanceof Text) {
+      observeTextNode(traversalRoot);
+    } else {
+      const walker = document.createTreeWalker(traversalRoot, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!(node instanceof Text) || !observeTextNode(node)) break;
+      }
     }
 
     return {
@@ -429,6 +492,7 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
         code: valueFromSamples(codeValues, complete),
         link: valueFromSamples(linkValues, complete),
       },
+      linkTarget: linkTargetFromSamples(linkTargets, complete),
       runs, runsTruncated, blocks, blocksTruncated, complete,
     };
   });
