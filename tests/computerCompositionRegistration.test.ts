@@ -39,7 +39,7 @@ function validAdapter(id: string): ComputerEnvironmentAdapter {
   };
 }
 
-test('failed adapter method snapshot rolls registry registration back atomically', async () => {
+test('failed adapter method snapshot leaves composition registration atomic', async () => {
   const composition = createComputerRuntimeComposition();
   const id = 'filesystem:transactional';
   const hostile = {
