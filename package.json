@@ -1,22 +1,28 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.41.0",
-  "private": true,
-  "description": "Standalone raw-CDP browser agent with bounded pre/post commitment safety, structured reading, document-driven tasks, rich selection/editing foundations, web task capabilities, and realtime game perception.",
+  "version": "0.42.0",
+  "description": "Framework-independent browser-agent foundation with raw Chromium CDP, bounded tasks, structured research, rich editing, media/permission state, realtime control, and commitment safety",
   "type": "module",
   "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/tests/*.test.js",
-    "test:chromium": "npm run build && node --test tests/integration/*.test.mjs",
-    "test:live": "npm run build && RUN_LIVE_WEB=1 node --test tests/integration/liveWebsiteSmoke.test.mjs"
-  },
-  "engines": {
-    "node": ">=20"
+    "test": "npm run build && node --test dist/tests",
+    "test:chromium": "npm run build && node --test dist/tests/integration",
+    "test:live": "RUN_LIVE_WEB=1 npm run test:chromium"
   },
   "devDependencies": {
-    "@types/node": "^22.17.2",
-    "typescript": "^5.9.2"
-  }
+    "@types/node": "^22.15.29",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "browser-automation",
+    "browser-agent",
+    "accessibility",
+    "semantic",
+    "cdp",
+    "chromium",
+    "automation",
+    "hci"
+  ],
+  "license": "MIT"
 }
