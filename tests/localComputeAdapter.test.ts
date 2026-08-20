@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LocalComputeAdapter, LOCAL_COMPUTE_CAPABILITY, localComputeJobEntity, type LocalComputeJson } from '../src/computer/localComputeAdapter.js';
+import { LocalComputeAdapter, LOCAL_COMPUTE_CAPABILITY, LOCAL_COMPUTE_EXECUTION_MODEL, localComputeJobEntity, type LocalComputeJson } from '../src/computer/localComputeAdapter.js';
 
 const operations = [
   { id: 'math.add', effect: 'pure-read-only' as const, execute: (input: LocalComputeJson) => { const v = input as { a: number; b: number }; return { sum: v.a + v.b }; } },
@@ -11,6 +11,7 @@ const operations = [
   { id: 'test.cpu-bound', effect: 'pure-read-only' as const, execute: () => { const until = performance.now() + 20; while (performance.now() < until) { /* synthetic bounded busy loop */ } return 'done'; } },
   { id: 'test.large', effect: 'pure-read-only' as const, execute: () => 'x'.repeat(2048) },
   { id: 'test.invalid-output', effect: 'pure-read-only' as const, execute: (() => new Date()) as any },
+  { id: 'test.slow-artifact', effect: 'local-artifact-creation' as const, execute: async (input: LocalComputeJson) => { await new Promise((resolve) => setTimeout(resolve, 20)); return input; } },
 ];
 function adapter(ambiguous: string[] = [], options: { maxRetainedJobs?: number; maxRetainedJobIds?: number; maxArtifactStoreBytes?: number } = {}) {
   return new LocalComputeAdapter({ id: 'compute-test', operations, ambiguousDispatchOperationIds: ambiguous, ...options });
@@ -86,12 +87,26 @@ test('known failed and timed-out jobs preserve dispatched-once on replay', async
   const replay = await a.act(req); assert.equal(replay.status, 'failed'); assert.equal(replay.dispatch, 'dispatched-once'); assert.deepEqual(replay.evidence, ['compute-known-job-failed']);
 });
 
-test('retention budgets bound jobs, identity ledger, and artifact storage', async () => {
-  const a = adapter([], { maxRetainedJobs: 1, maxRetainedJobIds: 1, maxArtifactStoreBytes: 12 });
+test('retention budgets bound detail/artifact state while execution ledger fails closed', async () => {
+  const a = adapter([], { maxRetainedJobs: 1, maxRetainedJobIds: 2, maxArtifactStoreBytes: 12 });
   const first = await a.act(request('one', 0, 'transform.upper', '123456', 'local-reversible', 'non-idempotent')); const firstRef = (first.details as any).artifact;
   await a.act(request('two', 0, 'transform.upper', 'abcdef', 'local-reversible', 'non-idempotent'));
   assert.equal(a.artifactContent(firstRef), undefined);
   const observed = await a.observe({ adapterId: 'compute-test', channel: 'compute', target: localComputeJobEntity('compute-test', { jobId: 'one', generation: 0 }) }); assert.equal(observed.data, null);
+  const replay = await a.act(request('one', 0, 'transform.upper', '123456', 'local-reversible', 'non-idempotent'));
+  assert.equal(replay.dispatch, 'dispatched-once'); assert.deepEqual(replay.evidence, ['compute-job-state-evicted']);
+  const full = await a.act(request('three', 0, 'math.add', { a: 1, b: 2 })); assert.equal(full.dispatch, 'not-dispatched'); assert.deepEqual(full.evidence, ['compute-execution-ledger-full']);
+});
+
+test('in-flight detail eviction cannot cause non-idempotent redispatch', async () => {
+  const a = adapter([], { maxRetainedJobs: 1, maxRetainedJobIds: 2 });
+  const slowReq = request('slow', 0, 'test.slow-artifact', 'value', 'local-reversible', 'non-idempotent');
+  const pending = a.act(slowReq);
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  await a.act(request('other', 0, 'math.add', { a: 1, b: 2 }));
+  const replay = await a.act(slowReq);
+  assert.equal(replay.dispatch, 'dispatched-once'); assert.deepEqual(replay.evidence, ['compute-job-state-evicted']);
+  assert.equal((await pending).status, 'completed');
 });
 
 test('observation and evidence do not copy sensitive input/output', async () => {
@@ -99,6 +114,38 @@ test('observation and evidence do not copy sensitive input/output', async () => 
   assert.ok(!JSON.stringify(result.evidence).includes(secret));
   const observed = await a.observe({ adapterId: 'compute-test', channel: 'compute', target: localComputeJobEntity('compute-test', { jobId: 'privacy', generation: 0 }) });
   const trace = JSON.stringify(observed); assert.ok(!trace.includes(secret)); assert.ok(!trace.includes(secret.toUpperCase())); assert.match(trace, /artifact:sha256-/);
+});
+
+test('operation registration snapshots authority and function reference', async () => {
+  const mutable: any = { id: 'mutable.op', effect: 'pure-read-only', execute: () => 'original' };
+  const a = new LocalComputeAdapter({ id: 'compute-test', operations: [mutable] });
+  mutable.effect = 'process-execution'; mutable.execute = () => 'mutated';
+  const result = await a.act(request('mutable', 0, 'mutable.op', null));
+  assert.equal(result.status, 'completed'); assert.equal((result.details as any).output, 'original');
+});
+
+test('execution uses immutable validated input snapshot', async () => {
+  const op = { id: 'snapshot.input', effect: 'pure-read-only' as const, execute: async (input: LocalComputeJson) => { await Promise.resolve(); return input; } };
+  const a = new LocalComputeAdapter({ id: 'compute-test', operations: [op] });
+  const input: any = { nested: { value: 1 } };
+  const pending = a.act(request('snapshot', 0, 'snapshot.input', input));
+  input.nested.value = 99;
+  const result = await pending;
+  assert.deepEqual((result.details as any).output, { nested: { value: 1 } });
+});
+
+test('artifact store owns canonical immutable content snapshot', async () => {
+  let retained: any;
+  const op = { id: 'snapshot.output', effect: 'local-artifact-creation' as const, execute: () => (retained = { nested: { value: 1 } }) };
+  const a = new LocalComputeAdapter({ id: 'compute-test', operations: [op] });
+  const result = await a.act(request('artifact-snapshot', 0, 'snapshot.output', null, 'local-reversible', 'non-idempotent'));
+  const ref = (result.details as any).artifact; retained.nested.value = 99;
+  const first = a.artifactContent(ref) as any; assert.deepEqual(first, { nested: { value: 1 } });
+  assert.ok(Object.isFrozen(first)); assert.ok(Object.isFrozen(first.nested));
+});
+
+test('public execution model is trusted in-process cooperative, not hard isolation', () => {
+  assert.equal(LOCAL_COMPUTE_EXECUTION_MODEL, 'trusted-in-process-cooperative');
 });
 
 test('unsafe operation registrations and shell-like masquerading are rejected', async () => {
