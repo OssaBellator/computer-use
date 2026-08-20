@@ -1,9 +1,7 @@
 import { platform } from 'node:os';
 import { type LinuxSystemDeviceBackendOptions } from './linuxSystemDeviceBackend.js';
-import {
-  TruthfulInventoryLinuxSystemDeviceBackend,
-  TruthfulLinuxSystemDeviceEnvironmentAdapter,
-} from './truthfulInventoryLinuxSystemDeviceBackend.js';
+import { FrozenTruthfulLinuxSystemDeviceEnvironmentAdapter } from './frozenHostSystemDeviceAdapter.js';
+import { TruthfulInventoryLinuxSystemDeviceBackend } from './truthfulInventoryLinuxSystemDeviceBackend.js';
 import {
   SystemDeviceEnvironmentAdapter,
   type BoundedDeviceMetadata,
@@ -118,6 +116,6 @@ export function createHostSystemDeviceEnvironmentAdapter(
 ): SystemDeviceEnvironmentAdapter {
   const backend = createHostSystemDeviceBackend(options);
   return backend instanceof TruthfulInventoryLinuxSystemDeviceBackend
-    ? new TruthfulLinuxSystemDeviceEnvironmentAdapter(adapterId, backend)
+    ? new FrozenTruthfulLinuxSystemDeviceEnvironmentAdapter(adapterId, backend)
     : new SystemDeviceEnvironmentAdapter(adapterId, backend);
 }
