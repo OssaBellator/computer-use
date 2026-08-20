@@ -67,6 +67,7 @@ test('media observer returns bounded playback and deepest fullscreen ownership',
   assert.equal(snapshot.media.length, 2);
   assert.equal(snapshot.media[0].playbackState, 'playing');
   assert.equal(snapshot.media[0].volume, 0.75);
+  assert.equal('currentSrc' in snapshot.media[0].identity, false);
   assert.equal(snapshot.media[1].durationSeconds, undefined);
   assert.deepEqual(snapshot.activeMedia, snapshot.media[0].identity);
   assert.equal(snapshot.activeMediaCount, 1);
@@ -78,7 +79,7 @@ test('media observer returns bounded playback and deepest fullscreen ownership',
   assert.equal(calls.includes('Browser.setPermission'), false);
 });
 
-test('media controller uses native element methods through CDP and verifies the result', async () => {
+test('media controller uses native element methods without elevating user activation and verifies the result', async () => {
   const sent: Array<[string, Record<string, unknown> | undefined]> = [];
   const session = {
     async send(method: string, params?: Record<string, unknown>): Promise<any> {
@@ -87,7 +88,7 @@ test('media controller uses native element methods through CDP and verifies the 
       if (method === 'DOM.resolveNode') return { object: { objectId: 'media-object' } };
       if (method === 'Runtime.callFunctionOn') {
         assert.equal(String(params?.functionDeclaration).includes('dispatchEvent'), false);
-        assert.equal(params?.userGesture, true);
+        assert.equal(params?.userGesture, undefined);
         return { result: { value: { paused: false, ended: false } } };
       }
       if (method === 'Runtime.releaseObject') return {};
