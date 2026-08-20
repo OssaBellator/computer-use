@@ -222,11 +222,19 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
 
   async load(binding: ComputerTaskCheckpointPersistenceBinding): Promise<ComputerTaskCheckpoint | undefined> {
     const expectedBinding = bindingIdentity(binding);
-    const encoded = await readBounded(this.filePath, this.maxBytes);
-    if (encoded === undefined) return undefined;
+    const [encoded, anchorEncoded] = await Promise.all([
+      readBounded(this.filePath, this.maxBytes),
+      readBounded(this.anchorPath, this.maxBytes),
+    ]);
+    if (encoded === undefined) {
+      if (anchorEncoded !== undefined) {
+        this.parseAnchor(anchorEncoded, expectedBinding);
+        throw new Error('persisted computer task checkpoint rollback detected: primary checkpoint is missing behind authenticated anchor');
+      }
+      return undefined;
+    }
     const envelope = this.parseCheckpoint(encoded, expectedBinding);
     const envelopeDigest = sha256(encoded);
-    const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
     if (anchorEncoded !== undefined) {
       const anchor = this.parseAnchor(anchorEncoded, expectedBinding);
       if (anchor.generation > envelope.generation) throw new Error('persisted computer task checkpoint rollback detected');
@@ -251,6 +259,9 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
     const existingEnvelope = existing === undefined ? undefined : this.parseCheckpoint(existing, expectedBinding);
     const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
     const anchor = anchorEncoded === undefined ? undefined : this.parseAnchor(anchorEncoded, expectedBinding);
+    if (!existingEnvelope && anchor) {
+      throw new Error('persisted computer task checkpoint rollback detected: primary checkpoint is missing behind authenticated anchor');
+    }
     if (existingEnvelope && anchor && anchor.generation > existingEnvelope.generation) {
       throw new Error('persisted computer task checkpoint rollback detected');
     }
