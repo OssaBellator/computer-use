@@ -100,3 +100,25 @@ test('media controller uses native element methods without elevating user activa
   assert.equal(result.status, 'verified');
   assert.equal(sent.some(([method]) => method === 'Input.dispatchMouseEvent'), false);
 });
+
+test('media controller reports normal browser activation-policy rejection without retry or gesture elevation', async () => {
+  let calls = 0;
+  const session = {
+    async send(method: string, params?: Record<string, unknown>): Promise<any> {
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 9 };
+      if (method === 'DOM.resolveNode') return { object: { objectId: 'media-object' } };
+      if (method === 'Runtime.callFunctionOn') {
+        calls += 1;
+        assert.equal(params?.userGesture, undefined);
+        return { result: { value: { paused: true, ended: false, rejected: 'NotAllowedError' } } };
+      }
+      if (method === 'Runtime.releaseObject') return {};
+      throw new Error(`Unexpected ${method}`);
+    },
+  };
+  const controller = new CdpMediaController(session);
+  const result = await controller.play({ frameId: 'main', backendNodeId: 42, ordinal: 0, tagName: 'video' });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.errorText, 'NotAllowedError');
+  assert.equal(calls, 1);
+});
