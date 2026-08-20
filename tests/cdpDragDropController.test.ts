@@ -41,6 +41,12 @@ class FakeDragSession {
   }
 }
 
+function dragTypes(session: FakeDragSession): unknown[] {
+  return session.calls
+    .filter(([method]) => method === 'Input.dispatchDragEvent')
+    .map(([, params]) => params?.type);
+}
+
 test('native intercepted drag data is dispatched without returning payload text', async () => {
   const session = new FakeDragSession();
   const result = await new CdpDragDropController(session).transfer(
@@ -54,18 +60,13 @@ test('native intercepted drag data is dispatched without returning payload text'
   assert.equal(result.fileCount, 0);
   assert.deepEqual(result.mimeTypes, ['text/plain']);
   assert.equal(JSON.stringify(result).includes('private-transfer-text'), false);
-  assert.deepEqual(
-    session.calls
-      .filter(([method]) => method === 'Input.dispatchDragEvent')
-      .map(([, params]) => params?.type),
-    ['dragEnter', 'dragOver', 'drop'],
-  );
+  assert.deepEqual(dragTypes(session), ['dragEnter', 'dragOver', 'drop']);
   assert.equal(session.calls.at(-1)?.[0], 'Input.setInterceptDrags');
   assert.equal(session.calls.at(-1)?.[1]?.enabled, false);
   assert.equal(session.pressed, false);
 });
 
-test('oversized intercepted drag payload is blocked before dragEnter/drop dispatch', async () => {
+test('oversized intercepted drag payload is canceled before dragEnter/drop dispatch', async () => {
   const session = new FakeDragSession();
   session.dragData = {
     items: [{ mimeType: 'text/plain', data: 'x'.repeat(128), title: '', baseURL: '' }],
@@ -80,11 +81,11 @@ test('oversized intercepted drag payload is blocked before dragEnter/drop dispat
 
   assert.equal(result.status, 'payload-blocked');
   assert.equal(result.totalPayloadBytes > 32, true);
-  assert.equal(session.calls.some(([method]) => method === 'Input.dispatchDragEvent'), false);
+  assert.deepEqual(dragTypes(session), ['dragCancel']);
   assert.equal(session.pressed, false);
 });
 
-test('file-bearing drag payloads are blocked unless explicitly enabled', async () => {
+test('file-bearing drag payloads are canceled unless explicitly enabled', async () => {
   const blockedSession = new FakeDragSession();
   blockedSession.dragData = {
     items: [{ mimeType: 'text/uri-list', data: 'file:///tmp/example.txt', title: '', baseURL: '' }],
@@ -96,7 +97,7 @@ test('file-bearing drag payloads are blocked unless explicitly enabled', async (
   );
   assert.equal(blocked.status, 'file-payload-blocked');
   assert.equal(JSON.stringify(blocked).includes('/tmp/example.txt'), false);
-  assert.equal(blockedSession.calls.some(([method]) => method === 'Input.dispatchDragEvent'), false);
+  assert.deepEqual(dragTypes(blockedSession), ['dragCancel']);
 
   const allowedSession = new FakeDragSession();
   allowedSession.dragData = blockedSession.dragData;
@@ -105,6 +106,7 @@ test('file-bearing drag payloads are blocked unless explicitly enabled', async (
   );
   assert.equal(allowed.status, 'drop-dispatched');
   assert.equal(allowed.fileCount, 1);
+  assert.deepEqual(dragTypes(allowedSession), ['dragEnter', 'dragOver', 'drop']);
 });
 
 test('missing native drag interception fails boundedly and releases pointer state', async () => {
@@ -115,7 +117,7 @@ test('missing native drag interception fails boundedly and releases pointer stat
   );
   assert.equal(result.status, 'drag-not-started');
   assert.equal(session.pressed, false);
-  assert.equal(session.calls.some(([method]) => method === 'Input.dispatchDragEvent'), false);
+  assert.deepEqual(dragTypes(session), []);
 });
 
 test('invalid coordinates fail before touching CDP', async () => {
