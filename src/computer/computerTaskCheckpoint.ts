@@ -111,6 +111,47 @@ function actionStepIds(program: ComputerTaskProgram): string[] {
   return program.steps.filter((step) => step.kind === 'action').map((step) => step.id).sort();
 }
 
+function cursorReachableUnderHistory(
+  program: ComputerTaskProgram,
+  checkpoint: ComputerTaskCheckpoint,
+): boolean {
+  const cursorId = checkpoint.cursor.nextStepId;
+  if (!cursorId) return true;
+  const stepById = new Map(program.steps.map((step) => [step.id, step]));
+  const stateByAction = new Map(checkpoint.actions.map((action) => [action.stepId, action.state]));
+  const requirePositivePath = checkpoint.cursor.stepsExecuted > 0;
+  const queue: Array<{ stepId: string; moved: boolean }> = [{ stepId: program.entry, moved: false }];
+  const seen = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const seenKey = `${current.stepId}:${current.moved ? 1 : 0}`;
+    if (seen.has(seenKey)) continue;
+    seen.add(seenKey);
+
+    if (current.stepId === cursorId && (!requirePositivePath || current.moved)) return true;
+    const step = stepById.get(current.stepId);
+    if (!step) continue;
+
+    if (step.kind === 'observe') {
+      if (step.next) queue.push({ stepId: step.next, moved: true });
+      continue;
+    }
+
+    const state = stateByAction.get(step.id);
+    if (state === 'completed') {
+      if (step.onSuccess) queue.push({ stepId: step.onSuccess, moved: true });
+      continue;
+    }
+    if (state === 'not-started' && step.onFailure) {
+      // A definitely-not-dispatched failure may legitimately have followed onFailure
+      // while leaving the action replay-safe. Treat that edge as history-reachable.
+      queue.push({ stepId: step.onFailure, moved: true });
+    }
+  }
+  return false;
+}
+
 function markCheckpointProvenance(checkpoint: ComputerTaskCheckpoint): ComputerTaskCheckpoint {
   const mutable = checkpoint as ProvenancedCheckpoint;
   Object.defineProperty(mutable, CHECKPOINT_PROVENANCE, {
@@ -199,7 +240,7 @@ export function validateComputerTaskCheckpoint(
     if (cursor?.kind === 'action') {
       const cursorState = checkpoint.actions.find((action) => action.stepId === cursor.id)?.state;
       if (!cursorState) throw new Error('computer task checkpoint cursor action is missing history state');
-      if (cursorState === 'not-started' && checkpoint.cursor.stepsExecuted > 0) {
+      if (cursorState === 'not-started' && !cursorReachableUnderHistory(options.program, checkpoint as ComputerTaskCheckpoint)) {
         throw new Error('computer task checkpoint cursor/action history is inconsistent');
       }
       if (cursorState === 'unknown-dispatch' || cursorState === 'dispatched-unverified') return;
