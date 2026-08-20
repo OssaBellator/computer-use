@@ -28,15 +28,19 @@ class HelperExecutor implements DesktopBridgeExecutor {
   }
 }
 
-test('helper platform mismatch blocks native dispatch before dispatch operation', async () => {
-  const executor = new HelperExecutor();
-  executor.helper = { ...executor.helper, platform: 'windows-uia' };
-  const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
-  const result = await bridge.dispatch({
+function keyboardDispatch(bridge: ContractCheckedDesktopPlatformBridge) {
+  return bridge.dispatch({
     kind: 'keyboard',
     target: { nativeWindowId: 'w', expectedWindowInstanceToken: 'wi' },
     input: { kind: 'key-down', key: 'Enter' },
   }, 'local-reversible');
+}
+
+test('helper platform mismatch blocks native dispatch before dispatch operation', async () => {
+  const executor = new HelperExecutor();
+  executor.helper = { ...executor.helper, platform: 'windows-uia' };
+  const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
+  const result = await keyboardDispatch(bridge);
   assert.equal(result.status, 'rejected');
   assert.equal(result.dispatched, false);
   assert.deepEqual(executor.calls, ['describe']);
@@ -72,28 +76,96 @@ test('conforming helper is checked before each native operation', async () => {
   const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
   const system = await bridge.enumerateWindows({ maxItems: 1, maxTextBytes: 64, maxDepth: 1 });
   assert.deepEqual(system.windows, []);
-  const result = await bridge.dispatch({
-    kind: 'keyboard',
-    target: { nativeWindowId: 'w', expectedWindowInstanceToken: 'wi' },
-    input: { kind: 'key-up', key: 'Enter' },
-  }, 'local-reversible');
+  const result = await keyboardDispatch(bridge);
   assert.equal(result.dispatched, true);
   assert.deepEqual(executor.calls, ['describe', 'enumerate-windows', 'describe', 'dispatch']);
 });
 
 test('malformed helper descriptor blocks dispatch without passing malformed data onward', async () => {
   const executor = new HelperExecutor();
-  executor.helper = { protocolVersion: 1, platform: 'linux-atspi', operations: ['dispatch'], capabilities: [] };
   const original = executor.invoke.bind(executor);
   executor.invoke = async (operation, payload, limits) => operation === 'describe'
     ? { protocolVersion: 1, platform: 'linux-atspi', operations: ['dispatch', 'dispatch'], capabilities: [] }
     : original(operation, payload, limits);
   const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
-  const result = await bridge.dispatch({
-    kind: 'keyboard',
-    target: { nativeWindowId: 'w', expectedWindowInstanceToken: 'wi' },
-    input: { kind: 'key-down', key: 'A' },
-  }, 'local-reversible');
+  const result = await keyboardDispatch(bridge);
   assert.equal(result.dispatched, false);
   assert.equal(executor.calls.includes('dispatch'), false);
+});
+
+test('helper descriptor accessors are rejected without invoking getters', async () => {
+  let getterCalls = 0;
+  const executor = new HelperExecutor();
+  executor.invoke = async (operation) => {
+    executor.calls.push(operation);
+    if (operation !== 'describe') throw new Error('dispatch must not be reached');
+    const result: Record<string, unknown> = {
+      protocolVersion: 1,
+      operations: ['dispatch'],
+      capabilities: [],
+    };
+    Object.defineProperty(result, 'platform', {
+      enumerable: true,
+      get() { getterCalls += 1; return 'linux-atspi'; },
+    });
+    return result;
+  };
+  const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
+  const result = await keyboardDispatch(bridge);
+  assert.equal(result.dispatched, false);
+  assert.equal(getterCalls, 0);
+  assert.deepEqual(executor.calls, ['describe']);
+});
+
+test('helper descriptor array accessors are rejected without invoking element getters', async () => {
+  let getterCalls = 0;
+  const operations: unknown[] = [];
+  Object.defineProperty(operations, '0', {
+    enumerable: true,
+    configurable: true,
+    get() { getterCalls += 1; return 'dispatch'; },
+  });
+  Object.defineProperty(operations, 'length', { value: 1, writable: true, configurable: false });
+  const executor = new HelperExecutor();
+  executor.invoke = async (operation) => {
+    executor.calls.push(operation);
+    if (operation !== 'describe') throw new Error('dispatch must not be reached');
+    return { protocolVersion:1, platform:'linux-atspi', operations, capabilities:[] };
+  };
+  const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
+  const result = await keyboardDispatch(bridge);
+  assert.equal(result.dispatched, false);
+  assert.equal(getterCalls, 0);
+  assert.deepEqual(executor.calls, ['describe']);
+});
+
+test('helper descriptor capture never enumerates provider-owned top-level keys', async () => {
+  let ownKeysCalls = 0;
+  const target = { protocolVersion:1, platform:'linux-atspi', operations:['dispatch'], capabilities:[], ignored:'non-authority' };
+  const helper = new Proxy(target, {
+    ownKeys() { ownKeysCalls += 1; throw new Error('ownKeys must not run'); },
+  });
+  const executor = new HelperExecutor();
+  const original = executor.invoke.bind(executor);
+  executor.invoke = async (operation, payload, limits) => operation === 'describe' ? helper : original(operation, payload, limits);
+  const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
+  const result = await keyboardDispatch(bridge);
+  assert.equal(result.dispatched, true);
+  assert.equal(ownKeysCalls, 0);
+});
+
+test('helper descriptor capture never enumerates provider-owned operation array keys', async () => {
+  let ownKeysCalls = 0;
+  const operations = new Proxy(['dispatch'], {
+    ownKeys() { ownKeysCalls += 1; throw new Error('ownKeys must not run'); },
+  });
+  const executor = new HelperExecutor();
+  const original = executor.invoke.bind(executor);
+  executor.invoke = async (operation, payload, limits) => operation === 'describe'
+    ? { protocolVersion:1, platform:'linux-atspi', operations, capabilities:[] }
+    : original(operation, payload, limits);
+  const bridge = new ContractCheckedDesktopPlatformBridge('linux', 'linux-atspi', executor);
+  const result = await keyboardDispatch(bridge);
+  assert.equal(result.dispatched, true);
+  assert.equal(ownKeysCalls, 0);
 });
