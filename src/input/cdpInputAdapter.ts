@@ -243,6 +243,10 @@ export class CdpInputAdapter implements BrowserInput {
     }
   }
 
+  async insertText(text: string): Promise<void> {
+    await this.session.send('Input.insertText', { text });
+  }
+
   async scroll(delta: Point): Promise<void> {
     await this.session.send('Input.dispatchMouseEvent', {
       type: 'mouseWheel', x: this.pointer.x, y: this.pointer.y,
