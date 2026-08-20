@@ -153,8 +153,6 @@ test('caller mutation during approval cannot change approved or dispatched mater
       assert.equal(approvedPayload.value, 30);
       assert.equal(approvedPayload.target.generation, 1);
 
-      // Simulate a caller retaining and mutating its original objects while the
-      // trusted approval await is in flight.
       payload.setting = 'input.attacker-setting';
       payload.value = 999;
       payload.operation = 'system-setting-change';
@@ -186,4 +184,63 @@ test('caller mutation during approval cannot change approved or dispatched mater
   assert.equal(Object.isFrozen(dispatched), true);
   assert.equal(Object.isFrozen(dispatched.target), true);
   assert.equal(Object.isFrozen(dispatched.approval), true);
+});
+
+test('accessor-backed mutation payload fields fail closed before approval or backend work', async () => {
+  const accessorFields: Array<'target' | 'approval' | 'value'> = ['target', 'approval', 'value'];
+
+  for (const field of accessorFields) {
+    const backend = new ReviewBackend();
+    const ledger = new ReviewLedger();
+    let approvalCalls = 0;
+    let getterCalls = 0;
+    const payload = mutablePayload();
+    const original = payload[field];
+    Object.defineProperty(payload, field, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        getterCalls += 1;
+        if (field === 'target') {
+          return { ...target, generation: getterCalls };
+        }
+        if (field === 'approval') {
+          return {
+            ...(original as SystemDeviceMutationPayload['approval']),
+            configurationRevision: getterCalls === 1 ? 'rev-1' : 'attacker-revision',
+          };
+        }
+        return getterCalls === 1 ? 30 : 999;
+      },
+    });
+
+    const verifier: SystemDeviceApprovalVerifier = {
+      async verify() {
+        approvalCalls += 1;
+        return true;
+      },
+    };
+    const adapter = new SystemDeviceEnvironmentAdapter('system-device-review', backend, {
+      enableMutations: true,
+      approvalVerifier: verifier,
+      actionLedger: ledger,
+    });
+    const result = await adapter.act({
+      adapterId: 'system-device-review',
+      actionId: `action:accessor:${field}`,
+      capability: 'device.peripheral.configure',
+      effect: 'hardware-affecting',
+      idempotency: 'non-idempotent',
+      payload,
+    });
+
+    assert.equal(result.status, 'rejected', field);
+    assert.equal(result.dispatch, 'not-dispatched', field);
+    assert.deepEqual(result.evidence, ['mutation-payload-invalid'], field);
+    assert.equal(getterCalls, 0, field);
+    assert.equal(approvalCalls, 0, field);
+    assert.equal(backend.observationCalls, 0, field);
+    assert.equal(backend.dispatches.length, 0, field);
+    assert.deepEqual(ledger.claims, [], field);
+  }
 });
