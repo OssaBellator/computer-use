@@ -257,6 +257,51 @@ function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> 
     ...(Object.getOwnPropertyDescriptor(source, 'payload') ? { payload: dataProperty(source, 'payload') } : {}),
   } as ComputerActionRequest);
 }
+function snapshotObservationSurface(value: unknown): Readonly<ComputerSurfaceRef> | undefined {
+  if (value === undefined) return undefined;
+  const source = plainDataRecord(value, 'browser observation surface');
+  return Object.freeze({
+    adapterId: dataProperty(source, 'adapterId'),
+    environment: dataProperty(source, 'environment'),
+    surfaceId: dataProperty(source, 'surfaceId'),
+    ...(dataProperty(source, 'generation') !== undefined ? { generation: dataProperty(source, 'generation') } : {}),
+    ...(dataProperty(source, 'parentSurfaceId') !== undefined ? { parentSurfaceId: dataProperty(source, 'parentSurfaceId') } : {}),
+  } as ComputerSurfaceRef);
+}
+function snapshotObservationTarget(value: unknown): Readonly<ComputerEntityRef> | undefined {
+  if (value === undefined) return undefined;
+  const source = plainDataRecord(value, 'browser observation target');
+  return Object.freeze({
+    adapterId: dataProperty(source, 'adapterId'),
+    environment: dataProperty(source, 'environment'),
+    kind: dataProperty(source, 'kind'),
+    entityId: dataProperty(source, 'entityId'),
+    ...(dataProperty(source, 'surfaceId') !== undefined ? { surfaceId: dataProperty(source, 'surfaceId') } : {}),
+    ...(dataProperty(source, 'generation') !== undefined ? { generation: dataProperty(source, 'generation') } : {}),
+  } as ComputerEntityRef);
+}
+function snapshotObservationLimits(value: unknown): Readonly<NonNullable<ComputerObservationRequest['limits']>> | undefined {
+  if (value === undefined) return undefined;
+  const source = plainDataRecord(value, 'browser observation limits');
+  return Object.freeze({
+    ...(dataProperty(source, 'maxItems') !== undefined ? { maxItems: dataProperty(source, 'maxItems') } : {}),
+    ...(dataProperty(source, 'maxTextBytes') !== undefined ? { maxTextBytes: dataProperty(source, 'maxTextBytes') } : {}),
+    ...(dataProperty(source, 'maxDepth') !== undefined ? { maxDepth: dataProperty(source, 'maxDepth') } : {}),
+  } as NonNullable<ComputerObservationRequest['limits']>);
+}
+function snapshotObservationRequest(value: unknown): Readonly<ComputerObservationRequest> {
+  const source = plainDataRecord(value, 'browser observation request');
+  const surface = snapshotObservationSurface(dataProperty(source, 'surface'));
+  const target = snapshotObservationTarget(dataProperty(source, 'target'));
+  const limits = snapshotObservationLimits(dataProperty(source, 'limits'));
+  return Object.freeze({
+    adapterId: dataProperty(source, 'adapterId'),
+    channel: dataProperty(source, 'channel'),
+    ...(surface ? { surface } : {}),
+    ...(target ? { target } : {}),
+    ...(limits ? { limits } : {}),
+  } as ComputerObservationRequest);
+}
 function plainPayload(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   try { return plainDataRecord(value, 'browser action payload'); } catch { return undefined; }
@@ -566,22 +611,25 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    const errors = validateComputerObservationRequest(request, this.descriptor);
+    let authority: Readonly<ComputerObservationRequest>;
+    try { authority = snapshotObservationRequest(request); }
+    catch { throw new Error('invalid computer observation request: browser.request.invalid-envelope'); }
+    const errors = validateComputerObservationRequest(authority as ComputerObservationRequest, this.descriptor);
     if (errors.length) throw new Error(`invalid computer observation request: ${errors.join('; ')}`);
-    if (request.target && request.channel !== 'semantic-ui') throw new Error('browser.observation.target-unsupported');
-    if (request.target && (request.target.kind !== 'ui-control' || !request.target.surfaceId || request.target.generation === undefined)) throw new Error('browser.observation.target-invalid');
-    const requestedSurface = this.observationTargetSurface(request) ?? request.surface;
+    if (authority.target && authority.channel !== 'semantic-ui') throw new Error('browser.observation.target-unsupported');
+    if (authority.target && (authority.target.kind !== 'ui-control' || !authority.target.surfaceId || authority.target.generation === undefined)) throw new Error('browser.observation.target-invalid');
+    const requestedSurface = this.observationTargetSurface(authority as ComputerObservationRequest) ?? authority.surface;
     const surfaceCheck = this.validateSurface(requestedSurface);
     if (!surfaceCheck.ok) throw new Error(surfaceCheck.code);
     const surface = requestedSurface ?? this.currentSurface();
     const sequence = ++this.sequence;
 
-    if (request.channel === 'semantic-ui') {
+    if (authority.channel === 'semantic-ui') {
       if (!surface || this.runtime.activePageTargetId?.() !== surface.surfaceId) throw new Error('browser.surface.not-active');
       if (!this.runtime.semanticSnapshot) throw new Error('browser.semantic.unsupported');
-      const maxItems = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
-      const maxTextBytes = boundedPositive(request.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
-      const maxDepth = boundedPositive(request.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
+      const maxItems = boundedPositive(authority.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
+      const maxTextBytes = boundedPositive(authority.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
+      const maxDepth = boundedPositive(authority.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
       const before = await this.activeDocumentIdentity(surface);
       if (!before) throw new Error('browser.document.identity-unavailable');
       const snapshot = await this.runtime.semanticSnapshot(surface.surfaceId, { maxItems, maxTextBytes, maxDepth });
@@ -589,43 +637,43 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
       const after = await this.activeDocumentIdentity(surface);
       if (!after || !sameDocumentIdentity(before, after)) throw new Error('browser.document.identity-changed');
       let nodes = snapshot.nodes;
-      if (request.target) {
-        const exact = await this.boundedObservedTarget(request.target, nodes, after);
+      if (authority.target) {
+        const exact = await this.boundedObservedTarget(authority.target, nodes, after);
         if (!exact) throw new Error('browser.observation.target-stale');
         nodes = [exact];
       }
-      const bounded = this.boundSemantic(nodes, surface, after, request);
+      const bounded = this.boundSemantic(nodes, surface, after, authority as ComputerObservationRequest);
       const truncated = snapshot.truncated || bounded.truncated;
-      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: snapshot.complete && !truncated, truncated, surface, ...(request.target ? { target: request.target } : {}), data: bounded.data };
+      return { adapterId: this.descriptor.id, environment: 'browser', channel: authority.channel, sequence, complete: snapshot.complete && !truncated, truncated, surface, ...(authority.target ? { target: authority.target } : {}), data: bounded.data };
     }
-    if (request.channel === 'document') {
-      const maxBlocks = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
-      const maxTextBytes = boundedPositive(request.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
-      const maxDepth = boundedPositive(request.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
+    if (authority.channel === 'document') {
+      const maxBlocks = boundedPositive(authority.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
+      const maxTextBytes = boundedPositive(authority.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
+      const maxDepth = boundedPositive(authority.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
       let snapshot: DocumentContentSnapshot | undefined;
       if (surface?.surfaceId && this.runtime.documentContentForPage) snapshot = await this.runtime.documentContentForPage(surface.surfaceId, { maxBlocks, maxTextBytes, maxDepth });
       else snapshot = await this.runtime.documentContent?.({ maxBlocks, maxTextBytes, maxDepth });
       if (!snapshot) throw new Error('browser.document.unsupported');
-      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: !snapshot.truncated && snapshot.frameErrors.length === 0, truncated: snapshot.truncated, ...(surface ? { surface } : {}), data: snapshot };
+      return { adapterId: this.descriptor.id, environment: 'browser', channel: authority.channel, sequence, complete: !snapshot.truncated && snapshot.frameErrors.length === 0, truncated: snapshot.truncated, ...(surface ? { surface } : {}), data: snapshot };
     }
-    if (request.channel === 'visual') {
+    if (authority.channel === 'visual') {
       if (!this.runtime.visualSnapshot) throw new Error('browser.visual.unsupported');
-      const maxBytes = Math.min(request.limits?.maxTextBytes ?? DEFAULT_VISUAL_MAX_BYTES, DEFAULT_VISUAL_MAX_BYTES);
+      const maxBytes = Math.min(authority.limits?.maxTextBytes ?? DEFAULT_VISUAL_MAX_BYTES, DEFAULT_VISUAL_MAX_BYTES);
       const snapshot = await this.runtime.visualSnapshot(surface?.surfaceId, { maxBytes });
       if (!snapshot) throw new Error('browser.visual.unavailable');
-      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: true, truncated: false, ...(surface ? { surface } : {}), data: snapshot };
+      return { adapterId: this.descriptor.id, environment: 'browser', channel: authority.channel, sequence, complete: true, truncated: false, ...(surface ? { surface } : {}), data: snapshot };
     }
-    if (request.channel === 'media') {
+    if (authority.channel === 'media') {
       if (!this.runtime.mediaSnapshot) throw new Error('browser.media.unsupported');
       const snapshot = await this.runtime.mediaSnapshot(surface?.surfaceId, {
-        maxMediaElements: boundedPositive(request.limits?.maxItems, 32, MAX_MEDIA_ELEMENTS),
-        maxFrames: boundedPositive(request.limits?.maxDepth, 16, MAX_OBSERVATION_DEPTH),
-        maxTextLength: boundedPositive(request.limits?.maxTextBytes, 256, MAX_MEDIA_TEXT_LENGTH),
+        maxMediaElements: boundedPositive(authority.limits?.maxItems, 32, MAX_MEDIA_ELEMENTS),
+        maxFrames: boundedPositive(authority.limits?.maxDepth, 16, MAX_OBSERVATION_DEPTH),
+        maxTextLength: boundedPositive(authority.limits?.maxTextBytes, 256, MAX_MEDIA_TEXT_LENGTH),
       });
       if (!snapshot) throw new Error('browser.media.unavailable');
-      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: !snapshot.truncated && snapshot.errors.length === 0, truncated: snapshot.truncated, ...(surface ? { surface } : {}), data: snapshot };
+      return { adapterId: this.descriptor.id, environment: 'browser', channel: authority.channel, sequence, complete: !snapshot.truncated && snapshot.errors.length === 0, truncated: snapshot.truncated, ...(surface ? { surface } : {}), data: snapshot };
     }
-    throw new Error(`browser observation channel unsupported: ${request.channel}`);
+    throw new Error(`browser observation channel unsupported: ${authority.channel}`);
   }
 
   private taskResult(result: TaskRunResult): ComputerActionResult {
