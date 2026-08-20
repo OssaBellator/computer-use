@@ -104,6 +104,7 @@ class WriteAheadComputerEnvironmentRegistry extends ComputerEnvironmentRegistry 
  */
 export class DurableComputerTaskRuntime {
   private writeAheadArmed = false;
+  private runTail: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly runtime: ComputerTaskRuntime,
@@ -184,7 +185,14 @@ export class DurableComputerTaskRuntime {
     this.writeAheadArmed = false;
   }
 
-  async run(): Promise<ComputerTaskRunResult> {
+  private enqueueRun<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.runTail;
+    let release!: () => void;
+    this.runTail = new Promise<void>((resolve) => { release = resolve; });
+    return previous.then(operation).finally(release);
+  }
+
+  private async runOnce(): Promise<ComputerTaskRunResult> {
     const result = await this.runtime.run();
     try {
       await this.persistCheckpoint();
@@ -196,5 +204,9 @@ export class DurableComputerTaskRuntime {
       }
       return { ...failed, status: 'failed' };
     }
+  }
+
+  run(): Promise<ComputerTaskRunResult> {
+    return this.enqueueRun(() => this.runOnce());
   }
 }
