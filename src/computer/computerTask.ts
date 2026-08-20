@@ -45,7 +45,10 @@ export interface ComputerTaskActionStep {
   target?: ComputerTaskTargetRef;
   /** Domain/adapter verifier key. Omit to use the verification reported by the adapter result. */
   verification?: string;
-  /** Non-secret caller-supplied resume binding; raw payloads are never checkpointed. */
+  /**
+   * Non-secret trusted-input revision/digest used to bind checkpoint compatibility.
+   * Required whenever an action carries a payload because raw payload content is never checkpointed.
+   */
   checkpointBinding?: string;
   onSuccess?: string;
   onFailure?: string;
@@ -62,6 +65,10 @@ export interface ComputerTaskProgram {
 
 function boundedIdentifier(value: string, max = 256): boolean {
   return value.length > 0 && new TextEncoder().encode(value).byteLength <= max && !/[\r\n\0]/.test(value);
+}
+
+function validCheckpointBinding(value: string): boolean {
+  return value.length >= 16 && boundedIdentifier(value, 256);
 }
 
 function validateRequirements(
@@ -100,7 +107,10 @@ function validateObservationLimits(step: ComputerTaskObservationStep): string[] 
 function validateTarget(step: ComputerTaskActionStep): string[] {
   const errors: string[] = [];
   const target = step.target;
-  if (!target) return errors;
+  if (!target) {
+    if (step.request.target) errors.push('request target requires an identical action target entity for freshness checks');
+    return errors;
+  }
   for (const ref of [target.surface, target.entity]) {
     if (!ref) continue;
     if (ref.adapterId !== step.request.adapterId) errors.push('target authority must match request adapterId');
@@ -159,8 +169,11 @@ export function validateComputerTaskProgram(program: ComputerTaskProgram): strin
       if (step.verification !== undefined && !boundedIdentifier(step.verification, 128)) {
         errors.push(`${step.id}: verification key must be bounded`);
       }
-      if (step.checkpointBinding !== undefined && !boundedIdentifier(step.checkpointBinding, 256)) {
-        errors.push(`${step.id}: checkpointBinding must be bounded and non-secret`);
+      if (step.checkpointBinding !== undefined && !validCheckpointBinding(step.checkpointBinding)) {
+        errors.push(`${step.id}: checkpointBinding must be a non-secret trusted binding of 16 to 256 UTF-8 bytes`);
+      }
+      if (step.request.payload !== undefined && step.checkpointBinding === undefined) {
+        errors.push(`${step.id}: payload-bearing actions require checkpointBinding`);
       }
       errors.push(...validateTarget(step).map((error) => `${step.id}: ${error}`));
     }
@@ -174,4 +187,39 @@ export function validateComputerTaskProgram(program: ComputerTaskProgram): strin
     }
   }
   return errors;
+}
+
+function snapshotExecutableValue<T>(value: T, path: string): T {
+  if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`${path} contains a non-finite number`);
+    return value;
+  }
+  if (typeof value !== 'object') throw new Error(`${path} contains a non-snapshotable executable value`);
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry, index) => snapshotExecutableValue(entry, `${path}[${index}]`))) as T;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${path} must contain only plain snapshotable objects and arrays`);
+  }
+  const clone: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    clone[key] = snapshotExecutableValue(entry, `${path}.${key}`);
+  }
+  return Object.freeze(clone) as T;
+}
+
+/**
+ * Creates the immutable executable representation used by the runtime across all awaited gates.
+ * The snapshot deliberately rejects mutable/exotic payload objects rather than retaining caller-owned handles.
+ */
+export function snapshotComputerTaskProgram(program: ComputerTaskProgram): ComputerTaskProgram {
+  const errors = validateComputerTaskProgram(program);
+  if (errors.length > 0) throw new Error(`invalid computer task program: ${errors.join('; ')}`);
+  const snapshot = snapshotExecutableValue(program, 'program');
+  return Object.freeze({
+    ...snapshot,
+    steps: Object.freeze([...snapshot.steps]),
+  });
 }
