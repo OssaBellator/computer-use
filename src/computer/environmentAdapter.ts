@@ -37,6 +37,10 @@ export const COMPUTER_ENTITY_KINDS = [
   'remote-host',
   'media',
   'device',
+  'peripheral',
+  'volume',
+  'system-setting-scope',
+  'security-setting-scope',
   'visual-region',
 ] as const;
 
