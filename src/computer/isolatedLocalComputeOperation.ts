@@ -15,8 +15,12 @@ export interface IsolatedLocalComputeOperationContext {
   diagnostic(code: string): void;
 }
 
-export type IsolatedLocalComputeOperation<I extends LocalComputeJson = LocalComputeJson, O extends LocalComputeJson = LocalComputeJson> =
-  (input: I, context: IsolatedLocalComputeOperationContext) => O | Promise<O>;
+/**
+ * Isolated operations receive parsed immutable JSON but return encoded JSON text.
+ * The worker enforces the output byte bound before parsing/canonicalizing that text.
+ */
+export type IsolatedLocalComputeOperation<I extends LocalComputeJson = LocalComputeJson> =
+  (input: I, context: IsolatedLocalComputeOperationContext) => string | Promise<string>;
 
 /**
  * Type helper for file-backed isolated operation modules.
@@ -24,10 +28,9 @@ export type IsolatedLocalComputeOperation<I extends LocalComputeJson = LocalComp
  * This does not create additional sandboxing. The operation still runs with the host
  * authority available to the registered file module inside the isolated child process.
  */
-export function defineIsolatedLocalComputeOperation<
-  I extends LocalComputeJson = LocalComputeJson,
-  O extends LocalComputeJson = LocalComputeJson,
->(operation: IsolatedLocalComputeOperation<I, O>): IsolatedLocalComputeOperation<I, O> {
+export function defineIsolatedLocalComputeOperation<I extends LocalComputeJson = LocalComputeJson>(
+  operation: IsolatedLocalComputeOperation<I>,
+): IsolatedLocalComputeOperation<I> {
   return operation;
 }
 
