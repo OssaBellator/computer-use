@@ -1,8 +1,8 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.37.0",
+  "version": "0.38.0",
   "private": true,
-  "description": "Standalone raw-CDP browser agent with structured document reading, web task capabilities, and realtime game perception.",
+  "description": "Standalone raw-CDP browser agent with document-driven task predicates, structured reading, web task capabilities, and realtime game perception.",
   "type": "module",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
