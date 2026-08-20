@@ -50,12 +50,13 @@ test('standalone TaskRuntime gates a synthetic checkout commitment before browse
           '<p>Order total AUD 25.00</p>',
           '<p>Merchant: Synthetic Store</p>',
           '<p>Payment method: Test Card</p>',
-          '<button id="confirm" style="position:absolute;left:120px;top:180px;width:140px;height:44px">Confirm</button>',
+          '<button id="confirm" aria-pressed="false" style="position:absolute;left:120px;top:180px;width:140px;height:44px">Confirm</button>',
           '<p id="status">Not submitted</p>',
           '</main>',
         ].join('');
         document.querySelector('#confirm').addEventListener('click', () => {
           window.commitCount += 1;
+          document.querySelector('#confirm').setAttribute('aria-pressed', 'true');
           document.querySelector('#status').textContent = 'Synthetic order confirmed';
         });
       })()`,
