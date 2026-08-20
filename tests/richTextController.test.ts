@@ -104,3 +104,13 @@ test('select-all and delete use native keyboard commands and verify resulting se
   assert.equal(deleted.status, 'deleted');
   assert.deepEqual(input.events, ['press:Control+a', 'press:Backspace']);
 });
+
+test('select-all rejects invalid runtime modifier names before browser input', async () => {
+  const input = new Input();
+  const controller = new RichTextController(input, observer([snapshot(true)]));
+  await assert.rejects(
+    () => controller.selectAll({ primaryModifier: 'AltGraph' as 'Control' }),
+    /Control or Meta/,
+  );
+  assert.deepEqual(input.events, []);
+});
