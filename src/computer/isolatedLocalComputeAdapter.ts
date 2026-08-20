@@ -24,15 +24,15 @@ import {
   type LocalComputeResourceLimits,
 } from './localComputeAdapter.js';
 
-/** A separate process with enforceable deadline/termination; this is not an OS security sandbox. */
+/** Separate-process execution with enforceable wall-clock timeout and worker termination. */
 export const ISOLATED_LOCAL_COMPUTE_EXECUTION_MODEL = 'isolated-child-process-enforceable-timeout' as const;
 
 export interface IsolatedLocalComputeOperationDefinition {
   id: string;
   effect: AllowedLocalComputeEffect;
-  /** Trusted host registration only. This value is never accepted from an action payload. */
+  /** Trusted host registration only; action payloads cannot supply or replace this URL. */
   moduleUrl: string;
-  /** Named module export containing a function or { execute() }. */
+  /** Named export containing a function or an object with execute(). */
   exportName: string;
 }
 
@@ -59,12 +59,12 @@ export interface IsolatedLocalComputeAdapterOptions {
   id?: string;
   operations: readonly IsolatedLocalComputeOperationDefinition[];
   maxRetainedJobs?: number;
-  /** Non-evicted exactly-once ledger capacity. Once full, new identities fail closed. */
+  /** Non-evicted exactly-once ledger capacity. New identities fail closed once full. */
   maxLedgerEntries?: number;
   maxArtifactStoreBytes?: number;
-  /** Cleanup acknowledgement bound after the execution deadline has already expired. */
+  /** Cleanup acknowledgement bound after the advertised execution deadline expires. */
   terminationAcknowledgeMs?: number;
-  /** Test/fault-injection seam: seals dispatch as uncertain without making the job replayable. */
+  /** Fault-injection seam for testing conservative ambiguous-launch semantics. */
   ambiguousLaunchOperationIds?: readonly string[];
 }
 
@@ -88,6 +88,7 @@ const MAX_LIMITS: LocalComputeResourceLimits = Object.freeze({
 });
 const ID = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 const EXPORT_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
+const DIAGNOSTIC = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const DEFAULT_MAX_RETAINED_JOBS = 256;
 const DEFAULT_MAX_LEDGER_ENTRIES = 4_096;
@@ -102,11 +103,12 @@ interface StoredArtifact { encoded: string; identity: LocalComputeArtifactIdenti
 interface LedgerEntry { dispatch: ComputerDispatchState; executionState: LocalComputeExecutionState }
 interface WorkerResultMessage { type: 'result'; token: string; outputEncoded: string; outputHash: string; byteLength: number; shape: string; diagnostics?: unknown }
 interface WorkerErrorMessage { type: 'error'; token: string; code: string; diagnostics?: unknown }
+type WorkerWireMessage = WorkerResultMessage | WorkerErrorMessage;
 type WorkerOutcome =
   | { kind: 'result'; message: WorkerResultMessage }
   | { kind: 'worker-error'; message: WorkerErrorMessage }
   | { kind: 'crash'; code: number | null; signal: NodeJS.Signals | null }
-  | { kind: 'launch-uncertain'; reason: string }
+  | { kind: 'launch-uncertain' }
   | { kind: 'timed-out'; terminationConfirmed: boolean };
 
 function bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
@@ -224,14 +226,16 @@ function freezeSnapshot(snapshot: IsolatedLocalComputeJobSnapshot): IsolatedLoca
 /**
  * Process-isolated local compute backend.
  *
- * Guarantees: registered-operation-only dispatch, bounded serialized input/output,
- * wall-clock execution deadline spanning process launch through output verification,
- * and forced child termination after deadline with confirmation before claiming it.
- * The dispatch ledger is never evicted; capacity exhaustion fails closed.
+ * Enforced properties: registered-operation-only dispatch, bounded canonical serialized
+ * input/output, a wall-clock deadline spanning process launch, module import, execution,
+ * output serialization and host verification, plus forced child termination after timeout.
+ * A timeout is claimed as terminated only after child exit/signal state is observed.
+ * The generation-aware dispatch ledger is never evicted; capacity exhaustion fails closed.
  *
- * Non-guarantees: this is not a filesystem/network/security sandbox. Registered modules
- * remain trusted host authority. `memoryBytesHint` is only a resource hint: this adapter
- * does not claim or enforce a strict total-memory limit for the child process.
+ * Remaining non-enforceable properties: this is not a filesystem/network/security sandbox.
+ * Registered modules are trusted host authority. `memoryBytesHint` is a hint only; this
+ * implementation does not strictly enforce total child-process memory and makes no hard
+ * memory guarantee.
  */
 export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor;
@@ -258,7 +262,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       this.operations.set(operation.id, Object.freeze({ id: operation.id, effect: operation.effect, moduleUrl: operation.moduleUrl, exportName: operation.exportName }));
     }
     this.ambiguousLaunch = new Set(options.ambiguousLaunchOperationIds ?? []);
-    for (const id of this.ambiguousLaunch) if (!this.operations.has(id)) throw new Error(`ambiguous launch operation is not registered: ${id}`);
+    for (const operationId of this.ambiguousLaunch) if (!this.operations.has(operationId)) throw new Error(`ambiguous launch operation is not registered: ${operationId}`);
     this.maxRetainedJobs = boundedPositiveInteger(options.maxRetainedJobs, DEFAULT_MAX_RETAINED_JOBS, MAX_RETENTION_COUNT);
     this.maxLedgerEntries = boundedPositiveInteger(options.maxLedgerEntries, DEFAULT_MAX_LEDGER_ENTRIES, MAX_RETENTION_COUNT);
     this.maxArtifactStoreBytes = boundedPositiveInteger(options.maxArtifactStoreBytes, DEFAULT_MAX_ARTIFACT_STORE_BYTES, MAX_ARTIFACT_STORE_BYTES);
@@ -317,7 +321,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (highest !== undefined && payload.job.generation < highest) return this.reject('compute-isolated-job-stale');
     if (this.ledger.size >= this.maxLedgerEntries) return this.reject('compute-isolated-ledger-full');
 
-    // Seal the identity before process launch. From here onward uncertainty never permits replay.
+    // Seal before launch: after this point no uncertain outcome can authorize redispatch.
     this.ledger.set(key, { dispatch: 'unknown', executionState: 'accepted' });
     this.highestGeneration.set(payload.job.jobId, Math.max(highest ?? payload.job.generation, payload.job.generation));
     let snapshot = freezeSnapshot({ identity: payload.job, operation: operation.id, effect: operation.effect, inputArtifact, executionState: 'accepted', dispatch: 'unknown', diagnostics: [] });
@@ -325,16 +329,14 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
 
     if (this.ambiguousLaunch.has(operation.id)) {
       snapshot = freezeSnapshot({ ...snapshot, executionState: 'unknown', dispatch: 'unknown', diagnostics: ['compute-isolated-launch-ambiguous'] });
-      this.updateLedger(key, snapshot);
-      this.setJob(key, snapshot);
+      this.updateLedger(key, snapshot); this.setJob(key, snapshot);
       return { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: ['compute-isolated-launch-ambiguous'], details: { job: snapshot } };
     }
 
     const deadlineEpochMs = Date.now() + limits.timeBudgetMs;
     const outcome = await this.runIsolated(operation, inputCanonical.encoded, payload.job, limits, deadlineEpochMs, (dispatch) => {
       snapshot = freezeSnapshot({ ...snapshot, executionState: dispatch === 'dispatched-once' ? 'running' : 'unknown', dispatch });
-      this.updateLedger(key, snapshot);
-      this.setJob(key, snapshot);
+      this.updateLedger(key, snapshot); this.setJob(key, snapshot);
     });
 
     if (outcome.kind === 'timed-out') {
@@ -352,6 +354,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       this.updateLedger(key, snapshot); this.setJob(key, snapshot);
       return { status: 'failed', dispatch: snapshot.dispatch, verification: 'rejected', evidence: ['compute-isolated-worker-crashed'], details: { job: snapshot, exitCode: outcome.code, signal: outcome.signal } };
     }
+
     const diagnostics = this.validDiagnostics(outcome.message.diagnostics, limits.maxDiagnosticBytes);
     if (outcome.kind === 'worker-error') {
       const limited = outcome.message.code === 'output-limit';
@@ -373,10 +376,9 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       return { status: 'failed', dispatch: 'dispatched-once', verification: 'rejected', evidence: [limited ? 'compute-isolated-output-limit' : 'compute-isolated-output-verification-failed'], details: { job: snapshot } };
     }
     if (Date.now() > deadlineEpochMs) {
-      // Result missed the advertised deadline; never accept it as successful.
       snapshot = freezeSnapshot({ ...snapshot, executionState: 'timed-out', dispatch: 'dispatched-once', diagnostics: [...diagnostics, 'compute-isolated-late-result-rejected'] });
       this.updateLedger(key, snapshot); this.setJob(key, snapshot);
-      return { status: 'failed', dispatch: 'dispatched-once', verification: 'rejected', evidence: ['compute-isolated-timeout-terminated'], details: { job: snapshot } };
+      return { status: 'failed', dispatch: 'dispatched-once', verification: 'rejected', evidence: ['compute-isolated-deadline-exceeded'], details: { job: snapshot } };
     }
 
     const outputArtifact = artifactFromCanonical(outputCanonical, payload.job.generation);
@@ -395,6 +397,8 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       let child: ChildProcess;
       let settled = false;
       let spawned = false;
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      let terminationTimer: NodeJS.Timeout | undefined;
       const token = randomBytes(16).toString('hex');
       const workerPath = fileURLToPath(new URL('./isolatedLocalComputeWorker.js', import.meta.url));
       const finish = (outcome: WorkerOutcome): void => {
@@ -402,16 +406,14 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
         settled = true;
         clearTimeout(deadlineTimer);
         clearTimeout(terminationTimer);
-        child?.removeAllListeners();
-        if (child?.connected) child.disconnect();
+        child.removeAllListeners();
+        if (child.connected) child.disconnect();
         resolve(outcome);
       };
-      let deadlineTimer: NodeJS.Timeout | undefined;
-      let terminationTimer: NodeJS.Timeout | undefined;
       try {
         child = fork(workerPath, [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], serialization: 'json' });
       } catch {
-        resolve({ kind: 'launch-uncertain', reason: 'fork-threw' });
+        resolve({ kind: 'launch-uncertain' });
         return;
       }
       const terminateForDeadline = (): void => {
@@ -424,23 +426,30 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
         }
         terminationTimer = setTimeout(() => finish({ kind: 'timed-out', terminationConfirmed: child.exitCode !== null || child.signalCode !== null }), this.terminationAcknowledgeMs);
       };
-      const remaining = Math.max(0, deadlineEpochMs - Date.now());
-      deadlineTimer = setTimeout(terminateForDeadline, remaining);
+      deadlineTimer = setTimeout(terminateForDeadline, Math.max(0, deadlineEpochMs - Date.now()));
       child.once('spawn', () => { spawned = true; onDispatch('dispatched-once'); });
-      child.once('error', () => finish({ kind: 'launch-uncertain', reason: spawned ? 'child-error-after-spawn' : 'child-error-before-spawn' }));
+      child.once('error', () => {
+        if (spawned) { try { child.kill('SIGKILL'); } catch { /* uncertainty is reported below */ } }
+        finish({ kind: 'launch-uncertain' });
+      });
       child.on('message', (raw: unknown) => {
         if (settled || Date.now() > deadlineEpochMs || !raw || typeof raw !== 'object') return;
-        const message = raw as Partial<WorkerResultMessage & WorkerErrorMessage>;
+        const message = raw as Partial<WorkerWireMessage> & Record<string, unknown>;
         if (message.token !== token) return;
-        if (message.type === 'result' && typeof message.outputEncoded === 'string' && typeof message.outputHash === 'string' && typeof message.byteLength === 'number' && typeof message.shape === 'string') finish({ kind: 'result', message: message as WorkerResultMessage });
-        else if (message.type === 'error' && typeof message.code === 'string') finish({ kind: 'worker-error', message: message as WorkerErrorMessage });
+        if (message.type === 'result' && typeof message.outputEncoded === 'string' && typeof message.outputHash === 'string' && typeof message.byteLength === 'number' && typeof message.shape === 'string') finish({ kind: 'result', message: message as unknown as WorkerResultMessage });
+        else if (message.type === 'error' && typeof message.code === 'string') finish({ kind: 'worker-error', message: message as unknown as WorkerErrorMessage });
       });
       child.once('exit', (code, signal) => {
         if (settled) return;
         if (Date.now() >= deadlineEpochMs) finish({ kind: 'timed-out', terminationConfirmed: true });
         else finish({ kind: 'crash', code, signal });
       });
-      child.send({ type: 'run', token, operationId: operation.id, moduleUrl: operation.moduleUrl, exportName: operation.exportName, inputEncoded, deadlineEpochMs, limits: { maxOutputBytes: limits.maxOutputBytes, maxDiagnosticBytes: limits.maxDiagnosticBytes, maxJsonDepth: limits.maxJsonDepth, maxJsonItems: limits.maxJsonItems, memoryBytesHint: limits.memoryBytesHint }, job }, (error) => { if (error && !settled) finish({ kind: 'launch-uncertain', reason: 'ipc-send-uncertain' }); });
+      child.send({ type: 'run', token, operationId: operation.id, moduleUrl: operation.moduleUrl, exportName: operation.exportName, inputEncoded, deadlineEpochMs, limits: { maxOutputBytes: limits.maxOutputBytes, maxDiagnosticBytes: limits.maxDiagnosticBytes, maxJsonDepth: limits.maxJsonDepth, maxJsonItems: limits.maxJsonItems, memoryBytesHint: limits.memoryBytesHint }, job }, (error) => {
+        if (error && !settled) {
+          try { child.kill('SIGKILL'); } catch { /* dispatch remains uncertain */ }
+          finish({ kind: 'launch-uncertain' });
+        }
+      });
     });
   }
 
@@ -465,7 +474,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     const result: string[] = [];
     let used = 0;
     for (const item of raw) {
-      if (typeof item !== 'string' || !/^[a-z0-9][a-z0-9._:-]{0,63}$/.test(item)) continue;
+      if (typeof item !== 'string' || !DIAGNOSTIC.test(item)) continue;
       const size = bytes(item);
       if (used + size > maxBytes) break;
       used += size; result.push(item);
