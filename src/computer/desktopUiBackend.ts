@@ -23,6 +23,11 @@ export interface DesktopWindowSnapshot extends DesktopNativeWindowRef {
 export interface DesktopRect { x:number; y:number; width:number; height:number; }
 
 export interface DesktopAccessibilityNode {
+  /**
+   * Backend-stable per-control-instance identity. Within one native window
+   * generation this identifier MUST remain bound to the same control instance
+   * and MUST NOT be reused for a replacement control.
+   */
   controlId: string;
   role?: string;
   name?: string;
@@ -115,6 +120,7 @@ export interface DesktopBackendActionResult {
 
 export interface DesktopFocusTarget {
   window: DesktopNativeWindowRef;
+  /** Stable per-instance controlId from accessibility observation, when focusing a control. */
   controlId?: string;
 }
 
@@ -130,6 +136,12 @@ export interface NativeDesktopUiBackend {
   observeAccessibility(window: DesktopNativeWindowRef, limits: Required<ComputerObservationLimits>): Promise<DesktopAccessibilityObservation>;
   /** Backends must honor these frozen limits before allocating/capturing pixels or encoded bytes. */
   observeVisual(window: DesktopNativeWindowRef, limits: DesktopVisualAcquisitionLimits): Promise<DesktopVisualObservation>;
+  /**
+   * If controlId is supplied, the backend MUST atomically verify immediately
+   * before dispatch that the same stable control instance is still live in the
+   * requested window generation. Missing/replaced controls must return a
+   * definite rejected + dispatched:false result; input must not be emitted.
+   */
   focus(target: DesktopFocusTarget, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
   keyboard(window: DesktopNativeWindowRef, input: DesktopKeyboardInput, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
   pointerAbsolute(window: DesktopNativeWindowRef, input: DesktopAbsolutePointerInput, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
