@@ -1,4 +1,5 @@
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
+import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryAction, BrowserHistoryOptions, BrowserHistoryResult } from '../browser/historyController.js';
@@ -47,8 +48,7 @@ interface ObservationActionOptions {
 
 /**
  * TaskRuntimeEngine adapter over MultiPageCdpAgent. With no active page, passive
- * observation stays available through root target topology while semantic page
- * nodes/browser state are empty until a static switch-page action succeeds.
+ * root target topology remains available while page-bound channels stay empty.
  */
 export class MultiPageTaskEngine implements TaskRuntimeEngine {
   constructor(readonly pages: MultiPageCdpAgent) {}
@@ -63,6 +63,10 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
 
   async browserState() {
     return this.pages.activeEngine?.browserState();
+  }
+
+  async documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
+    return this.pages.activeEngine?.interaction.observer.documentContent?.(options);
   }
 
   dialogState(): BrowserDialogState | undefined {
