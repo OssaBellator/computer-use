@@ -357,6 +357,20 @@ function snapshotMutationPayload(value: unknown): Readonly<SystemDeviceMutationP
   });
 }
 
+function neutralTargetMatchesPayload(
+  request: ComputerActionRequest,
+  payloadTarget: Readonly<SystemDeviceIdentity>,
+): boolean {
+  const target = request.target;
+  return target !== undefined &&
+    target.adapterId === request.adapterId &&
+    target.environment === 'device' &&
+    target.kind === payloadTarget.kind &&
+    target.entityId === payloadTarget.id &&
+    target.generation === payloadTarget.generation &&
+    target.surfaceId === undefined;
+}
+
 interface TextBudget {
   remaining: number;
   truncated: boolean;
@@ -402,7 +416,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'device' as const,
-      version: 'system-device-foundation-v5',
+      version: 'system-device-foundation-v6',
       capabilities: Object.freeze([
         'device.observe',
         'system.observe',
@@ -590,6 +604,9 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     const payload = snapshotMutationPayload(request.payload);
     if (!payload) {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['mutation-payload-invalid']);
+    }
+    if (!neutralTargetMatchesPayload(request, payload.target)) {
+      return actionResult('rejected', 'not-dispatched', 'unverified', ['mutation-target-binding-mismatch']);
     }
     const action: ActionSnapshot = Object.freeze({
       actionId: request.actionId,
