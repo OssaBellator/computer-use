@@ -39,7 +39,8 @@ export interface IsolatedLocalComputeOperationDefinition {
 export interface IsolatedLocalComputeJobRequest {
   job: LocalComputeIdentity;
   operation: string;
-  input: LocalComputeJson;
+  /** JSON text; byte-bounded before parsing or reflective acquisition. */
+  inputEncoded: string;
   limits?: Partial<LocalComputeResourceLimits>;
   expectedInputArtifactId?: string;
 }
@@ -335,8 +336,13 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (!limits) return this.reject('compute-isolated-limits-invalid');
 
     let inputCanonical: CanonicalizedJson;
-    try { inputCanonical = canonicalizeJson(payload.input, limits.maxInputBytes, limits.maxJsonDepth, limits.maxJsonItems); }
-    catch (error) { return this.reject(error instanceof Error && error.message === 'json-byte-limit' ? 'compute-isolated-input-limit' : 'compute-isolated-input-invalid'); }
+    try {
+      if (bytes(payload.inputEncoded) > limits.maxInputBytes) throw new Error('json-byte-limit');
+      const parsed = JSON.parse(payload.inputEncoded) as LocalComputeJson;
+      inputCanonical = canonicalizeJson(parsed, limits.maxInputBytes, limits.maxJsonDepth, limits.maxJsonItems);
+    } catch (error) {
+      return this.reject(error instanceof Error && error.message === 'json-byte-limit' ? 'compute-isolated-input-limit' : 'compute-isolated-input-invalid');
+    }
     const inputArtifact = artifactFromCanonical(inputCanonical, payload.job.generation);
     if (payload.expectedInputArtifactId !== undefined && payload.expectedInputArtifactId !== inputArtifact.artifactId) return this.reject('compute-isolated-input-artifact-mismatch');
 
@@ -512,13 +518,13 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
   private parsePayload(payload: unknown): IsolatedLocalComputeJobRequest | null {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
     const descriptors = Object.getOwnPropertyDescriptors(payload);
-    const allowed = new Set(['job', 'operation', 'input', 'limits', 'expectedInputArtifactId']);
+    const allowed = new Set(['job', 'operation', 'inputEncoded', 'limits', 'expectedInputArtifactId']);
     if (Object.keys(descriptors).some((key) => !allowed.has(key))) return null;
     for (const descriptor of Object.values(descriptors)) if (descriptor.get || descriptor.set || !('value' in descriptor)) return null;
     const value = payload as Partial<IsolatedLocalComputeJobRequest>;
-    if (!value.job || typeof value.job !== 'object' || Array.isArray(value.job) || !ID.test(value.job.jobId) || !Number.isSafeInteger(value.job.generation) || value.job.generation < 0 || !ID.test(value.operation ?? '')) return null;
+    if (!value.job || typeof value.job !== 'object' || Array.isArray(value.job) || !ID.test(value.job.jobId) || !Number.isSafeInteger(value.job.generation) || value.job.generation < 0 || !ID.test(value.operation ?? '') || typeof value.inputEncoded !== 'string') return null;
     if (value.expectedInputArtifactId !== undefined && typeof value.expectedInputArtifactId !== 'string') return null;
-    return { job: { jobId: value.job.jobId, generation: value.job.generation }, operation: value.operation!, input: value.input as LocalComputeJson, limits: value.limits, expectedInputArtifactId: value.expectedInputArtifactId };
+    return { job: { jobId: value.job.jobId, generation: value.job.generation }, operation: value.operation!, inputEncoded: value.inputEncoded, limits: value.limits, expectedInputArtifactId: value.expectedInputArtifactId };
   }
 
   private targetMatchesJob(target: ComputerEntityRef, identity: LocalComputeIdentity): boolean {

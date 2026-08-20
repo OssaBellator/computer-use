@@ -128,8 +128,7 @@ process.once('message', async (raw: unknown) => {
     if (Date.now() >= deadlineEpochMs) throw new Error('deadline-expired');
     const parsed = JSON.parse(inputEncoded) as Json;
     const inputCheck = canonicalize(parsed, byteLength(inputEncoded), limits.maxJsonDepth, limits.maxJsonItems);
-    if (inputCheck.encoded !== inputEncoded) throw new Error('input-canonical-mismatch');
-    const input = deepFreeze(parsed);
+    const input = deepFreeze(JSON.parse(inputCheck.encoded) as Json);
     let moduleProtocol: string;
     try { moduleProtocol = new URL(moduleUrl).protocol; }
     catch { throw new Error('registered-module-url-invalid'); }
@@ -139,9 +138,12 @@ process.once('message', async (raw: unknown) => {
     const execute = typeof exported === 'function' ? exported : exported?.execute;
     if (typeof execute !== 'function') throw new Error('registered-export-invalid');
     const context = Object.freeze({ operationId, deadlineEpochMs, limits: Object.freeze({ ...limits }), diagnostic });
-    const output = await execute(input, context);
+    const outputEncoded = await execute(input, context);
     if (Date.now() >= deadlineEpochMs) throw new Error('deadline-expired');
-    const canonical = canonicalize(output, limits.maxOutputBytes, limits.maxJsonDepth, limits.maxJsonItems);
+    if (typeof outputEncoded !== 'string') throw new Error('output-not-encoded');
+    if (byteLength(outputEncoded) > limits.maxOutputBytes) throw new Error('json-byte-limit');
+    const outputParsed = JSON.parse(outputEncoded) as Json;
+    const canonical = canonicalize(outputParsed, limits.maxOutputBytes, limits.maxJsonDepth, limits.maxJsonItems);
     sendAndExit({ type: 'result', token, outputEncoded: canonical.encoded, outputHash: sha256(canonical.encoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'worker-error';
