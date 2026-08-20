@@ -66,7 +66,10 @@ export interface DesktopVisualObservation {
 }
 
 export interface DesktopSystemObservation {
+  /** Already bounded by the limits supplied to observeSystem(). */
   windows: readonly DesktopWindowSnapshot[];
+  /** True when the backend stopped enumeration because an observation limit was reached. */
+  truncated: boolean;
   foregroundWindow?: DesktopNativeWindowRef;
   focusedWindow?: DesktopNativeWindowRef;
   focusedControlId?: string;
@@ -104,7 +107,11 @@ export interface DesktopFocusTarget {
 export interface NativeDesktopUiBackend {
   readonly id: string;
   readonly supportsRelativePointer?: boolean;
-  observeSystem(): Promise<DesktopSystemObservation>;
+  /**
+   * Backends must stop enumeration before materializing more than these limits.
+   * The adapter re-validates/re-bounds the returned metadata defensively.
+   */
+  observeSystem(limits: Required<ComputerObservationLimits>): Promise<DesktopSystemObservation>;
   observeAccessibility(window: DesktopNativeWindowRef, limits: Required<ComputerObservationLimits>): Promise<DesktopAccessibilityObservation>;
   observeVisual(window: DesktopNativeWindowRef): Promise<DesktopVisualObservation>;
   focus(target: DesktopFocusTarget, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
