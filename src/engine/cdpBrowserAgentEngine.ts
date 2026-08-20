@@ -1,6 +1,7 @@
 import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } from '../agent/taskRuntime.js';
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
+import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import { DocumentSelectionObserver } from '../browser/documentSelection.js';
 import { CdpDownloadController, type BrowserDownloadControllerOptions, type BrowserDownloadSummary } from '../browser/downloadController.js';
 import { CdpDialogController, isCdpEventSessionLike, type BrowserDialogController, type BrowserDialogHandleResult, type BrowserDialogState } from '../browser/dialogController.js';
@@ -33,17 +34,78 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly selects: CdpSelectController = new CdpSelectController(session),
     readonly richText?: RichTextController,
   ) {}
-  async prepare(): Promise<void> { await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start(), this.uploads?.start(), this.navigationGuard?.start(), this.networkActivity?.start()]); }
-  refresh(): Promise<InteractionNode[]> { return this.interaction.refresh(); }
-  browserState(): Promise<BrowserStateSnapshot> { return captureCdpBrowserState(this.session); }
-  dialogState(): BrowserDialogState | undefined { return this.dialogs?.state(); }
-  targetState(): BrowserTargetSummary | undefined { return this.targets?.summary(); }
-  downloadState(): BrowserDownloadSummary | undefined { return this.downloads?.summary(); }
-  activate(query: TargetQuery | string, options?: Parameters<InteractionEngine['activate']>[1]): Promise<TaskEngineActionResult> { return this.interaction.activate(query, options); }
-  hover(query: TargetQuery | string, options?: Parameters<InteractionEngine['hover']>[1]): Promise<TaskEngineActionResult> { return this.interaction.hover(query, options); }
-  typeInto(query: TargetQuery | string, text: string, options?: Parameters<InteractionEngine['typeInto']>[2]): Promise<TaskEngineActionResult> { return this.interaction.typeInto(query, text, options); }
-  pressKey(key: string, options?: Parameters<InteractionEngine['pressKey']>[1]): Promise<TaskKeyActionResult> { return this.interaction.pressKey(key, options); }
-  scrollViewport(delta: Parameters<InteractionEngine['scrollViewport']>[0], options?: Parameters<InteractionEngine['scrollViewport']>[1]): Promise<TaskKeyActionResult> { return this.interaction.scrollViewport(delta, options); }
+
+  async prepare(): Promise<void> {
+    await Promise.all([
+      this.dialogs?.start(),
+      this.targets?.start(),
+      this.downloads?.start(),
+      this.uploads?.start(),
+      this.navigationGuard?.start(),
+      this.networkActivity?.start(),
+    ]);
+  }
+
+  refresh(): Promise<InteractionNode[]> {
+    return this.interaction.refresh();
+  }
+
+  browserState(): Promise<BrowserStateSnapshot> {
+    return captureCdpBrowserState(this.session);
+  }
+
+  documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
+    return this.interaction.observer.documentContent?.(options) ?? Promise.resolve(undefined);
+  }
+
+  dialogState(): BrowserDialogState | undefined {
+    return this.dialogs?.state();
+  }
+
+  targetState(): BrowserTargetSummary | undefined {
+    return this.targets?.summary();
+  }
+
+  downloadState(): BrowserDownloadSummary | undefined {
+    return this.downloads?.summary();
+  }
+
+  activate(
+    query: TargetQuery | string,
+    options?: Parameters<InteractionEngine['activate']>[1],
+  ): Promise<TaskEngineActionResult> {
+    return this.interaction.activate(query, options);
+  }
+
+  hover(
+    query: TargetQuery | string,
+    options?: Parameters<InteractionEngine['hover']>[1],
+  ): Promise<TaskEngineActionResult> {
+    return this.interaction.hover(query, options);
+  }
+
+  typeInto(
+    query: TargetQuery | string,
+    text: string,
+    options?: Parameters<InteractionEngine['typeInto']>[2],
+  ): Promise<TaskEngineActionResult> {
+    return this.interaction.typeInto(query, text, options);
+  }
+
+  pressKey(
+    key: string,
+    options?: Parameters<InteractionEngine['pressKey']>[1],
+  ): Promise<TaskKeyActionResult> {
+    return this.interaction.pressKey(key, options);
+  }
+
+  scrollViewport(
+    delta: Parameters<InteractionEngine['scrollViewport']>[0],
+    options?: Parameters<InteractionEngine['scrollViewport']>[1],
+  ): Promise<TaskKeyActionResult> {
+    return this.interaction.scrollViewport(delta, options);
+  }
+
   waitForNetworkIdle(options?: NetworkIdleOptions): Promise<NetworkIdleResult> {
     return this.networkActivity?.waitForIdle(options) ?? Promise.resolve({
       idle: false,
@@ -52,13 +114,16 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
       samples: 0,
     });
   }
+
   async selectOption(
     query: TargetQuery | string,
     option: string,
     options: { requireUnambiguous?: boolean; by?: BrowserSelectMatch } = {},
   ): Promise<BrowserSelectResult> {
     let resolution: TargetResolution;
-    try { resolution = await this.interaction.resolveDetailed(query); } catch {
+    try {
+      resolution = await this.interaction.resolveDetailed(query);
+    } catch {
       return { status: 'invalid-target', target: null };
     }
     if (!resolution.target || ((options.requireUnambiguous ?? true) && resolution.ambiguous)) {
@@ -66,31 +131,113 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     }
     return this.selects.select(resolution.target, option, { by: options.by });
   }
-  async uploadFiles(query: TargetQuery | string, paths: readonly string[], options: { requireUnambiguous?: boolean } = {}): Promise<BrowserFileUploadResult> {
+
+  async uploadFiles(
+    query: TargetQuery | string,
+    paths: readonly string[],
+    options: { requireUnambiguous?: boolean } = {},
+  ): Promise<BrowserFileUploadResult> {
     const unresolved = { targetId: '', fileCount: paths.length, totalBytes: 0 };
-    if (!this.uploads) return { ...unresolved, status: 'configuration-error', errorText: 'File upload is not configured for this browser-agent engine' };
+    if (!this.uploads) {
+      return {
+        ...unresolved,
+        status: 'configuration-error',
+        errorText: 'File upload is not configured for this browser-agent engine',
+      };
+    }
     let resolution: TargetResolution;
-    try { resolution = await this.interaction.resolveDetailed(query); } catch { return { ...unresolved, status: 'invalid-target' }; }
-    if (!resolution.target || ((options.requireUnambiguous ?? true) && resolution.ambiguous)) return { ...unresolved, status: 'invalid-target' };
+    try {
+      resolution = await this.interaction.resolveDetailed(query);
+    } catch {
+      return { ...unresolved, status: 'invalid-target' };
+    }
+    if (!resolution.target || ((options.requireUnambiguous ?? true) && resolution.ambiguous)) {
+      return { ...unresolved, status: 'invalid-target' };
+    }
     return this.uploads.upload(resolution.target, paths);
   }
-  navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> { return this.navigator.navigate(url, options); }
-  history(action: BrowserHistoryAction, options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> { switch (action) { case 'back': return this.goBack(options); case 'forward': return this.goForward(options); case 'reload': return this.reload(options); } }
-  goBack(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> { return this.historyController.back(options); }
-  goForward(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> { return this.historyController.forward(options); }
-  reload(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> { return this.historyController.reload(options); }
-  createPageTarget(url: string): Promise<CreateBrowserTargetResult> { if (!this.targets) return Promise.resolve({ status: 'protocol-error', requestedUrl: url, errorText: 'CDP session does not expose event subscriptions for target lifecycle monitoring' }); return this.targets.createPage(url); }
-  closeLatestUnattachedPage(): Promise<CloseBrowserTargetResult | undefined> { return this.targets?.closeLatestUnattachedPage() ?? Promise.resolve(undefined); }
-  handleDialog(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult> { if (!this.dialogs) return Promise.resolve({ status: 'protocol-error', accepted: accept, errorText: 'CDP session does not expose event subscriptions for dialog monitoring' }); return this.dialogs.handle(accept, promptText); }
+
+  navigate(url: string, options?: BrowserNavigationOptions): Promise<BrowserNavigationResult> {
+    return this.navigator.navigate(url, options);
+  }
+
+  history(action: BrowserHistoryAction, options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    switch (action) {
+      case 'back': return this.goBack(options);
+      case 'forward': return this.goForward(options);
+      case 'reload': return this.reload(options);
+    }
+  }
+
+  goBack(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    return this.historyController.back(options);
+  }
+
+  goForward(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    return this.historyController.forward(options);
+  }
+
+  reload(options?: BrowserHistoryOptions): Promise<BrowserHistoryResult> {
+    return this.historyController.reload(options);
+  }
+
+  createPageTarget(url: string): Promise<CreateBrowserTargetResult> {
+    if (!this.targets) {
+      return Promise.resolve({
+        status: 'protocol-error',
+        requestedUrl: url,
+        errorText: 'CDP session does not expose event subscriptions for target lifecycle monitoring',
+      });
+    }
+    return this.targets.createPage(url);
+  }
+
+  closeLatestUnattachedPage(): Promise<CloseBrowserTargetResult | undefined> {
+    return this.targets?.closeLatestUnattachedPage() ?? Promise.resolve(undefined);
+  }
+
+  handleDialog(accept: boolean, promptText?: string): Promise<BrowserDialogHandleResult> {
+    if (!this.dialogs) {
+      return Promise.resolve({
+        status: 'protocol-error',
+        accepted: accept,
+        errorText: 'CDP session does not expose event subscriptions for dialog monitoring',
+      });
+    }
+    return this.dialogs.handle(accept, promptText);
+  }
 }
 
-export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions { navigationPolicy?: NavigationPolicy; enforceNavigationPolicyAtRequestBoundary?: boolean; downloadOptions?: BrowserDownloadControllerOptions; uploadOptions?: BrowserFileUploadControllerOptions; /** Explicit opt-in URL-redacted network lifecycle monitoring. */ networkActivity?: boolean; }
-export function createCdpBrowserAgentEngine(page: SnapshotPageLike, session: CdpSessionLike, options: CdpBrowserAgentEngineOptions = {}): CdpBrowserAgentEngine {
-  const { navigationPolicy, enforceNavigationPolicyAtRequestBoundary, downloadOptions, uploadOptions, networkActivity, ...interactionOptions } = options;
+export interface CdpBrowserAgentEngineOptions extends CdpInteractionEngineOptions {
+  navigationPolicy?: NavigationPolicy;
+  enforceNavigationPolicyAtRequestBoundary?: boolean;
+  downloadOptions?: BrowserDownloadControllerOptions;
+  uploadOptions?: BrowserFileUploadControllerOptions;
+  /** Explicit opt-in URL-redacted network lifecycle monitoring. */
+  networkActivity?: boolean;
+}
+
+export function createCdpBrowserAgentEngine(
+  page: SnapshotPageLike,
+  session: CdpSessionLike,
+  options: CdpBrowserAgentEngineOptions = {},
+): CdpBrowserAgentEngine {
+  const {
+    navigationPolicy,
+    enforceNavigationPolicyAtRequestBoundary,
+    downloadOptions,
+    uploadOptions,
+    networkActivity,
+    ...interactionOptions
+  } = options;
   const eventSession = isCdpEventSessionLike(session) ? session : undefined;
-  const useNavigationGuard = eventSession !== undefined && (enforceNavigationPolicyAtRequestBoundary ?? navigationPolicy !== undefined);
+  const useNavigationGuard = eventSession !== undefined &&
+    (enforceNavigationPolicyAtRequestBoundary ?? navigationPolicy !== undefined);
   const interaction = createCdpInteractionEngine(page, session, interactionOptions);
-  const richText = new RichTextController(interaction.input, new DocumentSelectionObserver(page));
+  const richText = new RichTextController(
+    interaction.input,
+    new DocumentSelectionObserver(page),
+  );
   return new CdpBrowserAgentEngine(
     interaction,
     session,
