@@ -13,6 +13,30 @@ import {
   type ComputerTaskRuntimeOptions,
 } from './computerTaskRuntime.js';
 
+function snapshotAdapter(
+  adapter: ComputerEnvironmentAdapter,
+  descriptor: ComputerEnvironmentAdapterDescriptor,
+): ComputerEnvironmentAdapter {
+  const observe = adapter.observe;
+  const act = adapter.act;
+  if (typeof observe !== 'function' || typeof act !== 'function') {
+    throw new TypeError('computer environment adapter must implement observe() and act()');
+  }
+  return Object.freeze({
+    descriptor,
+    observe: observe.bind(adapter),
+    act: act.bind(adapter),
+  });
+}
+
+function validateAndSnapshotAdapter(adapter: ComputerEnvironmentAdapter): ComputerEnvironmentAdapter {
+  const validationRegistry = new ComputerEnvironmentRegistry();
+  validationRegistry.register(adapter);
+  const [descriptor] = validationRegistry.descriptors();
+  if (!descriptor) throw new Error('registered adapter descriptor unavailable');
+  return snapshotAdapter(adapter, descriptor);
+}
+
 /**
  * Small environment-neutral composition root for computer-use programs.
  *
@@ -23,22 +47,30 @@ import {
  * Task execution deliberately requires callers to retain the returned runtime:
  * checkpoint/reconciliation state is part of the no-replay safety boundary and
  * must not be hidden behind a stateless run convenience.
+ *
+ * Each runtime receives a registry snapshot of the adapters registered when the
+ * runtime is constructed. Later composition mutations therefore cannot silently
+ * rebind an in-flight task to another adapter instance with the same identity.
  */
 export class ComputerRuntimeComposition {
-  readonly registry: ComputerEnvironmentRegistry;
+  private readonly registry = new ComputerEnvironmentRegistry();
+  private readonly runtimeAdapters = new Map<string, ComputerEnvironmentAdapter>();
 
   constructor(adapters: readonly ComputerEnvironmentAdapter[] = []) {
-    this.registry = new ComputerEnvironmentRegistry();
-    for (const adapter of adapters) this.registry.register(adapter);
+    for (const adapter of adapters) this.register(adapter);
   }
 
   register(adapter: ComputerEnvironmentAdapter): this {
-    this.registry.register(adapter);
+    const snapshot = validateAndSnapshotAdapter(adapter);
+    this.registry.register(snapshot);
+    this.runtimeAdapters.set(snapshot.descriptor.id, snapshot);
     return this;
   }
 
   unregister(adapterId: string): boolean {
-    return this.registry.unregister(adapterId);
+    const removed = this.registry.unregister(adapterId);
+    if (removed) this.runtimeAdapters.delete(adapterId);
+    return removed;
   }
 
   descriptors(): ComputerEnvironmentAdapterDescriptor[] {
@@ -57,7 +89,9 @@ export class ComputerRuntimeComposition {
     program: ComputerTaskProgram,
     options: ComputerTaskRuntimeOptions,
   ): ComputerTaskRuntime {
-    return new ComputerTaskRuntime(program, this.registry, options);
+    const runtimeRegistry = new ComputerEnvironmentRegistry();
+    for (const adapter of this.runtimeAdapters.values()) runtimeRegistry.register(adapter);
+    return new ComputerTaskRuntime(program, runtimeRegistry, options);
   }
 }
 
