@@ -5,7 +5,7 @@ export const COMPUTER_TASK_CHECKPOINT_VERSION = 1 as const;
 export const COMPUTER_TASK_CHECKPOINT_FORMAT = 'browser-automation/computer-task-checkpoint' as const;
 export const COMPUTER_TASK_CHECKPOINT_MAX_BYTES = 64 * 1024;
 
-export type ComputerTaskActionCheckpointState = 'not-started' | 'completed' | 'unknown-dispatch';
+export type ComputerTaskActionCheckpointState = 'not-started' | 'completed' | 'dispatched-unverified' | 'unknown-dispatch';
 
 export interface ComputerTaskActionCheckpoint {
   stepId: string;
@@ -109,7 +109,7 @@ export function createComputerTaskCheckpoint(options: {
   const actions = entries.map(([stepId, state]) => ({ stepId, state })).sort((a, b) => a.stepId < b.stepId ? -1 : a.stepId > b.stepId ? 1 : 0);
   for (const action of actions) {
     if (!boundedIdentifier(action.stepId, 128)) throw new Error('computer task checkpoint action stepId is invalid');
-    if (!['not-started', 'completed', 'unknown-dispatch'].includes(action.state)) {
+    if (!['not-started', 'completed', 'dispatched-unverified', 'unknown-dispatch'].includes(action.state)) {
       throw new Error('computer task checkpoint action state is invalid');
     }
   }
@@ -139,7 +139,7 @@ function validateCheckpoint(value: unknown): asserts value is ComputerTaskCheckp
   if (!Array.isArray(checkpoint.actions) || checkpoint.actions.length > 512) throw new Error('invalid computer task checkpoint actions');
   const seen = new Set<string>();
   for (const action of checkpoint.actions) {
-    if (!boundedIdentifier(action?.stepId, 128) || !['not-started', 'completed', 'unknown-dispatch'].includes(action.state) || seen.has(action.stepId)) {
+    if (!boundedIdentifier(action?.stepId, 128) || !['not-started', 'completed', 'dispatched-unverified', 'unknown-dispatch'].includes(action.state) || seen.has(action.stepId)) {
       throw new Error('invalid computer task checkpoint action entry');
     }
     seen.add(action.stepId);
