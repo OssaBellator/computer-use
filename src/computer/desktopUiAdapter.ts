@@ -32,6 +32,9 @@ const MAX_VISUAL_TOKEN_BYTES = 256;
 const MAX_MEDIA_TYPE_BYTES = 128;
 const MAX_NATIVE_ID_BYTES = 256;
 const MAX_TITLE_BYTES = 4_096;
+const MAX_CONTROL_ID_BYTES = 256;
+const MAX_ACCESSIBILITY_ROLE_BYTES = 256;
+const MAX_ACCESSIBILITY_TEXT_BYTES = 4_096;
 const MAX_RECT_MAGNITUDE = 1_000_000;
 const MAX_VISUAL_DIMENSION = 100_000;
 const MAX_BACKEND_EVIDENCE = 16;
@@ -133,6 +136,16 @@ function cloneBounds(value: unknown): DesktopWindowSurface['bounds'] {
   if (!boundedFinite(raw.x, MAX_RECT_MAGNITUDE) || !boundedFinite(raw.y, MAX_RECT_MAGNITUDE) ||
       !boundedFinite(raw.width, MAX_RECT_MAGNITUDE) || !boundedFinite(raw.height, MAX_RECT_MAGNITUDE) ||
       raw.width < 0 || raw.height < 0) throw new Error('desktop window bounds invalid');
+  return Object.freeze({x:raw.x,y:raw.y,width:raw.width,height:raw.height});
+}
+
+function cloneAccessibilityBounds(value: unknown): DesktopControlEntity['bounds'] {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') throw new Error('desktop accessibility bounds invalid');
+  const raw = value as {x?:unknown;y?:unknown;width?:unknown;height?:unknown};
+  if (!boundedFinite(raw.x, MAX_RECT_MAGNITUDE) || !boundedFinite(raw.y, MAX_RECT_MAGNITUDE) ||
+      !boundedFinite(raw.width, MAX_RECT_MAGNITUDE) || !boundedFinite(raw.height, MAX_RECT_MAGNITUDE) ||
+      raw.width < 0 || raw.height < 0) throw new Error('desktop accessibility bounds invalid');
   return Object.freeze({x:raw.x,y:raw.y,width:raw.width,height:raw.height});
 }
 
@@ -298,25 +311,52 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   private controlRef(window: DesktopWindowSurface, controlId: string): ComputerEntityRef {
-    return { adapterId:this.descriptor.id, environment:'desktop-ui', kind:'ui-control', entityId:controlId, surfaceId:window.nativeWindowId, generation:window.generation };
+    return Object.freeze({ adapterId:this.descriptor.id, environment:'desktop-ui', kind:'ui-control', entityId:controlId, surfaceId:window.nativeWindowId, generation:window.generation });
   }
 
   private boundTree(window: DesktopWindowSurface, root: DesktopAccessibilityNode, l: Required<ComputerObservationLimits>): { root?:DesktopControlEntity; itemCount:number; textBytes:number; truncated:boolean } {
     let itemCount = 0;
     let bytes = 0;
     let truncated = false;
-    const visit = (node:DesktopAccessibilityNode, depth:number): DesktopControlEntity | undefined => {
+    const active = new Set<object>();
+    const visit = (value: unknown, depth:number): DesktopControlEntity | undefined => {
       if (itemCount >= l.maxItems || depth > l.maxDepth) { truncated = true; return undefined; }
-      const ownBytes = textBytes(node.controlId) + textBytes(node.role) + textBytes(node.name) + textBytes(node.value);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('desktop accessibility node invalid');
+      if (active.has(value)) throw new Error('desktop accessibility cycle invalid');
+      const node = value as {controlId?:unknown;role?:unknown;name?:unknown;value?:unknown;enabled?:unknown;focused?:unknown;bounds?:unknown;children?:unknown};
+      if (!validBoundedString(node.controlId, MAX_CONTROL_ID_BYTES)) throw new Error('desktop accessibility node invalid');
+      if (node.role !== undefined && !validBoundedString(node.role, MAX_ACCESSIBILITY_ROLE_BYTES, true)) throw new Error('desktop accessibility node invalid');
+      if (node.name !== undefined && !validBoundedString(node.name, MAX_ACCESSIBILITY_TEXT_BYTES, true)) throw new Error('desktop accessibility node invalid');
+      if (node.value !== undefined && !validBoundedString(node.value, MAX_ACCESSIBILITY_TEXT_BYTES, true)) throw new Error('desktop accessibility node invalid');
+      if (node.enabled !== undefined && typeof node.enabled !== 'boolean') throw new Error('desktop accessibility node invalid');
+      if (node.focused !== undefined && typeof node.focused !== 'boolean') throw new Error('desktop accessibility node invalid');
+      if (node.children !== undefined && !Array.isArray(node.children)) throw new Error('desktop accessibility node invalid');
+      const bounds = cloneAccessibilityBounds(node.bounds);
+      const ownBytes = textBytes(node.controlId) + textBytes(node.role as string|undefined) + textBytes(node.name as string|undefined) + textBytes(node.value as string|undefined);
       if (bytes + ownBytes > l.maxTextBytes) { truncated = true; return undefined; }
-      itemCount += 1; bytes += ownBytes;
+      itemCount += 1;
+      bytes += ownBytes;
+      active.add(value);
       const children: DesktopControlEntity[] = [];
-      for (const child of node.children ?? []) {
-        const bounded = visit(child, depth + 1);
-        if (bounded) children.push(bounded);
-        if (truncated && itemCount >= l.maxItems) break;
+      try {
+        for (const child of node.children ?? []) {
+          const bounded = visit(child, depth + 1);
+          if (bounded) children.push(bounded);
+          if (truncated && itemCount >= l.maxItems) break;
+        }
+      } finally {
+        active.delete(value);
       }
-      return { entity:this.controlRef(window,node.controlId), role:node.role, name:node.name, value:node.value, enabled:node.enabled, focused:node.focused, bounds:node.bounds, children };
+      return Object.freeze({
+        entity:this.controlRef(window,node.controlId),
+        ...(node.role !== undefined ? {role:node.role as string} : {}),
+        ...(node.name !== undefined ? {name:node.name as string} : {}),
+        ...(node.value !== undefined ? {value:node.value as string} : {}),
+        ...(node.enabled !== undefined ? {enabled:node.enabled} : {}),
+        ...(node.focused !== undefined ? {focused:node.focused} : {}),
+        ...(bounds ? {bounds} : {}),
+        children:Object.freeze(children),
+      });
     };
     return { root: visit(root, 0), itemCount, textBytes:bytes, truncated };
   }
@@ -349,11 +389,11 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop accessibility generation mismatch');
     if (!validReasonCode(raw.reason)) throw new Error('desktop accessibility reason code invalid');
     if (raw.status !== 'available' || !raw.root) {
-      const data:DesktopSemanticObservationData = { status:raw.status, window, itemCount:0, textBytes:0, reason:raw.reason };
+      const data:DesktopSemanticObservationData = Object.freeze({ status:raw.status, window, itemCount:0, textBytes:0, reason:raw.reason });
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, target:request.target, data };
     }
     const bounded = this.boundTree(window, raw.root, l);
-    const data:DesktopSemanticObservationData = { status:'available', window, root:bounded.root, itemCount:bounded.itemCount, textBytes:bounded.textBytes };
+    const data:DesktopSemanticObservationData = Object.freeze({ status:'available', window, ...(bounded.root ? {root:bounded.root} : {}), itemCount:bounded.itemCount, textBytes:bounded.textBytes });
     return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, surface:window.surface, target:request.target, data };
   }
 
@@ -362,10 +402,18 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     const raw = await this.backend.observeAccessibility({nativeWindowId:window.nativeWindowId,generation:window.generation}, DEFAULT_LIMITS);
     if (raw.window.nativeWindowId !== window.nativeWindowId || raw.window.generation !== window.generation) return false;
     if (raw.status !== 'available' || !raw.root) return false;
-    const queue = [raw.root];
+    const queue: unknown[] = [raw.root];
+    const seenNodes = new Set<object>();
     let seen = 0;
     while (queue.length && seen < DEFAULT_LIMITS.maxItems) {
-      const node = queue.shift()!; seen += 1;
+      const value = queue.shift();
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('desktop accessibility node invalid');
+      if (seenNodes.has(value)) throw new Error('desktop accessibility cycle invalid');
+      seenNodes.add(value);
+      const node = value as {controlId?:unknown;children?:unknown};
+      if (!validBoundedString(node.controlId, MAX_CONTROL_ID_BYTES)) throw new Error('desktop accessibility node invalid');
+      if (node.children !== undefined && !Array.isArray(node.children)) throw new Error('desktop accessibility node invalid');
+      seen += 1;
       if (node.controlId === target.entityId) return true;
       queue.push(...(node.children ?? []));
     }
