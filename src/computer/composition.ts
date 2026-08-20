@@ -10,7 +10,6 @@ import { ComputerEnvironmentRegistry } from './environmentRegistry.js';
 import type { ComputerTaskProgram } from './computerTask.js';
 import {
   ComputerTaskRuntime,
-  type ComputerTaskRunResult,
   type ComputerTaskRuntimeOptions,
 } from './computerTaskRuntime.js';
 
@@ -20,6 +19,10 @@ import {
  * Adapters remain peer capabilities and keep their own identity, observation,
  * action, approval, verification, and backend semantics. This helper only owns
  * neutral registration/routing and construction of the neutral task runtime.
+ *
+ * Task execution deliberately requires callers to retain the returned runtime:
+ * checkpoint/reconciliation state is part of the no-replay safety boundary and
+ * must not be hidden behind a stateless run convenience.
  */
 export class ComputerRuntimeComposition {
   readonly registry: ComputerEnvironmentRegistry;
@@ -55,13 +58,6 @@ export class ComputerRuntimeComposition {
     options: ComputerTaskRuntimeOptions,
   ): ComputerTaskRuntime {
     return new ComputerTaskRuntime(program, this.registry, options);
-  }
-
-  runTask(
-    program: ComputerTaskProgram,
-    options: ComputerTaskRuntimeOptions,
-  ): Promise<ComputerTaskRunResult> {
-    return this.createTaskRuntime(program, options).run();
   }
 }
 
