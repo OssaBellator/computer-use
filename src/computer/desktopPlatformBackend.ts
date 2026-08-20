@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ComputerEffectClass, ComputerObservationLimits } from './environmentAdapter.js';
 import type {
   DesktopAbsolutePointerInput,
@@ -21,7 +21,7 @@ export type DesktopPlatformKind = 'windows-uia' | 'macos-accessibility' | 'linux
 export interface PlatformDesktopWindow {
   /** OS/backend locator. It may be recycled and therefore is never sufficient identity by itself. */
   nativeId: string;
-  /** Stable token for this exact live window instance. Changes whenever nativeId is replaced/reused. */
+  /** Stable token for this exact live window instance. Changes whenever nativeId is replaced/reused and MUST NOT be reused for another instance. */
   instanceToken: string;
   applicationId?: string;
   processId?: string;
@@ -34,7 +34,7 @@ export interface PlatformDesktopWindow {
 export interface PlatformDesktopControl {
   /** OS/backend locator. It may be recycled. */
   nativeId: string;
-  /** Stable token for this exact live control instance. */
+  /** Stable token for this exact live control instance; it MUST NOT be reused for a distinct replacement instance. */
   instanceToken: string;
   role?: string;
   name?: string;
@@ -130,6 +130,7 @@ function freezeWindow(value:PlatformDesktopWindow):PlatformDesktopWindow {
 export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
   readonly id:string;
   readonly supportsRelativePointer:boolean;
+  private readonly identityNamespace = randomUUID();
   private readonly windowsByNative = new Map<string,WindowLease>();
   private readonly windowsByPublic = new Map<string,WindowLease>();
   private readonly controls = new Map<string,Map<string,ControlLease>>();
@@ -143,7 +144,7 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
     const snapshot = freezeWindow(raw);
     const previous = this.windowsByNative.get(snapshot.nativeId);
     const generation = previous === undefined ? 0 : previous.instanceToken === snapshot.instanceToken ? previous.generation : previous.generation + 1;
-    const publicId = previous?.publicId ?? opaque('window', `${this.bridge.platform}\0${snapshot.nativeId}`);
+    const publicId = previous?.publicId ?? opaque('window', `${this.identityNamespace}\0${this.bridge.platform}\0${snapshot.nativeId}`);
     const lease = Object.freeze({publicId,nativeId:snapshot.nativeId,instanceToken:snapshot.instanceToken,generation,snapshot});
     this.windowsByNative.set(snapshot.nativeId,lease);
     this.windowsByPublic.set(publicId,lease);
@@ -195,7 +196,7 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
     const serial = previous === undefined ? 0 : previous.instanceToken === raw.instanceToken ? previous.serial : previous.serial + 1;
     const publicId = previous && previous.instanceToken === raw.instanceToken
       ? previous.publicId
-      : opaque('control', `${key}\0${raw.nativeId}\0${serial}\0${raw.instanceToken}`);
+      : opaque('control', `${this.identityNamespace}\0${key}\0${raw.nativeId}\0${serial}\0${raw.instanceToken}`);
     map.set(raw.nativeId,Object.freeze({publicId,nativeId:String(raw.nativeId),instanceToken:String(raw.instanceToken),serial}));
     const children = raw.children?.map((child)=>this.leaseControl(window,child));
     return Object.freeze({
