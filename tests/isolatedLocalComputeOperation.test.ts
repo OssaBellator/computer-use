@@ -26,6 +26,39 @@ test('preferred isolated adapter construction accepts and snapshots file-backed 
   assert.equal(adapter.descriptor.id, 'factory-test');
 });
 
+test('isolated registration snapshot rejects accessors without invoking them', () => {
+  let getterCalled = false;
+  const definition: Record<string, unknown> = {
+    effect: 'pure-read-only',
+    moduleUrl,
+    exportName: 'echo',
+  };
+  Object.defineProperty(definition, 'id', {
+    enumerable: true,
+    get() { getterCalled = true; return 'test.echo'; },
+  });
+  assert.throws(
+    () => createIsolatedLocalComputeAdapter({ id: 'factory-test', operations: [definition as any] }),
+    /invalid isolated local compute operation registration/,
+  );
+  assert.equal(getterCalled, false);
+});
+
+test('isolated registration snapshot rejects hidden authority-bearing own keys', () => {
+  const withExtra = { id: 'test.echo', effect: 'pure-read-only' as const, moduleUrl, exportName: 'echo', command: 'sh -c whoami' };
+  assert.throws(
+    () => createIsolatedLocalComputeAdapter({ id: 'factory-test', operations: [withExtra as any] }),
+    /invalid isolated local compute operation registration/,
+  );
+
+  const withSymbol: any = { id: 'test.echo', effect: 'pure-read-only', moduleUrl, exportName: 'echo' };
+  withSymbol[Symbol('hidden')] = 'authority';
+  assert.throws(
+    () => createIsolatedLocalComputeAdapter({ id: 'factory-test', operations: [withSymbol] }),
+    /invalid isolated local compute operation registration/,
+  );
+});
+
 test('isolated operation type helper preserves the registered callback', async () => {
   const operation = defineIsolatedLocalComputeOperation((input: LocalComputeJson, context) => {
     context.diagnostic('test.operation-called');
