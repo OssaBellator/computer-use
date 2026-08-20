@@ -5,6 +5,7 @@ import { CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE } from '../src/capabilit
 import {
   CURRENT_COMPUTER_USE_CAPABILITY_PROFILE,
   DESKTOP_UI_CAPABILITY_PROFILE,
+  DOCUMENT_MODEL_CAPABILITY_PROFILE,
   FILESYSTEM_CAPABILITY_PROFILE,
   HIGH_RISK_COMPUTER_CAPABILITIES,
   LOCAL_COMPUTE_CAPABILITY_PROFILE,
@@ -30,6 +31,8 @@ test('historical standalone Chromium 0.43 profile remains stable and browser-sco
   assert.equal(supportOfBrowser('rich-text-editing'), 'partial');
   assert.equal(supportOfBrowser('long-running-task-checkpointing'), 'partial');
   assert.equal(supportOfBrowser('realtime-control'), 'supported');
+  assert.equal(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE.id, 'computer-use-integrated-1.0');
+  assert.equal(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE.version, '1.0');
   assert.notEqual(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE.id, CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE.id);
 });
 
@@ -44,6 +47,21 @@ test('integrated profile validates as complete with explicit high-risk states', 
   for (const capability of HIGH_RISK_COMPUTER_CAPABILITIES) {
     assert.ok(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE.capabilities[capability]);
   }
+});
+
+test('high-risk capability omission is mechanically rejected', () => {
+  const profile: ComputerUseCapabilityProfile = {
+    id: 'high-risk-omission-fixture',
+    version: '1.0',
+    kind: 'component',
+    capabilities: {
+      'storage-partitioning': { status: 'unsupported', scopes: ['system-device'] },
+    },
+  };
+  const errors = validateComputerUseCapabilityProfile(profile, { requireExplicitHighRisk: true });
+  assert.ok(errors.includes('high-risk-capability.not-explicit:file-delete'));
+  assert.ok(errors.includes('high-risk-capability.not-explicit:process-control'));
+  assert.ok(!errors.includes('high-risk-capability.not-explicit:storage-partitioning'));
 });
 
 test('filesystem read is implemented without claiming filesystem mutation', () => {
@@ -74,6 +92,8 @@ test('backend contracts are not promoted to production support', () => {
 
 test('remote dispatch and semantic document foundations do not overclaim application effects', () => {
   assert.equal(computerCapabilityImplementationState(REMOTE_SESSION_CAPABILITY_PROFILE, 'side-effect-verification').status, 'partial');
+  assert.equal(computerCapabilityImplementationState(DOCUMENT_MODEL_CAPABILITY_PROFILE, 'document-observation').status, 'implemented-foundation');
+  assert.equal(computerCapabilityImplementationState(DOCUMENT_MODEL_CAPABILITY_PROFILE, 'document-editing').status, 'implemented-foundation');
   assert.equal(computerCapabilityImplementationState(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE, 'spreadsheet-editing').status, 'unsupported');
   assert.equal(computerCapabilityImplementationState(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE, 'presentation-editing').status, 'unsupported');
   assert.equal(computerCapabilityImplementationState(CURRENT_COMPUTER_USE_CAPABILITY_PROFILE, 'software-installation').status, 'unsupported');
