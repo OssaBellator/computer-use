@@ -23,6 +23,8 @@ export interface NativeDesktopBridgeCommand {
   env?:Readonly<Record<string,string>>;
   maxResponseBytes?:number;
   timeoutMs?:number;
+  /** Advertise only when the configured helper really implements native relative motion. */
+  supportsRelativePointer?:boolean;
 }
 
 export interface DesktopBridgeExecutor {
@@ -222,12 +224,15 @@ export class NativeJsonDesktopPlatformBridge implements DesktopPlatformBridge {
   }
 }
 
+function helperOptions(command:NativeDesktopBridgeCommand) {
+  return {supportsRelativePointer:command.supportsRelativePointer === true,maxResponseBytes:command.maxResponseBytes,timeoutMs:command.timeoutMs};
+}
 export function windowsUiAutomationBridge(command:NativeDesktopBridgeCommand,executor:DesktopBridgeExecutor=new JsonProcessDesktopBridgeExecutor(command)) {
-  return new NativeJsonDesktopPlatformBridge('windows-uia','windows-uia',executor,{supportsRelativePointer:true,maxResponseBytes:command.maxResponseBytes,timeoutMs:command.timeoutMs});
+  return new NativeJsonDesktopPlatformBridge('windows-uia','windows-uia',executor,helperOptions(command));
 }
 export function macOsAccessibilityBridge(command:NativeDesktopBridgeCommand,executor:DesktopBridgeExecutor=new JsonProcessDesktopBridgeExecutor(command)) {
-  return new NativeJsonDesktopPlatformBridge('macos-accessibility','macos-accessibility',executor,{supportsRelativePointer:true,maxResponseBytes:command.maxResponseBytes,timeoutMs:command.timeoutMs});
+  return new NativeJsonDesktopPlatformBridge('macos-accessibility','macos-accessibility',executor,helperOptions(command));
 }
 export function linuxAtSpiBridge(command:NativeDesktopBridgeCommand,executor:DesktopBridgeExecutor=new JsonProcessDesktopBridgeExecutor(command)) {
-  return new NativeJsonDesktopPlatformBridge('linux-atspi','linux-atspi',executor,{supportsRelativePointer:true,maxResponseBytes:command.maxResponseBytes,timeoutMs:command.timeoutMs});
+  return new NativeJsonDesktopPlatformBridge('linux-atspi','linux-atspi',executor,helperOptions(command));
 }
