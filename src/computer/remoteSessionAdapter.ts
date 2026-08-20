@@ -56,21 +56,9 @@ type ObservationLease = Readonly<{ connection: Readonly<RemoteSessionConnection>
 function utf8Bytes(value: string): number { return new TextEncoder().encode(value).byteLength; }
 function bounded(value: string, max = MAX_ID_BYTES): boolean { return value.length > 0 && utf8Bytes(value) <= max && !/[\r\n\0]/.test(value); }
 function clampLimit(value: number | undefined, fallback: number, max: number): number { return value === undefined ? fallback : Math.min(value, max); }
-function plainRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const descriptor of Object.values(descriptors)) if (!('value' in descriptor)) return undefined;
-  return value as Record<string, unknown>;
-}
 function ownData(record: Record<string, unknown>, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(record, key);
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
-}
-function exactOwnKeys(record: Record<string, unknown>, allowed: readonly string[], required: readonly string[]): boolean {
-  const keys = Reflect.ownKeys(record);
-  return keys.every((key) => typeof key === 'string' && allowed.includes(key)) && required.every((key) => Object.prototype.hasOwnProperty.call(record, key));
 }
 function snapshotWhitelistedRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -231,8 +219,8 @@ function safeDisplayFrame(frame:Readonly<RemoteDisplayFrame>,maxPixels:number,ma
 function safeEvidenceCode(value: unknown): string { return typeof value === 'string' && MACHINE_EVIDENCE_PATTERN.test(value) ? value : 'remote-backend-evidence-invalid'; }
 function truncateUtf8(value:string,maxBytes:number):{value:string;truncated:boolean}{let used=0,out='';for(const ch of value){const n=utf8Bytes(ch);if(used+n>maxBytes)return{value:out,truncated:true};out+=ch;used+=n;}return{value:out,truncated:false};}
 function snapshotCommandResult(value: unknown): Readonly<RemoteCommandResult> | undefined {
-  const record=plainRecord(value);if(!record||!exactOwnKeys(record,['exitCode','stdout','stderr','stdoutTruncated','stderrTruncated'],['exitCode']))return undefined;
-  const exitCode=ownData(record,'exitCode'),rawStdout=ownData(record,'stdout'),rawStderr=ownData(record,'stderr'),rawStdoutTruncated=ownData(record,'stdoutTruncated'),rawStderrTruncated=ownData(record,'stderrTruncated');
+  const record=snapshotWhitelistedRecord(value,['exitCode','stdout','stderr','stdoutTruncated','stderrTruncated'],['exitCode']);if(!record)return undefined;
+  const exitCode=record.exitCode,rawStdout=record.stdout,rawStderr=record.stderr,rawStdoutTruncated=record.stdoutTruncated,rawStderrTruncated=record.stderrTruncated;
   if(exitCode!==null&&(!Number.isSafeInteger(exitCode)))return undefined;
   if(rawStdout!==undefined&&typeof rawStdout!=='string')return undefined;if(rawStderr!==undefined&&typeof rawStderr!=='string')return undefined;
   if(rawStdoutTruncated!==undefined&&typeof rawStdoutTruncated!=='boolean')return undefined;if(rawStderrTruncated!==undefined&&typeof rawStderrTruncated!=='boolean')return undefined;
@@ -240,19 +228,20 @@ function snapshotCommandResult(value: unknown): Readonly<RemoteCommandResult> | 
   return Object.freeze({exitCode:exitCode as number|null,...(stdout?{stdout:stdout.value,stdoutTruncated:stdout.truncated||rawStdoutTruncated===true}:{}),...(stderr?{stderr:stderr.value,stderrTruncated:stderr.truncated||rawStderrTruncated===true}:{})});
 }
 function snapshotDispatchOutcome<T>(value: unknown, snapshotValue?: (value: unknown)=>T|undefined): Readonly<RemoteDispatchOutcome<T>> | undefined {
-  const record=plainRecord(value);if(!record)return undefined;const dispatch=ownData(record,'dispatch'),status=ownData(record,'status'),evidence=ownData(record,'evidence'),rawValue=ownData(record,'value');
+  const record=snapshotWhitelistedRecord(value,['dispatch','status','evidence','value'],['dispatch','status']);if(!record)return undefined;
+  const dispatch=record.dispatch,status=record.status,evidence=record.evidence,rawValue=record.value,has=(key:string)=>Object.prototype.hasOwnProperty.call(record,key);
   if(dispatch==='not-dispatched'){
-    if(status!=='failed'||!exactOwnKeys(record,['dispatch','status','evidence'],['dispatch','status','evidence'])||typeof evidence!=='string')return undefined;
+    if(status!=='failed'||!has('evidence')||has('value')||typeof evidence!=='string')return undefined;
     return Object.freeze({dispatch,status,evidence});
   }
   if(dispatch==='unknown'){
-    if(status!=='unknown'||!exactOwnKeys(record,['dispatch','status','evidence'],['dispatch','status','evidence'])||typeof evidence!=='string')return undefined;
+    if(status!=='unknown'||!has('evidence')||has('value')||typeof evidence!=='string')return undefined;
     return Object.freeze({dispatch,status,evidence});
   }
   if(dispatch==='dispatched-once'){
-    if(status!=='completed'||!exactOwnKeys(record,['dispatch','status','value','evidence'],['dispatch','status'])||(evidence!==undefined&&typeof evidence!=='string'))return undefined;
-    let snappedValue:T|undefined;if(rawValue!==undefined){if(!snapshotValue)return undefined;snappedValue=snapshotValue(rawValue);if(snappedValue===undefined)return undefined;}
-    return Object.freeze({dispatch,status,...(snappedValue!==undefined?{value:snappedValue}:{}),...(evidence!==undefined?{evidence:evidence as string}:{})});
+    if(status!=='completed'||(has('evidence')&&typeof evidence!=='string'))return undefined;
+    let snappedValue:T|undefined;if(has('value')){if(!snapshotValue)return undefined;snappedValue=snapshotValue(rawValue);if(snappedValue===undefined)return undefined;}
+    return Object.freeze({dispatch,status,...(has('value')?{value:snappedValue as T}:{}),...(has('evidence')?{evidence:evidence as string}:{})});
   }
   return undefined;
 }
