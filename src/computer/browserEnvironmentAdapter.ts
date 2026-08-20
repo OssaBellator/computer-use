@@ -444,50 +444,59 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
     const errors = validateComputerActionRequest(request, this.descriptor);
     if (errors.length) return failedPreDispatch('browser.request.invalid');
-    if (!this.descriptor.capabilities.includes(request.capability)) return failedPreDispatch('browser.capability.unsupported', 'unsupported');
-    if (request.capability.endsWith('.observe')) return request.effect === 'observe-only' && request.idempotency === 'read-only'
+    const authority: ComputerActionRequest = {
+      adapterId: request.adapterId,
+      actionId: request.actionId,
+      capability: request.capability,
+      effect: request.effect,
+      idempotency: request.idempotency,
+      ...(request.target ? { target: { ...request.target } } : {}),
+      ...(request.payload !== undefined ? { payload: request.payload } : {}),
+    };
+    if (!this.descriptor.capabilities.includes(authority.capability)) return failedPreDispatch('browser.capability.unsupported', 'unsupported');
+    if (authority.capability.endsWith('.observe')) return authority.effect === 'observe-only' && authority.idempotency === 'read-only'
       ? { status: 'completed', dispatch: 'not-dispatched', verification: 'verified', evidence: ['browser.verified-noop'] }
       : failedPreDispatch('browser.effect.invalid');
-    if (request.effect === 'observe-only' || request.idempotency === 'read-only') return failedPreDispatch('browser.effect.invalid');
+    if (authority.effect === 'observe-only' || authority.idempotency === 'read-only') return failedPreDispatch('browser.effect.invalid');
 
-    if (request.capability === 'browser.activate') {
-      const payload = validateActivatePayload(request.payload);
+    if (authority.capability === 'browser.activate') {
+      const payload = validateActivatePayload(authority.payload);
       if (!payload) return failedPreDispatch('browser.payload.invalid');
-      const resolved = await this.resolveEntity(request.target);
+      const resolved = await this.resolveEntity(authority.target);
       if (!resolved) return failedPreDispatch('browser.target.stale');
       if (resolved.node.backendNodeId === undefined) return failedPreDispatch('browser.target.identity-unavailable');
-      try { return await this.runCommitmentAwareAction(request, payload, resolved); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
+      try { return await this.runCommitmentAwareAction(authority, payload, resolved); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
-    if (request.capability === 'browser.press-key') {
-      if (request.target) return failedPreDispatch('browser.target.unexpected');
-      const payload = validatePressKeyPayload(request.payload);
+    if (authority.capability === 'browser.press-key') {
+      if (authority.target) return failedPreDispatch('browser.target.unexpected');
+      const payload = validatePressKeyPayload(authority.payload);
       if (!payload) return failedPreDispatch('browser.payload.invalid');
-      try { return await this.runCommitmentAwareAction(request, payload); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
+      try { return await this.runCommitmentAwareAction(authority, payload); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
-    if (request.effect !== 'local-reversible') return failedPreDispatch('browser.effect.unsupported');
+    if (authority.effect !== 'local-reversible') return failedPreDispatch('browser.effect.unsupported');
 
     let invoked = false;
     try {
-      if (request.capability === 'browser.hover') {
-        const resolved = await this.resolveEntity(request.target);
+      if (authority.capability === 'browser.hover') {
+        const resolved = await this.resolveEntity(authority.target);
         if (!resolved || !(await this.entityIdentityCurrent(resolved))) return failedPreDispatch('browser.target.stale');
         invoked = true;
         const result = await this.runtime.hover?.({ backendNodeId: resolved.node.backendNodeId, frameId: resolved.node.frameId }, { requireUnambiguous: true, autoReveal: true });
         if (!result) return unknownAfterInvocation('browser.hover.unsupported-after-invocation');
         return result.status === 'verified' ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] } : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
-      if (request.capability === 'browser.type') {
-        const payload = validateTypePayload(request.payload);
+      if (authority.capability === 'browser.type') {
+        const payload = validateTypePayload(authority.payload);
         if (!payload) return failedPreDispatch('browser.payload.invalid');
-        const resolved = await this.resolveEntity(request.target);
+        const resolved = await this.resolveEntity(authority.target);
         if (!resolved || !(await this.entityIdentityCurrent(resolved))) return failedPreDispatch('browser.target.stale');
         invoked = true;
         const result = await this.runtime.typeInto({ backendNodeId: resolved.node.backendNodeId, frameId: resolved.node.frameId }, payload.text, { requireUnambiguous: true, autoReveal: true, delayMs: payload.delayMs, expectedValue: payload.expectedValue });
         return result.status === 'verified' ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] } : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
-      if (request.capability === 'browser.scroll-viewport') {
-        if (request.target) return failedPreDispatch('browser.target.unexpected');
-        const payload = validateScrollPayload(request.payload);
+      if (authority.capability === 'browser.scroll-viewport') {
+        if (authority.target) return failedPreDispatch('browser.target.unexpected');
+        const payload = validateScrollPayload(authority.payload);
         if (!payload) return failedPreDispatch('browser.payload.invalid');
         invoked = true;
         const result = await this.runtime.scrollViewport?.({ x: payload.deltaX ?? 0, y: payload.deltaY ?? 0 });
