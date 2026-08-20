@@ -223,3 +223,24 @@ test('generic evidence never contains command output or secrets', async () => {
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test('unacknowledged spawn failure stays unknown without an unhandled child error', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'));
+    const result = await adapter.act(argvRequest(cwd, { executable: join(cwd, 'definitely-missing-executable') }));
+    assert.equal(result.dispatch, 'unknown');
+    assert.equal(result.status, 'unknown');
+  } finally {
+    await new Promise((resolve) => setImmediate(resolve));
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('terminal observation exposes a generation-aware session entity', async () => {
+  const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'));
+  const observation = await adapter.observe({ adapterId: 'terminal:test', channel: 'terminal' });
+  const data = observation.data as { session: { kind: string; generation?: number } };
+  assert.equal(data.session.kind, 'terminal-session');
+  assert.equal(data.session.generation, 0);
+});
