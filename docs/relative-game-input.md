@@ -44,7 +44,7 @@ Held keys and buttons still use the existing state-diff semantics, so a game can
 
 Relative coordinate accumulation does not by itself prove that a page owns pointer lock. For interactions that require lock, wrap the existing input with `guardRelativePointerInput()` and a `PointerLockController`. Required mode suppresses the delta and throws before dispatch when the observed lock is absent or belongs to the wrong frame/element/renderer. Preferred mode suppresses the delta and requires an explicit degradation callback; it never silently substitutes an absolute move.
 
-The CDP observer resolves `document.pointerLockElement` to browser backend identity and can associate it with frame/target and game-region generation. Separate pointer-capture observation uses `hasPointerCapture(pointerId)`. See [`pointer-lock-lifecycle.md`](pointer-lock-lifecycle.md) for the state machines, bounded recovery hooks, and lifecycle signals.
+The CDP observer resolves `document.pointerLockElement` to browser backend identity and associates game-region generation only when the locking backend node matches the current leased game surface. Separate pointer-capture observation uses `hasPointerCapture(pointerId)`. See [`pointer-lock-lifecycle.md`](pointer-lock-lifecycle.md) for the state machines, bounded recovery hooks, and lifecycle signals.
 
 For ordinary interactions that intentionally do not require pointer lock, the original `movePointerBy()` path remains available. This preserves bounded relative-control windows and existing optional adapters without making Pointer Lock a universal requirement for every relative delta.
 

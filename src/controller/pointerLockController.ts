@@ -139,6 +139,7 @@ export class PointerLockController {
   noteTargetChange(): PointerLockSnapshot { return this.noteLoss('target-changed'); }
   noteEscape(): PointerLockSnapshot { return this.noteLoss('escape'); }
   noteFocusLoss(): PointerLockSnapshot { return this.noteLoss('focus-lost'); }
+  noteElementDetached(): PointerLockSnapshot { return this.noteLoss('element-detached'); }
 
   async acquire(options: PointerLockAcquireOptions): Promise<PointerLockAcquireResult> {
     const maxAttempts = boundedInteger('maxAttempts', options.maxAttempts ?? 1, 1, 4);
@@ -164,6 +165,7 @@ export class PointerLockController {
       }
 
       if (!requestRejected) {
+        let terminalObservation = false;
         for (let poll = 0; poll < pollsPerAttempt; poll += 1) {
           const state = await this.observe();
           observations += 1;
@@ -174,14 +176,18 @@ export class PointerLockController {
             if (pointerLockOwnerMatches(options.owner, state.owner)) {
               return { status: 'locked', attempts: attempt, observations, state };
             }
-            return { status: 'identity-mismatch', attempts: attempt, observations, state };
+            lastResult = { status: 'identity-mismatch', attempts: attempt, observations, state };
+            terminalObservation = true;
+            break;
           }
           if (poll + 1 < pollsPerAttempt && pollIntervalMs > 0) {
             await this.sleep(pollIntervalMs);
           }
         }
-        const state = this.lifecycle.markRequestFailed('request-timeout');
-        lastResult = { status: 'timed-out', attempts: attempt, observations, state };
+        if (!terminalObservation) {
+          const state = this.lifecycle.markRequestFailed('request-timeout');
+          lastResult = { status: 'timed-out', attempts: attempt, observations, state };
+        }
       }
 
       if (!lastResult) throw new Error('pointer-lock acquisition ended without a result');
@@ -200,7 +206,11 @@ export class PointerLockController {
     if (state.phase === 'locked' && pointerLockOwnerMatches(owner, state.owner)) {
       return { status: 'locked', state };
     }
-    if (!recovery) return { status: 'unavailable', state };
+    if (state.supported === false) return { status: 'unsupported', state };
+    const status = state.phase === 'locked' && !pointerLockOwnerMatches(owner, state.owner)
+      ? 'identity-mismatch' as const
+      : 'unavailable' as const;
+    if (!recovery) return { status, state };
     const acquired = await this.acquire({ ...recovery, owner });
     return { status: acquired.status, state: acquired.state };
   }
