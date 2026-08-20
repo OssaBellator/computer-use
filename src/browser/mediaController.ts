@@ -60,7 +60,6 @@ async function callOnNode(
   objectId: string,
   functionDeclaration: string,
   args: unknown[] = [],
-  userGesture = false,
 ): Promise<any> {
   const result = await session.send('Runtime.callFunctionOn', {
     objectId,
@@ -68,7 +67,6 @@ async function callOnNode(
     arguments: args.map((value) => ({ value })),
     awaitPromise: true,
     returnByValue: true,
-    userGesture,
     silent: true,
   });
   throwForException(result, 'Runtime.callFunctionOn');
@@ -151,7 +149,6 @@ async function controlMedia(
       objectId,
       MEDIA_CONTROL_FUNCTION,
       [action, expected],
-      action === 'play' || action === 'request-fullscreen',
     ) as ControlState;
     const verified = verify(action, state ?? {}, expected);
     return {
@@ -243,7 +240,6 @@ export class CdpMediaController {
         contextId,
         awaitPromise: true,
         returnByValue: true,
-        userGesture: true,
         silent: true,
       });
       throwForException(result, 'Runtime.evaluate');
