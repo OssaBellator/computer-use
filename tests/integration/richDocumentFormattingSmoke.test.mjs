@@ -31,7 +31,7 @@ test('rich document formatting observes mixed runs and verifies native formattin
     assert.ok(richText);
 
     await select(page.session, `(() => {
-      document.body.innerHTML = '<div id="editor" contenteditable="true"><p id="p">plain <strong>bold</strong> <em>italic</em> <u>under</u> <s>strike</s> <code>code</code> <a href="https://example.test/path">link</a> <span id="mono" style="font-family: ui-monospace">mono</span> <span id="locked" contenteditable="false">locked</span></p><p id="links"><a id="link-a" href="https://one.example/path">one</a><a id="link-b" href="https://two.example/path">two</a></p><h2 id="heading">Heading</h2><ul><li id="item">item</li></ul><div id="large"></div></div><div id="other" contenteditable="true">other</div>';
+      document.body.innerHTML = '<div id="editor" contenteditable="true"><p id="p">plain <strong>bold</strong> <em>italic</em> <u>under</u> <s>strike</s> <code>code</code> <a href="https://example.test/path">link</a> <span id="mono" style="font-family: ui-monospace">mono</span></p><p id="boundary"><span id="before-locked">before</span> <span id="locked" contenteditable="false">locked</span> <span id="after-locked">after</span></p><p id="links"><a id="link-a" href="https://one.example/path">one</a><a id="link-b" href="https://two.example/path">two</a></p><h2 id="heading">Heading</h2><ul><li id="item">item</li></ul><div id="large"></div></div><div id="other" contenteditable="true">other</div>';
       const large = document.querySelector('#large');
       for (let index = 0; index < 2100; index += 1) {
         const span = document.createElement('span');
@@ -176,6 +176,22 @@ test('rich document formatting observes mixed runs and verifies native formattin
     const lateSelection = await richText.observeFormatting();
     assert.equal(lateSelection?.states[0].complete, true);
     assert.equal(lateSelection?.states[0].summary.bold, 'off');
+
+    await select(page.session, `(() => {
+      const start = document.querySelector('#before-locked').firstChild;
+      const end = document.querySelector('#after-locked').firstChild;
+      const range = document.createRange();
+      range.setStart(start, 0);
+      range.setEnd(end, end.length);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.querySelector('#editor').focus();
+    })()`);
+    const crossedLocked = await richText.observeFormatting();
+    assert.equal(crossedLocked?.states[0].complete, false);
+    assert.equal(crossedLocked?.states[0].summary.bold, 'unknown');
+    assert.equal((await richText.setBold(true, { primaryModifier: 'Control' })).status, 'formatting-unobservable');
 
     await select(page.session, `(() => {
       const node = document.querySelector('#locked').firstChild;
