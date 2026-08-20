@@ -1,4 +1,10 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
+import type {
+  BrowserCommitmentConfidence,
+  BrowserCommitmentKind,
+  BrowserCommitmentStatus,
+  BrowserCommitmentSummary,
+} from '../browser/commitmentDetector.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
@@ -43,7 +49,55 @@ export interface TaskRuntimeEngine {
 export type TaskRunStatus = 'completed' | 'failed' | 'invalid-program' | 'missing-input' | 'budget-exhausted' | 'loop-detected' | 'stalled' | 'policy-blocked';
 export type TaskTraceOutcome = 'verified' | 'uploaded' | 'page-switched' | 'navigated' | 'history-navigated' | 'dialog-handled' | 'target-created' | 'target-closed' | 'failed' | 'exception' | 'asserted' | 'assertion-failed' | 'branch-then' | 'branch-else' | 'wait-satisfied' | 'wait-timeout' | 'completed' | 'completion-condition-failed' | 'policy-blocked';
 
-export interface TaskTraceEntry { index: number; stepId: string; kind: TaskStep['kind']; outcome: TaskTraceOutcome; nextStepId?: string; targetId?: string; actionStatus?: string; beforeFingerprint: string; afterFingerprint: string; browserStateChanged: boolean; visit: number; }
-export interface TaskApprovalContext { programName?: string; stepId: string; kind: 'activate' | 'hover' | 'type' | 'select-option' | 'upload' | 'press-key' | 'scroll-viewport' | 'switch-page' | 'navigate' | 'history' | 'handle-dialog' | 'open-tab' | 'close-latest-tab'; risk: Exclude<TaskRisk, 'observe'>; visit: number; }
-export interface TaskRuntimeOptions { maxSteps?: number; maxVisitsPerStep?: number; maxConsecutiveNoProgress?: number; requireUnambiguousTargets?: boolean; maxRisk?: TaskRisk; approve?: (context: TaskApprovalContext) => boolean | Promise<boolean>; onTrace?: (entry: TaskTraceEntry) => void | Promise<void>; waitPollIntervalMs?: number; waitMaxPolls?: number; }
-export interface TaskRunResult { status: TaskRunStatus; completed: boolean; finalStepId?: string; stepsExecuted: number; trace: TaskTraceEntry[]; validationErrors?: string[]; validationWarnings?: string[]; missingInputs?: string[]; }
+export interface TaskTraceEntry {
+  index: number;
+  stepId: string;
+  kind: TaskStep['kind'];
+  outcome: TaskTraceOutcome;
+  nextStepId?: string;
+  targetId?: string;
+  actionStatus?: string;
+  /** Non-sensitive commitment classification only; amount/counterparty remain in approval context. */
+  commitmentStatus?: BrowserCommitmentStatus;
+  commitmentKind?: BrowserCommitmentKind;
+  commitmentConfidence?: BrowserCommitmentConfidence;
+  beforeFingerprint: string;
+  afterFingerprint: string;
+  browserStateChanged: boolean;
+  visit: number;
+}
+
+export interface TaskApprovalContext {
+  programName?: string;
+  stepId: string;
+  kind: 'activate' | 'hover' | 'type' | 'select-option' | 'upload' | 'press-key' | 'scroll-viewport' | 'switch-page' | 'navigate' | 'history' | 'handle-dialog' | 'open-tab' | 'close-latest-tab';
+  risk: Exclude<TaskRisk, 'observe'>;
+  visit: number;
+  /** Present when the runtime inferred a page-side commitment immediately before the action. */
+  commitment?: BrowserCommitmentSummary;
+}
+
+export interface TaskRuntimeOptions {
+  maxSteps?: number;
+  maxVisitsPerStep?: number;
+  maxConsecutiveNoProgress?: number;
+  requireUnambiguousTargets?: boolean;
+  maxRisk?: TaskRisk;
+  /** Defaults to `auto`. `off` restores declaration-only risk gating. */
+  commitmentDetection?: 'auto' | 'off';
+  approve?: (context: TaskApprovalContext) => boolean | Promise<boolean>;
+  onTrace?: (entry: TaskTraceEntry) => void | Promise<void>;
+  waitPollIntervalMs?: number;
+  waitMaxPolls?: number;
+}
+
+export interface TaskRunResult {
+  status: TaskRunStatus;
+  completed: boolean;
+  finalStepId?: string;
+  stepsExecuted: number;
+  trace: TaskTraceEntry[];
+  validationErrors?: string[];
+  validationWarnings?: string[];
+  missingInputs?: string[];
+}
