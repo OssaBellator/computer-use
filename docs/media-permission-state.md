@@ -16,7 +16,7 @@ The bounded state includes:
 - bounded identity fields: frame id, `backendNodeId`, ordinal, tag name, id, and aria label;
 - a preferred `activeMedia` identity selected only from currently playing elements, preferring audible/visible video when several elements play simultaneously.
 
-Frame count, media count, retained text, time values, permission names, and retained errors are bounded. If a configured bound causes observations or errors to be dropped, `truncated` is set. Closed shadow-root internals are not claimed as complete by the DOM-based snapshot.
+Frame count, media count, retained text, time values, permission names, and retained errors are bounded. If a configured bound causes observations or errors to be dropped, `truncated` is set. Closed shadow-root internals are not claimed as complete by the DOM-based snapshot. A single-session observer also does not auto-attach or hop into out-of-process frame targets; inaccessible frames remain explicit errors/unknowns so session routing stays caller-controlled.
 
 ## Fullscreen observation
 
@@ -67,7 +67,7 @@ The observer is read-only: it never calls permission grant, deny, or reset comma
 
 Coverage is deterministic and synthetic/local:
 
-- unit fixtures exercise media bounds/privacy, active media selection, nested fullscreen ownership, no synthetic user-activation elevation, native rejection propagation, custom Permissions Policy matching, and browser-level uncertainty;
+- unit fixtures exercise media bounds/privacy, active media selection, nested fullscreen ownership, no synthetic user-activation elevation, native rejection propagation, custom Permissions Policy matching, bounded-error truncation, and browser-level uncertainty;
 - a local raw-CDP Chromium smoke test uses an in-memory WAV inside an open shadow root and a local `srcdoc` iframe policy fixture;
 - the Chromium smoke proves fullscreen is not silently elevated without user activation, allows the browser to decide pre-activation playback policy, then uses ordinary CDP mouse input to create real activation before verifying playback succeeds;
 - no external sites or transaction-like effects are used.

@@ -147,3 +147,20 @@ test('generic fullscreen controller verifies non-media elements and treats alrea
   assert.equal(exited.status, 'verified');
   assert.equal(calls.some(([method]) => method === 'Input.dispatchMouseEvent'), false);
 });
+
+test('media observer marks the snapshot truncated when bounded errors are dropped', async () => {
+  const session = {
+    async send(method: string): Promise<any> {
+      if (method === 'Page.getFrameTree') {
+        return { frameTree: { frame: { id: 'main' }, childFrames: [{ frame: { id: 'child' } }] } };
+      }
+      if (method === 'Page.createIsolatedWorld') throw new Error('frame unavailable');
+      if (method === 'Browser.getWindowForTarget') throw new Error('window unavailable');
+      throw new Error(`Unexpected ${method}`);
+    },
+  };
+  const snapshot = await observeMediaState(session, { maxErrors: 1 });
+  assert.equal(snapshot.errors.length, 1);
+  assert.equal(snapshot.truncated, true);
+  assert.equal(snapshot.fullscreen.pageState, 'unknown');
+});

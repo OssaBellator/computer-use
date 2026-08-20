@@ -82,3 +82,21 @@ test('permission observer bounds requested names and reports unsupported queries
   assert.equal(snapshot.errors[0].scope, 'permissions-policy');
   assert.equal(JSON.stringify(snapshot).includes('x'.repeat(100)), false);
 });
+
+test('permission observer marks the snapshot truncated when bounded frame errors are dropped', async () => {
+  const session = {
+    async send(method: string): Promise<any> {
+      if (method === 'Page.getFrameTree') {
+        return { frameTree: { frame: { id: 'main' }, childFrames: [{ frame: { id: 'child' } }] } };
+      }
+      if (method === 'Page.getPermissionsPolicyState') throw new Error('policy unavailable');
+      if (method === 'Page.createIsolatedWorld') throw new Error('frame unavailable');
+      throw new Error(`Unexpected ${method}`);
+    },
+  };
+  const snapshot = await observePermissionState(session, { permissions: ['camera'], maxErrors: 1 });
+  assert.equal(snapshot.errors.length, 1);
+  assert.equal(snapshot.truncated, true);
+  assert.equal(snapshot.frames.length, 2);
+  assert.equal(snapshot.frames.every((frame) => frame.permissions[0].state === 'unknown'), true);
+});
