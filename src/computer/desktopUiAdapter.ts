@@ -406,6 +406,60 @@ function captureEntityRef(value: unknown): ComputerEntityRef | undefined {
   });
 }
 
+function captureSurfaceRef(value: unknown): ComputerSurfaceRef | undefined {
+  const captured = captureOwnDataObject(value, ['adapterId','environment','surfaceId','generation','parentSurfaceId']);
+  if (!captured || typeof captured.adapterId !== 'string' || typeof captured.environment !== 'string' || typeof captured.surfaceId !== 'string') return undefined;
+  if (captured.generation !== undefined && typeof captured.generation !== 'number') return undefined;
+  if (captured.parentSurfaceId !== undefined && typeof captured.parentSurfaceId !== 'string') return undefined;
+  return Object.freeze({
+    adapterId:captured.adapterId,
+    environment:captured.environment as ComputerSurfaceRef['environment'],
+    surfaceId:captured.surfaceId,
+    ...(captured.generation !== undefined ? {generation:captured.generation} : {}),
+    ...(captured.parentSurfaceId !== undefined ? {parentSurfaceId:captured.parentSurfaceId} : {}),
+  });
+}
+
+function captureObservationLimits(value: unknown): ComputerObservationLimits | undefined {
+  const captured = captureOwnDataObject(value, ['maxItems','maxTextBytes','maxDepth']);
+  if (!captured) return undefined;
+  if (captured.maxItems !== undefined && typeof captured.maxItems !== 'number') return undefined;
+  if (captured.maxTextBytes !== undefined && typeof captured.maxTextBytes !== 'number') return undefined;
+  if (captured.maxDepth !== undefined && typeof captured.maxDepth !== 'number') return undefined;
+  return Object.freeze({
+    ...(captured.maxItems !== undefined ? {maxItems:captured.maxItems} : {}),
+    ...(captured.maxTextBytes !== undefined ? {maxTextBytes:captured.maxTextBytes} : {}),
+    ...(captured.maxDepth !== undefined ? {maxDepth:captured.maxDepth} : {}),
+  });
+}
+
+function captureObservationRequest(value: unknown): ComputerObservationRequest | undefined {
+  const captured = captureOwnDataObject(value, ['adapterId','channel','surface','target','limits']);
+  if (!captured || typeof captured.adapterId !== 'string' || typeof captured.channel !== 'string') return undefined;
+  let surface: ComputerSurfaceRef | undefined;
+  let target: ComputerEntityRef | undefined;
+  let observationLimits: ComputerObservationLimits | undefined;
+  if (captured.surface !== undefined) {
+    surface = captureSurfaceRef(captured.surface);
+    if (!surface) return undefined;
+  }
+  if (captured.target !== undefined) {
+    target = captureEntityRef(captured.target);
+    if (!target) return undefined;
+  }
+  if (captured.limits !== undefined) {
+    observationLimits = captureObservationLimits(captured.limits);
+    if (!observationLimits) return undefined;
+  }
+  return Object.freeze({
+    adapterId:captured.adapterId,
+    channel:captured.channel as ComputerObservationRequest['channel'],
+    ...(surface ? {surface} : {}),
+    ...(target ? {target} : {}),
+    ...(observationLimits ? {limits:observationLimits} : {}),
+  });
+}
+
 function captureActionRequest(value: unknown): {request:ComputerActionRequest; payload:unknown} | undefined {
   const captured = captureOwnDataObject(value, ['adapterId','actionId','capability','effect','idempotency','target','payload']);
   if (!captured || typeof captured.adapterId !== 'string' || typeof captured.actionId !== 'string' || typeof captured.capability !== 'string' || typeof captured.effect !== 'string' || typeof captured.idempotency !== 'string') return undefined;
@@ -636,20 +690,22 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    const requestErrors = validateComputerObservationRequest(request, this.descriptor);
+    const snapshotRequest = captureObservationRequest(request);
+    if (!snapshotRequest) throw new Error('invalid desktop observation request: descriptor snapshot invalid');
+    const requestErrors = validateComputerObservationRequest(snapshotRequest, this.descriptor);
     if (requestErrors.length > 0) throw new Error(`invalid desktop observation request: ${requestErrors.join('; ')}`);
-    if (request.channel === 'system') {
-      const l = limits(request.limits);
+    if (snapshotRequest.channel === 'system') {
+      const l = limits(snapshotRequest.limits);
       const { raw, windows } = await this.system(l);
       const bounded = this.boundSystem(raw, windows, l);
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'system', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, data:bounded.data };
     }
-    if (request.channel !== 'semantic-ui' && request.channel !== 'visual') throw new Error(`desktop observation channel unsupported: ${request.channel}`);
-    const ref = this.requestedWindow(request);
+    if (snapshotRequest.channel !== 'semantic-ui' && snapshotRequest.channel !== 'visual') throw new Error(`desktop observation channel unsupported: ${snapshotRequest.channel}`);
+    const ref = this.requestedWindow(snapshotRequest);
     if (!ref) throw new Error('desktop surface generation is required');
     const window = await this.currentWindow(ref);
     if (!window) throw new Error('stale or missing desktop window');
-    if (request.channel === 'visual') {
+    if (snapshotRequest.channel === 'visual') {
       const raw = captureVisualObservation(await this.backend.observeVisual(ref));
       if (!raw) throw new Error('desktop visual observation invalid');
       if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
@@ -657,20 +713,20 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       const artifact = cloneVisualArtifact(raw.artifact);
       if (!validReasonCode(raw.reason)) throw new Error('desktop visual reason code invalid');
       const data:DesktopVisualObservationData = Object.freeze({ status:raw.status, window, width:raw.width, height:raw.height, ...(artifact ? {artifact} : {}), reason:raw.reason });
-      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:request.target, data };
+      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:snapshotRequest.target, data };
     }
-    const l = limits(request.limits);
+    const l = limits(snapshotRequest.limits);
     const raw = captureAccessibilityObservation(await this.backend.observeAccessibility(ref, l));
     if (!raw) throw new Error('desktop accessibility observation invalid');
     if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop accessibility generation mismatch');
     if (!validReasonCode(raw.reason)) throw new Error('desktop accessibility reason code invalid');
     if (raw.status !== 'available' || !raw.root) {
       const data:DesktopSemanticObservationData = Object.freeze({ status:raw.status, window, itemCount:0, textBytes:0, reason:raw.reason });
-      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, target:request.target, data };
+      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, target:snapshotRequest.target, data };
     }
     const bounded = this.boundTree(window, raw.root, l);
     const data:DesktopSemanticObservationData = Object.freeze({ status:'available', window, ...(bounded.root ? {root:bounded.root} : {}), itemCount:bounded.itemCount, textBytes:bounded.textBytes });
-    return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, surface:window.surface, target:request.target, data };
+    return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, surface:window.surface, target:snapshotRequest.target, data };
   }
 
   private async controlExists(window:DesktopWindowSurface, target:ComputerEntityRef): Promise<boolean> {
