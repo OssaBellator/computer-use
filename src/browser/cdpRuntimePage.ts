@@ -14,8 +14,41 @@ interface RawFrameTree {
 }
 
 interface RuntimeEvaluationResult {
-  result?: { value?: unknown };
+  result?: { value?: unknown; objectId?: string };
   exceptionDetails?: { text?: string; exception?: { description?: string } };
+}
+
+function structuralPathExpression(path: string): string {
+  const encoded = JSON.stringify(path);
+  return `(() => {
+    const path = ${encoded};
+    const parts = path.split(' > ');
+    let root = document.documentElement;
+    let current = null;
+    for (const part of parts) {
+      if (part === '::shadow') {
+        if (!current?.shadowRoot) return null;
+        root = current.shadowRoot;
+        current = null;
+        continue;
+      }
+      const match = /^([a-zA-Z0-9-]+):nth-of-type\\((\\d+)\\)$/.exec(part);
+      if (!match) return null;
+      const tag = match[1].toLowerCase();
+      const wanted = Number(match[2]);
+      const parent = current ?? root;
+      let count = 0;
+      let found = null;
+      for (const child of parent.children) {
+        if (child.tagName.toLowerCase() !== tag) continue;
+        count += 1;
+        if (count === wanted) { found = child; break; }
+      }
+      if (!found) return null;
+      current = found;
+    }
+    return current;
+  })()`;
 }
 
 /**
@@ -87,6 +120,27 @@ export class CdpRuntimeSnapshotFrame implements SnapshotFrameLike {
     throw new Error('CDP frame evaluation failed');
   }
 
+  async backendNodeIdForStructuralPath(path: string): Promise<number | undefined> {
+    if (!path || path.length > 4096 || /[\r\n\0]/.test(path)) return undefined;
+    const contextId = await this.ensureContext();
+    const evaluation = await this.page.session.send('Runtime.evaluate', {
+      expression: structuralPathExpression(path),
+      contextId,
+      returnByValue: false,
+      awaitPromise: false,
+    }) as RuntimeEvaluationResult;
+    if (evaluation.exceptionDetails || !evaluation.result?.objectId) return undefined;
+    const objectId = evaluation.result.objectId;
+    try {
+      const described = await this.page.session.send('DOM.describeNode', { objectId, depth: 0 }) as {
+        node?: { backendNodeId?: number };
+      };
+      return typeof described.node?.backendNodeId === 'number' ? described.node.backendNodeId : undefined;
+    } finally {
+      try { await this.page.session.send('Runtime.releaseObject', { objectId }); } catch {}
+    }
+  }
+
   private async ensureContext(): Promise<number> {
     if (this.executionContextId !== undefined) return this.executionContextId;
     const result = await this.page.session.send('Page.createIsolatedWorld', {
@@ -116,6 +170,17 @@ export class CdpRuntimeSnapshotPage implements SnapshotPageLike {
     return this.orderedFrameIds
       .map((id) => this.framesById.get(id))
       .filter((frame): frame is CdpRuntimeSnapshotFrame => frame !== undefined);
+  }
+
+  boundedFrames(maxFrames: number): { frames: readonly SnapshotFrameLike[]; complete: boolean } {
+    const limit = Math.max(1, Math.floor(maxFrames));
+    const frames: SnapshotFrameLike[] = [];
+    const count = Math.min(limit, this.orderedFrameIds.length);
+    for (let index = 0; index < count; index += 1) {
+      const frame = this.framesById.get(this.orderedFrameIds[index]);
+      if (frame) frames.push(frame);
+    }
+    return { frames, complete: this.orderedFrameIds.length <= limit };
   }
 
   frameById(frameId: string): CdpRuntimeSnapshotFrame | undefined {

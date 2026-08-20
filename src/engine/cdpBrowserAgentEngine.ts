@@ -1,24 +1,45 @@
 import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } from '../agent/taskRuntime.js';
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
+import { createBoundedSemanticActionController } from '../browser/boundedSemanticAction.js';
+import {
+  snapshotInteractiveDomBounded,
+  type BoundedSemanticSnapshotLimits,
+  type BoundedSemanticSnapshotResult,
+} from '../browser/boundedSemanticSnapshot.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import { DocumentFormattingObserver } from '../browser/documentFormatting.js';
 import { DocumentSelectionObserver } from '../browser/documentSelection.js';
 import { CdpDownloadController, type BrowserDownloadControllerOptions, type BrowserDownloadSummary } from '../browser/downloadController.js';
 import { CdpDialogController, isCdpEventSessionLike, type BrowserDialogController, type BrowserDialogHandleResult, type BrowserDialogState } from '../browser/dialogController.js';
-import type { SnapshotPageLike } from '../browser/domSnapshot.js';
+import type { SnapshotFrameLike, SnapshotPageLike } from '../browser/domSnapshot.js';
 import { CdpFileUploadController, type BrowserFileUploadControllerOptions, type BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import { CdpHistoryController, type BrowserHistoryAction, type BrowserHistoryController, type BrowserHistoryOptions, type BrowserHistoryResult } from '../browser/historyController.js';
 import { CdpNavigationGuard } from '../browser/navigationGuard.js';
 import { CdpNavigationController, type BrowserNavigationOptions, type BrowserNavigationResult, type BrowserNavigator, type NavigationPolicy } from '../browser/navigationController.js';
 import { CdpNetworkActivityMonitor, type NetworkIdleOptions, type NetworkIdleResult } from '../browser/networkActivityMonitor.js';
+import { observeMediaState, type MediaStateSnapshot, type ObserveMediaStateOptions } from '../browser/mediaState.js';
 import { CdpSelectController, type BrowserSelectMatch, type BrowserSelectResult } from '../browser/selectController.js';
 import { CdpTargetController, type BrowserTargetSummary, type CloseBrowserTargetResult, type CreateBrowserTargetResult } from '../browser/targetController.js';
+import { CdpVisualObserver, type VisualCaptureOptions, type VisualSnapshot } from '../browser/visualObserver.js';
 import { RichTextController } from '../controller/richTextController.js';
 import type { TargetQuery, TargetResolution } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
 import { createCdpInteractionEngine, type CdpInteractionEngineOptions } from './cdpInteractionEngine.js';
 import type { InteractionEngine } from './interactionEngine.js';
+
+const DEFAULT_FRAME_DOCUMENT_TOKEN_FRAMES = 32;
+const DEFAULT_FRAME_DOCUMENT_TOKEN_BYTES = 4 * 1024;
+const FRAME_DOCUMENT_TOKENS_INCOMPLETE = '__browser_identity_incomplete__';
+
+export interface FrameDocumentTokenLimits {
+  maxFrames: number;
+  maxTextBytes: number;
+}
+
+interface BoundedFrameSource {
+  boundedFrames(maxFrames: number): { frames: readonly SnapshotFrameLike[]; complete: boolean };
+}
 
 export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   constructor(
@@ -34,6 +55,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     readonly networkActivity?: CdpNetworkActivityMonitor,
     readonly selects: CdpSelectController = new CdpSelectController(session),
     readonly richText?: RichTextController,
+    private readonly snapshotPage?: SnapshotPageLike,
   ) {}
 
   async prepare(): Promise<void> {
@@ -55,8 +77,122 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     return captureCdpBrowserState(this.session);
   }
 
+  async frameDocumentTokens(limits: FrameDocumentTokenLimits = {
+    maxFrames: DEFAULT_FRAME_DOCUMENT_TOKEN_FRAMES,
+    maxTextBytes: DEFAULT_FRAME_DOCUMENT_TOKEN_BYTES,
+  }): Promise<Readonly<Record<string, string>> | undefined> {
+    if (!this.snapshotPage) return undefined;
+    const maxFrames = Math.max(1, Math.min(limits.maxFrames, DEFAULT_FRAME_DOCUMENT_TOKEN_FRAMES));
+    const maxTextBytes = Math.max(1, Math.min(limits.maxTextBytes, DEFAULT_FRAME_DOCUMENT_TOKEN_BYTES));
+    const boundedSource = this.snapshotPage as SnapshotPageLike & Partial<BoundedFrameSource>;
+    if (typeof boundedSource.boundedFrames !== 'function') {
+      return { [FRAME_DOCUMENT_TOKENS_INCOMPLETE]: '1' };
+    }
+    const supplied = boundedSource.boundedFrames(maxFrames);
+    if (supplied.frames.length > maxFrames) return { [FRAME_DOCUMENT_TOKENS_INCOMPLETE]: '1' };
+    const entries = await Promise.all(supplied.frames.map(async (frame, index) => {
+      const timeOrigin = await frame.evaluate(() => performance.timeOrigin);
+      if (!Number.isFinite(timeOrigin) || timeOrigin < 0) return undefined;
+      return [index === 0 ? 'main' : `frame-${index}`, timeOrigin.toString(36)] as const;
+    }));
+    const result: Record<string, string> = {};
+    let bytes = 0;
+    let complete = supplied.complete;
+    for (const entry of entries) {
+      if (!entry) { complete = false; continue; }
+      const [frameId, token] = entry;
+      const entryBytes = new TextEncoder().encode(frameId).byteLength + new TextEncoder().encode(token).byteLength;
+      if (bytes + entryBytes > maxTextBytes) { complete = false; break; }
+      bytes += entryBytes;
+      result[frameId] = token;
+    }
+    if (!complete) {
+      const main = result.main;
+      for (const key of Object.keys(result)) delete result[key];
+      if (main !== undefined) result.main = main;
+      result[FRAME_DOCUMENT_TOKENS_INCOMPLETE] = '1';
+    }
+    return result;
+  }
+
+  semanticSnapshot(limits: BoundedSemanticSnapshotLimits): Promise<BoundedSemanticSnapshotResult | undefined> {
+    return this.snapshotPage
+      ? snapshotInteractiveDomBounded(this.snapshotPage, limits)
+      : Promise.resolve(undefined);
+  }
+
+  async resolveBoundedSemanticTarget(
+    targetId: string,
+    limits: BoundedSemanticSnapshotLimits,
+  ): Promise<InteractionNode | undefined> {
+    if (!this.snapshotPage) return undefined;
+    const { observer } = createBoundedSemanticActionController(
+      this.snapshotPage,
+      this.session,
+      this.interaction.input,
+      this.interaction.pointer,
+      limits,
+      targetId,
+    );
+    return observer.resolveTarget();
+  }
+
+  async activateBoundedSemantic(
+    targetId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: Parameters<InteractionEngine['activate']>[1],
+  ): Promise<TaskEngineActionResult> {
+    if (!this.snapshotPage) return { status: 'target-not-found', target: null };
+    const { observer, controller } = createBoundedSemanticActionController(
+      this.snapshotPage, this.session, this.interaction.input, this.interaction.pointer, limits, targetId,
+    );
+    const target = await observer.resolveTarget();
+    if (!target) return { status: 'target-not-found', target: null };
+    const result = await controller.activate(target, options);
+    return { status: result.status, target: result.target };
+  }
+
+  async hoverBoundedSemantic(
+    targetId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: Parameters<InteractionEngine['hover']>[1],
+  ): Promise<TaskEngineActionResult> {
+    if (!this.snapshotPage) return { status: 'target-not-found', target: null };
+    const { observer, controller } = createBoundedSemanticActionController(
+      this.snapshotPage, this.session, this.interaction.input, this.interaction.pointer, limits, targetId,
+    );
+    const target = await observer.resolveTarget();
+    if (!target) return { status: 'target-not-found', target: null };
+    const result = await controller.hover(target, options);
+    return { status: result.status, target: result.target };
+  }
+
+  async typeBoundedSemantic(
+    targetId: string,
+    text: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: Parameters<InteractionEngine['typeInto']>[2],
+  ): Promise<TaskEngineActionResult> {
+    if (!this.snapshotPage) return { status: 'target-not-found', target: null };
+    const { observer, controller } = createBoundedSemanticActionController(
+      this.snapshotPage, this.session, this.interaction.input, this.interaction.pointer, limits, targetId,
+    );
+    const target = await observer.resolveTarget();
+    if (!target) return { status: 'target-not-found', target: null };
+    const result = await controller.typeInto(target, text, options);
+    return { status: result.status, target: result.target };
+  }
+
   documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
     return this.interaction.observer.documentContent?.(options) ?? Promise.resolve(undefined);
+  }
+
+  visualSnapshot(options?: VisualCaptureOptions): Promise<VisualSnapshot> {
+    return new CdpVisualObserver(this.session).capture(options);
+  }
+
+  mediaSnapshot(options?: ObserveMediaStateOptions): Promise<MediaStateSnapshot> {
+    return observeMediaState(this.session, options);
   }
 
   dialogState(): BrowserDialogState | undefined {
@@ -253,5 +389,6 @@ export function createCdpBrowserAgentEngine(
     eventSession && networkActivity === true ? new CdpNetworkActivityMonitor(eventSession) : undefined,
     new CdpSelectController(session),
     richText,
+    page,
   );
 }
