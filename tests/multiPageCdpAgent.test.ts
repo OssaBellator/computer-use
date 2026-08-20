@@ -7,10 +7,19 @@ import {
 import { MultiPageCdpAgent } from '../src/engine/multiPageCdpAgent.js';
 import type { CdpBrowserAgentEngine } from '../src/engine/cdpBrowserAgentEngine.js';
 
+interface FixtureTarget {
+  targetId: string;
+  type: string;
+  attached: boolean;
+  url: unknown;
+  title: string;
+  openerId?: string;
+}
+
 class Connection {
   readonly calls: Array<[string, Record<string, unknown>, string | undefined]> = [];
   readonly listeners = new Map<string, Set<CdpMultiplexEventListener>>();
-  targets = [
+  targets: FixtureTarget[] = [
     { targetId: 'page-1', type: 'page', attached: false, url: 'https://secret.example/', title: 'Secret' },
     { targetId: 'worker-1', type: 'worker', attached: false, url: 'https://secret.example/worker.js', title: '' },
   ];
