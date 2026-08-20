@@ -1,5 +1,6 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type { BrowserDialogState } from '../browser/dialogController.js';
+import type { DocumentContentBlock, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserTargetSummary } from '../browser/targetController.js';
 import { resolveInteractionTargetDetailed } from '../model/targetResolver.js';
@@ -10,10 +11,16 @@ import type { TaskRuntimeEngine } from './taskRuntimeContracts.js';
 export interface TaskObservation {
   nodes: InteractionNode[];
   browser?: BrowserStateSnapshot;
+  document?: DocumentContentSnapshot;
   dialog?: BrowserDialogState;
   targets?: BrowserTargetSummary;
   downloads?: BrowserDownloadSummary;
   fingerprint: string;
+}
+
+export interface TaskObservationOptions {
+  /** Request the bounded structured document channel. Defaults to false. */
+  document?: boolean;
 }
 
 export function resolveProgramText(
@@ -58,6 +65,40 @@ function matchesBrowser(
   return state.historyLengthAtLeast === undefined || browser.historyLength >= state.historyLengthAtLeast;
 }
 
+function matchesDocumentBlock(
+  block: DocumentContentBlock,
+  state: Extract<TaskPredicate, { kind: 'document' }>['state'],
+  inputs: Readonly<Record<string, string>>,
+): boolean {
+  if (state.kind !== undefined && block.kind !== state.kind) return false;
+  if (state.frameId !== undefined && block.frameId !== state.frameId) return false;
+  if (state.rendered !== undefined && block.rendered !== state.rendered) return false;
+  if (state.inViewport !== undefined && block.inViewport !== state.inViewport) return false;
+  if (state.text !== undefined && block.text !== resolveProgramText(state.text, inputs)) return false;
+  if (state.textIncludes !== undefined &&
+      !block.text?.includes(resolveProgramText(state.textIncludes, inputs))) return false;
+  if (state.href !== undefined && block.href !== resolveProgramText(state.href, inputs)) return false;
+  if (state.hrefIncludes !== undefined &&
+      !block.href?.includes(resolveProgramText(state.hrefIncludes, inputs))) return false;
+  return true;
+}
+
+function matchesDocument(
+  state: Extract<TaskPredicate, { kind: 'document' }>['state'],
+  document: DocumentContentSnapshot | undefined,
+  inputs: Readonly<Record<string, string>>,
+): boolean {
+  if (!document) return false;
+  const required = state.minMatches ?? 1;
+  let matches = 0;
+  for (const block of document.blocks) {
+    if (!matchesDocumentBlock(block, state, inputs)) continue;
+    matches += 1;
+    if (matches >= required) return true;
+  }
+  return false;
+}
+
 function matchesDialog(
   state: Extract<TaskPredicate, { kind: 'dialog' }>['state'],
   dialog: BrowserDialogState | undefined,
@@ -98,6 +139,7 @@ export function evaluateTaskPredicate(
   dialogState?: BrowserDialogState,
   targetState?: BrowserTargetSummary,
   downloadState?: BrowserDownloadSummary,
+  documentState?: DocumentContentSnapshot,
 ): boolean {
   switch (predicate.kind) {
     case 'exists': {
@@ -110,17 +152,18 @@ export function evaluateTaskPredicate(
         matchesNode(resolution.target, predicate.state, inputs);
     }
     case 'browser': return matchesBrowser(predicate.state, browserState, inputs);
+    case 'document': return matchesDocument(predicate.state, documentState, inputs);
     case 'dialog': return matchesDialog(predicate.state, dialogState);
     case 'targets': return matchesTargets(predicate.state, targetState);
     case 'downloads': return matchesDownloads(predicate.state, downloadState);
     case 'all':
       return predicate.predicates.every((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState, downloadState));
+        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState, downloadState, documentState));
     case 'any':
       return predicate.predicates.some((nested) =>
-        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState, downloadState));
+        evaluateTaskPredicate(nested, nodes, inputs, browserState, dialogState, targetState, downloadState, documentState));
     case 'not':
-      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState, dialogState, targetState, downloadState);
+      return !evaluateTaskPredicate(predicate.predicate, nodes, inputs, browserState, dialogState, targetState, downloadState, documentState);
   }
 }
 
@@ -150,13 +193,28 @@ export function interactionSnapshotFingerprint(nodes: readonly InteractionNode[]
   return hashString(stable);
 }
 
-/** Include browser/modal/target identity so non-DOM lifecycle changes count as progress. */
+export function documentSnapshotFingerprint(document: DocumentContentSnapshot | undefined): string {
+  if (!document) return '';
+  const frames = document.frames.map((frame) => [
+    frame.frameId, frame.title, frame.language ?? '', frame.description ?? '',
+    frame.canonicalUrl ?? '', frame.includedBlocks, field(frame.browserExtractionTruncated),
+  ].join('\u001f')).join('\u001e');
+  const blocks = document.blocks.map((block) => [
+    block.id, block.kind, block.text ?? '', block.href ?? '', block.alt ?? '',
+    block.role ?? '', block.name ?? '', field(block.rendered), field(block.inViewport),
+    field(block.truncated),
+  ].join('\u001f')).join('\u001e');
+  return hashString(`${frames}\u001d${blocks}\u001d${field(document.truncated)}`);
+}
+
+/** Include browser/modal/target/document identity so observed lifecycle/content changes count as progress. */
 export function taskObservationFingerprint(
   nodes: readonly InteractionNode[],
   browser?: BrowserStateSnapshot,
   dialog?: BrowserDialogState,
   targets?: BrowserTargetSummary,
   downloads?: BrowserDownloadSummary,
+  document?: DocumentContentSnapshot,
 ): string {
   const browserValue = browser
     ? [browser.url, browser.origin, browser.title, browser.readyState,
@@ -173,30 +231,37 @@ export function taskObservationFingerprint(
         downloads.latest?.guid ?? '', downloads.latest?.sequence ?? '', downloads.latest?.state ?? '',
         downloads.latestCompleted?.guid ?? '', downloads.latestCompleted?.sequence ?? ''].join('\u001f')
     : '';
-  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browserValue}\u001d${dialogValue}\u001d${targetValue}\u001d${downloadValue}`);
+  const documentValue = documentSnapshotFingerprint(document);
+  return hashString(`${interactionSnapshotFingerprint(nodes)}\u001d${browserValue}\u001d${dialogValue}\u001d${targetValue}\u001d${downloadValue}\u001d${documentValue}`);
 }
 
-export async function observeTaskEngine(engine: TaskRuntimeEngine): Promise<TaskObservation> {
+export async function observeTaskEngine(
+  engine: TaskRuntimeEngine,
+  options: TaskObservationOptions = {},
+): Promise<TaskObservation> {
   let nodes: InteractionNode[] | undefined;
   let browser: BrowserStateSnapshot | undefined;
+  let document: DocumentContentSnapshot | undefined;
   let dialog: BrowserDialogState | undefined;
   let targets: BrowserTargetSummary | undefined;
   let downloads: BrowserDownloadSummary | undefined;
   try { nodes = await engine.refresh(); } catch {}
   try { browser = await engine.browserState?.(); } catch {}
+  if (options.document) { try { document = await engine.documentContent?.(); } catch {} }
   try { dialog = engine.dialogState?.(); } catch {}
   try { targets = engine.targetState?.(); } catch {}
   try { downloads = engine.downloadState?.(); } catch {}
-  if (nodes === undefined && browser === undefined && dialog === undefined && targets === undefined && downloads === undefined) {
+  if (nodes === undefined && browser === undefined && document === undefined && dialog === undefined && targets === undefined && downloads === undefined) {
     throw new Error('No browser observation channel is currently available');
   }
   const normalizedNodes = nodes ?? [];
   return {
     nodes: normalizedNodes,
     browser,
+    ...(document ? { document } : {}),
     dialog,
     targets,
     downloads,
-    fingerprint: taskObservationFingerprint(normalizedNodes, browser, dialog, targets, downloads),
+    fingerprint: taskObservationFingerprint(normalizedNodes, browser, dialog, targets, downloads, document),
   };
 }
