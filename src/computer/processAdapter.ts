@@ -16,6 +16,7 @@ const MAX_PROCESS_ITEMS = 256;
 const MAX_NAME_BYTES = 160;
 const DEFAULT_PROCESS_TEXT_BYTES = 16 * 1024;
 const MAX_PROCESS_TEXT_BYTES = 64 * 1024;
+const SPAWN_ACKNOWLEDGEMENT_TIMEOUT_MS = 50;
 const SYNTHETIC_GENERATION_BASE = Number.MAX_SAFE_INTEGER - 1_000_000;
 
 export type ProcessState = 'running' | 'sleeping' | 'waiting' | 'stopped' | 'zombie' | 'dead' | 'unknown';
@@ -171,8 +172,15 @@ export class ProcessIdentityStore {
   }
 
   async acknowledgeSpawn(pid: number): Promise<ComputerEntityRef> {
-    const observed = await this.inspect(pid);
-    if (observed) return observed.ref;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const record = await Promise.race([
+      this.source.inspect(pid).catch(() => undefined),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(resolve, SPAWN_ACKNOWLEDGEMENT_TIMEOUT_MS);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    if (record) return this.toSnapshot(record).ref;
     const generation = SYNTHETIC_GENERATION_BASE + (this.syntheticCounter++ % 1_000_000);
     this.syntheticByPid.set(pid, generation);
     return this.ref(pid, generation);
