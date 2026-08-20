@@ -1,14 +1,45 @@
 # Semantic Browser Interaction Engine
 
-A TypeScript foundation for closed-loop browser interaction research, accessibility tooling, reproducible UI testing, and permitted interactive-page/game experiments.
+A TypeScript foundation for a standalone, closed-loop browser agent that can eventually perform the broad range of tasks people carry out on the web.
 
-The engine models a page as a semantic/spatial interaction graph, combines DOM semantics with CDP-backed identity and geometry, learns observed keyboard topology, plans across input modalities, verifies browser state after execution instead of assuming an issued command succeeded, and includes bounded realtime control with automatic game visual perception, temporal motion tracking, resilient renderer lifecycle, and relative mouse-look input for fast-changing game state.
+The engine can launch Chromium directly through Node, speak browser-root CDP over Chromium's `--remote-debugging-pipe`, route its own page sessions, build semantic/spatial interaction state, plan and verify actions, manage multiple pages and browser lifecycle features, and run bounded realtime control with automatic game visual perception, temporal motion tracking, resilient renderer lifecycle, and relative mouse-look input.
 
 ## Scope
 
-The project uses normal browser automation mouse/keyboard primitives rather than page-side `dispatchEvent()` calls. It is designed for browser testing, HCI experiments, and permitted interactive-page/game fixtures, but it does **not** claim hardware provenance, indistinguishability from a physical user, or anti-bot bypass capability. It does not include stealth patches, fingerprint spoofing, CAPTCHA handling, navigator mutation, or timing camouflage intended to evade anti-abuse systems.
+The primary Chromium path does **not** require Playwright, Puppeteer, Selenium/WebDriver, or a third-party CDP websocket client. Browser startup, target/session routing, semantic observation, navigation, input, and multi-page task execution can run on the repository's own Node + CDP runtime. A structural Playwright-compatible input adapter remains only as an optional compatibility surface for callers that already have one.
+
+The project uses browser-native input/protocol operations rather than page-side synthetic `dispatchEvent()` calls. It is designed for browser testing, HCI research, accessibility tooling, reproducible workflows, and permitted interactive-page/game use. It does **not** claim hardware provenance, indistinguishability from a physical user, or anti-bot bypass capability. It does not include stealth patches, fingerprint spoofing, CAPTCHA bypass, navigator mutation, or timing camouflage intended to evade anti-abuse systems.
+
+## Long-term web task capability scope
+
+The eventual goal is a general browser agent capable of completing tasks across seven broad human web-activity categories:
+
+1. **Information retrieval & research** — search, factual/news/weather lookup, guides, academic/market/product research, and synthesis across multiple sources.
+2. **Communication & collaboration** — messaging, email, conferencing controls, shared documents/whiteboards, project-management and asynchronous team workflows.
+3. **Transactions & commerce** — shopping, banking/bill workflows where permitted, bookings/reservations, travel, and subscription management.
+4. **Content consumption & entertainment** — articles/forums/ebooks, streaming media controls, and browser-based games.
+5. **Content creation & publishing** — writing/posting, media upload, design/editing tools, and browser coding environments.
+6. **Identity & account management** — forms, profiles/privacy settings, password flows, and user-mediated identity/MFA steps.
+7. **Automation & process triggering** — submitting workflows, initiating web-app automations/webhooks, and scheduling tasks through browser interfaces.
+
+Capabilities that have financial, identity, security, or external side effects still need explicit policy/confirmation boundaries at the task layer; broad task coverage is not a reason to weaken fail-closed interaction or navigation rules.
 
 ## Current architecture
+
+### Standalone browser runtime
+
+- direct Chromium launch through Node `child_process`
+- Chromium `--remote-debugging-pipe` transport over child fd 3/4; no debugging HTTP port required
+- in-repo NUL-framed CDP JSON transport with flattened target-session routing
+- bounded message size, pending-command count, and per-command timeout
+- protocol error code/message/data preserved in `CdpProtocolError`
+- malformed transport input fails closed and rejects pending work
+- event-listener failures isolated from transport parsing
+- disposable profile creation/cleanup with explicit preservation option
+- Chromium sandbox remains enabled unless `noSandbox: true` is explicitly requested
+- browser version handshake before the runtime is considered ready
+- direct page target discovery, attachment, activation, creation, and closing
+- one-call `launchStandaloneBrowserAgent()` composition into `MultiPageCdpAgent` and `MultiPageTaskEngine`
 
 ### Perception and identity
 
@@ -59,8 +90,8 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 
 ### Input and motor control
 
-- structural Playwright-compatible mouse/keyboard adapter with no hard Playwright runtime dependency
-- CDP input adapter for Chromium testing
+- CDP input adapter used by the standalone Chromium path
+- optional structural Playwright-compatible mouse/keyboard adapter with no hard Playwright runtime dependency
 - persistent `keyDown`/`keyUp` and pointer-button state for controls held across multiple frames
 - relative pointer deltas on bundled adapters for mouse-look style movement while other controls remain held
 - capability-detected realtime `pointerDelta` intents with fail-closed handling for unsupported adapters
@@ -77,7 +108,7 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - oversized trajectory segments split into bounded virtual strokes
 - cursor state contains coordinates only; trajectory timing metadata is kept separate
 
-### Closed-loop actions
+### Browser lifecycle and closed-loop actions
 
 - deterministic semantic target resolution by stable ID, role, name, capability, visibility, and enabled state
 - optional `requireUnambiguous` guard prevents input dispatch for tied semantic matches
@@ -87,10 +118,11 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - action-specific observation settling with bounded polling
 - focus and editable-value verification
 - ARIA state transition detection (`expanded`, `checked`, `selected`, `pressed`, active descendant, disabled)
-- top-level off-screen reveal with viewport geometry feedback and stall detection
-- nested overflow-container reveal by moving over the identified scroll scope, issuing wheel input, and re-observing geometry
-- high-level `InteractionEngine` combining target resolution, reveal, planning, dispatch, observation, and replanning
-- `createCdpInteractionEngine()` convenience facade for a CDP page/session pair
+- top-level and nested scroll reveal with geometry feedback and stall detection
+- guarded top-level navigation plus history/reload operations
+- page target creation/closing/switching and popup lifecycle tracking
+- dialog handling, selection controls, downloads, uploads, and optional network-activity tracking
+- high-level `InteractionEngine`, `CdpBrowserAgentEngine`, multi-page/task facades, and the new standalone launcher composition
 
 ## Local validation
 
@@ -112,72 +144,65 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not at `/usr/bin/chromium`.
 
-The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner, roving-tabindex ownership that keeps speculative Arrow planning inside the widget, automatic dominant-canvas acquisition feeding exact bounded screenshot dimensions, stable game-region refresh across renderer resize plus generation-changing reacquisition after renderer replacement, held CDP controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, temporal velocity estimation from real Chromium canvas screenshots, the composed visual pipeline across movement/resize/renderer replacement, and a downscaled visual-motion fixture where control ticks outnumber screenshot captures.
+The live suite now includes a raw-pipe process fixture that launches Chromium without a websocket/debugging port, verifies `Browser.getVersion`, attaches/creates/closes page targets, and cleans its temporary profile. A second standalone fixture runs that same runtime all the way through `MultiPageCdpAgent`/`MultiPageTaskEngine` and verifies semantic button activation plus text entry.
+
+The wider Chromium suite also covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation, roving-tabindex ownership, automatic dominant-canvas acquisition, renderer resize/replacement lifecycle, held controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, temporal velocity estimation from real canvas screenshots, the composed visual pipeline across movement/resize/renderer replacement, and downscaled visual-motion sampling.
 
 ## Architecture
 
 ```text
-semantic goal / realtime policy
-    |
-    +-------------------------------------+
-    |                                     |
-    v                                     v
-DOM + AX + frame + geometry        CdpGameVisualPipeline
-observer                                  |
-    |                            game-region acquire/lease
-    |                                     |
-    +---- overflow clipping               v
-    |                               clipped/downscaled visual capture
-    |                                     |
-    +---- DOM focus ---- state-anchor      v
-    |                    |           PNG tile/motion differ
-    |                    |                 |
-    |                    |                 v
-    |                    |           temporal motion tracks
-    |                    |           velocity/confidence
-    |                    |                 |
-    v                    v                 v
-InteractionModel <---- observed topology  cached observation
-    |                                     |
-    v                                     v
-modality-aware A* planner          RealtimeControlLoop
-    |                              (fast control ticks)
-    +---- keyboard -----------------------+
-    |                                     |
-    +---- absolute pointer ---------------+
-    |                                     |
-    +---- relative mouse-look ------------+
-    |
-    +---- pointer -> trajectory -> bounded touchpad
-    |
-    +---- reveal/scroll -> scoped wheel -> geometry feedback
-    |
-    v
-browser input adapter
-    |
-    v
-page / game state
-    |
-    +---- next semantic snapshot
-    |
-    +---- next scheduled visual sample
+Node
+ |
+ | child_process + --remote-debugging-pipe
+ v
+CdpPipeConnection
+ |
+ v
+CdpTargetSessionRouter ---------------- browser-root lifecycle
+ |
+ +-------------------+-------------------+
+ |                   |                   |
+ v                   v                   v
+page session      page session       page session
+ |                   |                   |
+ +---------- MultiPageCdpAgent ---------+
+                     |
+              MultiPageTaskEngine
+                     |
+        +------------+-------------+
+        |                          |
+        v                          v
+semantic DOM/AX/geometry      CdpGameVisualPipeline
+        |                          |
+        v                    clipped screenshots
+InteractionModel                  |
+        |                    motion/temporal tracks
+        v                          |
+modality-aware planner            v
+        |                   RealtimeControlLoop
+        +------------+-------------+
+                     |
+          browser-native CDP input
+                     |
+                     v
+                 web page/game
 ```
 
 ## Regression coverage
 
-The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, deterministic/bounded game-region ranking, stable game-region refresh/reacquisition generations, composed visual-pipeline baseline generations, connected visual-motion regions, temporal track identity, velocity/projection, confidence decay, temporal coordinate-space/dimension resets, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
+The unit/regression suite covers raw CDP pipe framing and flattened-session routing, protocol-error propagation, transport limits/fail-closed behavior, graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, deterministic/bounded game-region ranking, stable game-region refresh/reacquisition generations, composed visual-pipeline baseline generations, connected visual-motion regions, temporal track identity, velocity/projection, confidence decay, temporal coordinate-space/dimension resets, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, browser lifecycle controllers, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
 
-See [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md) for stable renderer refresh/reacquisition semantics, [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md) for bounded motion-region tracking and projection, [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) for the composed observation path, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling and motion differencing.
+See [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) for the dependency-free Chromium process/CDP path, [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md) for stable renderer refresh/reacquisition semantics, [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md) for bounded motion-region tracking and projection, [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) for the composed observation path, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling and motion differencing.
 
 ## Current limitations / next slices
 
-1. **Pointer capture state:** relative movement is available, but pointer-lock acquisition, loss detection, and recovery are not yet first-class control-loop state.
-2. **Semantic visual understanding:** temporal tracks follow coarse changed regions, not object classes; appearance features and task-specific association are still needed to distinguish player, target, projectile, UI animation, camera motion, and background effects.
-3. **Camera/global motion:** connected change regions can be dominated by scrolling or camera motion; add bounded global-motion estimation so policies can separate scene movement from independently moving regions.
-4. **Game-specific control discovery:** input primitives exist, but arbitrary games still need bounded discovery/calibration of which keys/buttons/axes affect which observed state variables.
-5. **Composite key semantics:** ownership and roving tabindex bound speculative Arrow space; model orientation, wrapping, Home/End, PageUp/PageDown, and richer grid/menu/tree-specific transitions explicitly.
-6. **Explicit frame traversal edges:** pointer geometry is normalized across frames, but keyboard/frame ownership should be represented as first-class enter/exit-frame graph transitions.
-7. **Snapshot efficiency:** reduce full-tree observation cost through incremental invalidation and targeted refresh while preserving stable backend/AX identity.
-8. **Control trace/replay:** record deterministic non-sensitive control/perception metadata and support replay without storing screenshot bytes by default.
-9. **Multi-level scroll planning:** nested reveal handles the nearest reachable scroll scope; plan explicitly through multiple nested scroll scopes and page scrolling when more than one level must move.
-10. **Action semantics:** expand verification for navigation, dialogs, selection commits, and form submission while retaining fail-closed observation rules.
+1. **Cross-category task capability model:** the seven target task families are now explicit scope, but the runtime needs a machine-readable capability taxonomy and task requirements so planners can fail early when a workflow needs an unsupported primitive.
+2. **Permissions, clipboard, media and user-mediated authentication:** general communication/content/identity workflows need first-class permission state, clipboard operations, media/fullscreen state, and explicit boundaries for MFA/passkeys/identity prompts.
+3. **Document/editor semantics:** content creation and collaboration need selection/range editing, rich-text/contenteditable semantics, drag/drop, clipboard-rich content, and editor-specific verification beyond simple text inputs.
+4. **Transaction safety:** commerce/booking/account flows need stronger commitment detection, amount/recipient/order summaries, and explicit confirmation gates immediately before irreversible side effects.
+5. **Pointer capture state:** relative movement is available, but pointer-lock acquisition, loss detection, and recovery are not yet first-class control-loop state.
+6. **Semantic visual understanding and global motion:** temporal tracks follow coarse change regions; camera/scroll motion separation and higher-level appearance/task association are still needed.
+7. **Game-specific control discovery:** input primitives exist, but arbitrary games still need bounded discovery/calibration of which controls affect which observed state variables.
+8. **Composite key and frame traversal semantics:** model orientation/wrapping/Home/End/Page keys plus explicit cross-frame keyboard traversal.
+9. **Snapshot efficiency and trace/replay:** reduce full-tree refresh cost and add deterministic non-sensitive execution replay/checkpointing.
+10. **Browser-engine portability:** the standalone path is intentionally Chromium/CDP-first. Firefox/WebKit support should use native in-repo protocol adapters rather than reintroducing a framework dependency.
