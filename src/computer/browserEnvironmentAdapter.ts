@@ -404,14 +404,17 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     if (actionTrace) return unknownAfterInvocation(`browser.runtime.${result.status}`);
     return failedPreDispatch(`browser.runtime.${result.status}`, 'failed');
   }
-  private runtimeForCommitment(resolved?: ResolvedEntity): BrowserComputerRuntime {
+  private runtimeForCommitment(resolved: ResolvedEntity | undefined, onStaleBeforeDispatch: () => void): BrowserComputerRuntime {
     if (!resolved) return this.runtime;
     const adapter = this;
     return new Proxy(this.runtime, {
       get(target, property) {
         if (property === 'activate') {
           return async (...args: Parameters<TaskRuntimeEngine['activate']>) => {
-            if (!(await adapter.entityIdentityCurrent(resolved))) throw new Error('browser.target.stale-before-dispatch');
+            if (!(await adapter.entityIdentityCurrent(resolved))) {
+              onStaleBeforeDispatch();
+              return { status: 'target-not-found', target: null };
+            }
             return target.activate(...args);
           };
         }
@@ -425,7 +428,8 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     payload: BrowserActivatePayload | BrowserPressKeyPayload,
     resolved?: ResolvedEntity,
   ): Promise<ComputerActionResult> {
-    const runtime = new TaskRuntime(this.runtimeForCommitment(resolved));
+    let staleBeforeDispatch = false;
+    const runtime = new TaskRuntime(this.runtimeForCommitment(resolved, () => { staleBeforeDispatch = true; }));
     const risk = request.effect === 'local-reversible' ? 'interaction' : 'external-side-effect';
     const action = request.capability === 'browser.activate'
       ? { id: 'act' as const, kind: 'activate' as const, target: { backendNodeId: resolved!.node.backendNodeId, frameId: resolved!.node.frameId }, method: (payload as BrowserActivatePayload).method, key: (payload as BrowserActivatePayload).key, risk, next: 'done' as const }
@@ -433,6 +437,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const result = await runtime.run({ version: 1, name: `computer-adapter:${request.actionId}`, entry: 'act', steps: [action, { id: 'done', kind: 'complete' }] }, {}, {
       ...this.options.runtimeOptions, maxSteps: 2, maxVisitsPerStep: 1, commitmentDetection: 'auto', commitmentVerification: 'auto',
     });
+    if (staleBeforeDispatch) return failedPreDispatch('browser.target.stale-before-dispatch');
     return this.taskResult(result);
   }
 
