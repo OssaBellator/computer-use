@@ -9,7 +9,7 @@ import {
  * retroactively.
  */
 export const CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE: BrowserCapabilityProfile = {
-  id: 'standalone-chromium-0.39',
+  id: 'standalone-chromium-0.40',
   capabilities: {
     ...STANDALONE_CHROMIUM_CAPABILITY_PROFILE.capabilities,
     'document-content-observation': {
@@ -19,6 +19,10 @@ export const CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE: BrowserCapabilityPr
     'rich-text-editing': {
       support: 'partial',
       note: 'bounded selection/caret observation plus exact native insertion/replacement/select-all/delete; formatting, rich clipboard, drag/drop, and editor-specific document verification remain incomplete',
+    },
+    'commitment-detection': {
+      support: 'partial',
+      note: 'TaskRuntime detects strong or context-corroborated purchase/booking/transfer/subscription/publish/destructive/security/process commitments from bounded semantic/document state and gates them before activation; site-specific semantics remain heuristic',
     },
   },
 };
