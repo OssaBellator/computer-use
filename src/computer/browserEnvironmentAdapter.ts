@@ -169,7 +169,7 @@ interface BrowserDocumentIdentity {
   complete: boolean;
 }
 interface ResolvedEntity {
-  node: InteractionNode;
+  node: Readonly<Pick<InteractionNode, 'id' | 'structuralId' | 'frameId'>>;
   surface: ComputerSurfaceRef;
   identity: BrowserDocumentIdentity;
   frameToken: string;
@@ -234,6 +234,21 @@ function plainDataRecord(value: unknown, label: string, knownKeys: readonly stri
 }
 function dataProperty(record: Record<string, unknown>, key: string): unknown {
   return Object.getOwnPropertyDescriptor(record, key)?.value;
+}
+function snapshotResolvedSemanticNode(value: unknown): Readonly<Pick<InteractionNode, 'id' | 'structuralId' | 'frameId'>> {
+  const source = plainDataRecord(value, 'browser resolved semantic node', ['id', 'structuralId', 'frameId']);
+  const id = dataProperty(source, 'id');
+  const structuralId = dataProperty(source, 'structuralId');
+  const frameId = dataProperty(source, 'frameId');
+  if (typeof id !== 'string' || id.length === 0 || typeof frameId !== 'string' || frameId.length === 0 ||
+      (structuralId !== undefined && typeof structuralId !== 'string')) {
+    throw new Error('browser.semantic.resolved-node-invalid');
+  }
+  return Object.freeze({
+    id,
+    ...(structuralId !== undefined ? { structuralId } : {}),
+    frameId,
+  });
 }
 function isInteractionCapability(value: unknown): value is InteractionCapability {
   return value === 'focus' || value === 'activate' || value === 'type' || value === 'upload' ||
@@ -674,10 +689,14 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const expectedFrameToken = explicitFrameToken ?? match[1];
     const before = await this.activeDocumentIdentity(surface);
     if (!before || (frameId !== 'main' && !before.complete) || before.topToken !== match[1] || before.frameTokens[frameId] !== expectedFrameToken) return undefined;
-    const node = await this.runtime.resolveBoundedSemanticTarget(surface.surfaceId, structuralId, BOUNDED_ACTION_SEMANTIC_LIMITS);
+    const rawNode = await this.runtime.resolveBoundedSemanticTarget(surface.surfaceId, structuralId, BOUNDED_ACTION_SEMANTIC_LIMITS);
+    if (!rawNode) return undefined;
+    let node: ResolvedEntity['node'];
+    try { node = snapshotResolvedSemanticNode(rawNode); }
+    catch { return undefined; }
     const after = await this.activeDocumentIdentity(surface);
     if (!after || (frameId !== 'main' && !after.complete) || !sameDocumentIdentity(before, after) || after.topToken !== match[1] || after.frameTokens[frameId] !== expectedFrameToken) return undefined;
-    if (!node || node.frameId !== frameId || (node.id !== structuralId && node.structuralId !== structuralId)) return undefined;
+    if (node.frameId !== frameId || (node.id !== structuralId && node.structuralId !== structuralId)) return undefined;
     return { node, surface, identity: after, frameToken: expectedFrameToken, structuralId };
   }
   private async boundedObservedTarget(
