@@ -130,7 +130,7 @@ test('compatibility rejects wrong and modified programs', () => {
 
   const modified: CheckpointableTaskProgram = {
     ...program,
-    steps: program.steps.map((step) => step.id === 'review' ? { ...step, next: 'type-secret' } : step),
+    steps: program.steps.map((step) => step.id === 'review' ? { ...step, description: 'changed-review' } : step),
   };
   const changed = checkTaskCheckpointCompatibility(value, {
     programId: 'fixture/checkout',
