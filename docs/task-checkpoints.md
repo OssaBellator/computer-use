@@ -10,7 +10,7 @@ A version 1 checkpoint contains only restart-validation state:
 - the next step ID to execute;
 - total steps already executed, per-step visit counts, and the consecutive no-progress counter;
 - the original execution ceilings for total steps, visits per step, and consecutive no-progress attempts; and
-- one opaque lowercase-hex browser-state fingerprint captured from the browser observation boundary.
+- one opaque 256-bit lowercase-hex browser-state fingerprint derived from a non-sensitive resume-state projection.
 
 The codec deliberately has no extension bag or arbitrary metadata field. Unknown fields are rejected on encode and decode so the checkpoint does not become a general-purpose persistence container.
 
@@ -29,6 +29,12 @@ Trusted values are supplied again after restart with `bindTrustedTaskResumeInput
 The serialized envelope includes a SHA-256 digest over the canonical checkpoint payload. `deserializeTaskCheckpoint()` rejects malformed JSON, unknown schema fields, malformed digests, unsupported checkpoint versions, payloads larger than 64 KiB, and integrity mismatches before returning a normalized checkpoint.
 
 The SHA-256 envelope is corruption detection, not an authenticated signature. A party that can rewrite both the payload and digest can forge a new internally consistent checkpoint. Persist checkpoints in trusted storage, or add an external authenticated-storage/MAC layer at the later integration boundary if adversarial storage is in scope.
+
+## Browser-state fingerprint boundary
+
+Version 1 requires exactly 64 lowercase hexadecimal characters for `browserStateFingerprint`. This deliberately does **not** accept the existing 8-hex `taskObservationFingerprint()` value used for in-process progress detection: a 32-bit progress hash is too collision-prone for durable recovery validation.
+
+The future integration must derive the 256-bit checkpoint fingerprint from a specifically reviewed, non-sensitive resume-state projection. The codec does not accept raw browser content and does not define that projection in this branch. Merely hashing secret-bearing typed values, document excerpts, cookies, tokens, amounts, counterparties, or other excluded content is not a substitute for defining a non-sensitive projection.
 
 ## Creation and resume compatibility
 
@@ -63,7 +69,7 @@ A future `TaskRuntime` integration should checkpoint only at safe step boundarie
 
 1. decode and integrity-check the persisted checkpoint;
 2. load and validate the trusted current `TaskProgram` and explicit program ID;
-3. capture a fresh non-sensitive browser-state fingerprint;
+3. capture a fresh 256-bit fingerprint from the reviewed non-sensitive resume-state projection;
 4. run compatibility checks;
 5. re-bind trusted input values through `bindTrustedTaskResumeInputs()`; and
 6. resume using the stored counters and original budget ceilings.
