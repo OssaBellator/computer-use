@@ -112,6 +112,14 @@ function isNativeInlineFormat(value: unknown): value is RichTextNativeInlineForm
   return value === 'bold' || value === 'italic' || value === 'underline';
 }
 
+function resolvePrimaryModifier(value: unknown): 'Control' | 'Meta' {
+  if (value === undefined) return process.platform === 'darwin' ? 'Meta' : 'Control';
+  if (value !== 'Control' && value !== 'Meta') {
+    throw new Error('primaryModifier must be Control or Meta');
+  }
+  return value;
+}
+
 function sameFormattingSelection(
   before: DocumentSelectionState,
   after: DocumentSelectionState,
@@ -226,13 +234,12 @@ export class RichTextController {
   async selectAll(
     options: RichTextSelectAllOptions = {},
   ): Promise<RichTextEditResult> {
+    const primaryModifier = resolvePrimaryModifier(options.primaryModifier);
     const before = await this.observe(options.selection);
     const candidate = uniqueEditableSelection(before);
     if (candidate.status === 'none') return resultWithoutDispatch('no-editable-selection', before);
     if (candidate.status === 'ambiguous') return resultWithoutDispatch('selection-ambiguous', before);
 
-    const primaryModifier = options.primaryModifier ??
-      (process.platform === 'darwin' ? 'Meta' : 'Control');
     await this.input.pressKey(`${primaryModifier}+a`);
     const after = await this.observe(options.selection);
     const current = matchingAfter(candidate.selection, after);
@@ -277,6 +284,7 @@ export class RichTextController {
     if (typeof enabled !== 'boolean') {
       throw new Error('enabled must be a boolean');
     }
+    const primaryModifier = resolvePrimaryModifier(options.primaryModifier);
 
     const selectionBefore = await this.observe(options.selection);
     const candidate = uniqueEditableSelection(selectionBefore);
@@ -319,8 +327,6 @@ export class RichTextController {
       return formatResult('unchanged', format, enabled, before, before);
     }
 
-    const primaryModifier = options.primaryModifier ??
-      (process.platform === 'darwin' ? 'Meta' : 'Control');
     const key = format === 'bold' ? 'b' : format === 'italic' ? 'i' : 'u';
     await this.input.pressKey(`${primaryModifier}+${key}`);
 
