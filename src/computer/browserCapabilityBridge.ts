@@ -36,6 +36,18 @@ function mapped(
   };
 }
 
+function partialIfAvailable(
+  profile: BrowserCapabilityProfile,
+  capability: BrowserTaskCapability,
+  note: string,
+): ComputerCapabilityState {
+  const state = browserState(profile, capability);
+  return {
+    support: state.support === 'unsupported' ? 'unsupported' : 'partial',
+    note: state.note ? `${note}; browser profile: ${state.note}` : note,
+  };
+}
+
 function unsupported(note: string): ComputerCapabilityState {
   return { support: 'unsupported', note };
 }
@@ -89,15 +101,17 @@ export function computerProfileFromBrowserProfile(
     'network-session': unsupported('browser network observation is not general network-session control'),
     'remote-desktop': unsupported('no RDP/VNC desktop-session adapter'),
     'ssh-session': unsupported('no SSH session adapter'),
-    'communication-control': {
-      support: 'partial',
-      note: 'browser semantic interaction can operate some web communication UIs, but desktop/VoIP/session state is not generalized',
-    },
+    'communication-control': partialIfAvailable(
+      profile,
+      'semantic-interaction-observation',
+      'browser semantic interaction can operate some web communication UIs, but desktop/VoIP/session state is not generalized',
+    ),
     'media-playback': mapped(profile, 'media-playback-control', 'HTML media playback only'),
-    'game-control': {
-      support: browserState(profile, 'realtime-control').support === 'unsupported' ? 'unsupported' : 'partial',
-      note: 'browser realtime/game controls exist, but this does not cover arbitrary locally installed games or OS input routing',
-    },
+    'game-control': partialIfAvailable(
+      profile,
+      'realtime-control',
+      'browser realtime/game controls exist, but this does not cover arbitrary locally installed games or OS input routing',
+    ),
     'hardware-device-control': unsupported('no direct hardware/VR/peripheral control adapter'),
     'task-checkpointing': mapped(profile, 'long-running-task-checkpointing', 'browser task checkpoint foundation only'),
     'explicit-confirmation-gate': mapped(profile, 'explicit-confirmation-gate', 'browser TaskRuntime approval gate'),
