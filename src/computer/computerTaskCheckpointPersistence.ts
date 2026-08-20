@@ -115,6 +115,34 @@ function sameBinding(
   return actual.programId === expected.programId && actual.programHash === expected.programHash && actual.executionId === expected.executionId;
 }
 
+function assertSafeCheckpointProgression(existing: ComputerTaskCheckpoint, next: ComputerTaskCheckpoint): void {
+  if (next.cursor.stepsExecuted < existing.cursor.stepsExecuted) {
+    throw new Error('persisted computer task checkpoint semantic rollback detected: execution history regressed');
+  }
+  const nextByStep = new Map(next.actions.map((action) => [action.stepId, action]));
+  for (const previous of existing.actions) {
+    const candidate = nextByStep.get(previous.stepId);
+    if (!candidate) throw new Error('persisted computer task checkpoint semantic rollback detected: action history missing');
+    if (previous.state === 'completed' && candidate.state !== 'completed') {
+      throw new Error('persisted computer task checkpoint semantic rollback detected: completed action regressed');
+    }
+    if (
+      (previous.state === 'unknown-dispatch' || previous.state === 'dispatched-unverified') &&
+      candidate.state === 'not-started'
+    ) {
+      throw new Error('persisted computer task checkpoint semantic rollback detected: uncertain action became replayable');
+    }
+    if (
+      previous.state === 'dispatched-unverified' &&
+      previous.uncertainty !== undefined &&
+      candidate.state === 'dispatched-unverified' &&
+      candidate.uncertainty !== previous.uncertainty
+    ) {
+      throw new Error('persisted computer task checkpoint semantic rollback detected: verification uncertainty regressed');
+    }
+  }
+}
+
 async function readBounded(path: string, maxBytes: number): Promise<string | undefined> {
   let handle;
   try {
@@ -277,6 +305,15 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
     }
     if (existingEnvelope && anchor && anchor.generation === existingEnvelope.generation && anchor.envelopeDigest !== sha256(existing!)) {
       throw new Error('persisted computer task checkpoint stale replacement detected');
+    }
+    if (existingEnvelope) {
+      const existingCheckpoint = decodeComputerTaskCheckpoint(existingEnvelope.checkpoint);
+      validateComputerTaskCheckpoint(existingCheckpoint, {
+        program: binding.program,
+        executionId: binding.executionId,
+        requireRuntimeProvenance: true,
+      });
+      assertSafeCheckpointProgression(existingCheckpoint, checkpoint);
     }
     const generation = Math.max(existingEnvelope?.generation ?? 0, anchor?.generation ?? 0) + 1;
     const unsigned: PersistedCheckpointUnsignedEnvelope = {
