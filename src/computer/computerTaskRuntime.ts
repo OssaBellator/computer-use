@@ -22,6 +22,7 @@ import {
   validateComputerTaskCheckpoint,
   type ComputerTaskActionCheckpointState,
   type ComputerTaskCheckpoint,
+  type ComputerTaskCheckpointUncertainty,
 } from './computerTaskCheckpoint.js';
 
 export const COMPUTER_TASK_MAX_RETAINED_OBSERVATIONS = 64;
@@ -72,6 +73,32 @@ export interface ComputerTaskVerificationContext {
   registry: ComputerEnvironmentRegistry;
 }
 
+export type ComputerTaskReconciliationState =
+  | 'unknown-dispatch'
+  | 'dispatched-unverified'
+  | 'verification-pending'
+  | 'verification-mismatch';
+
+export interface ComputerTaskReconciliationCase {
+  stepId: string;
+  state: ComputerTaskReconciliationState;
+}
+
+export interface ComputerTaskReconciliationContext {
+  /** Immutable runtime-owned executable snapshot. */
+  step: ComputerTaskActionStep;
+  state: ComputerTaskReconciliationState;
+  registry: ComputerEnvironmentRegistry;
+}
+
+export interface ComputerTaskReconciliationAssessment {
+  /** Assessment is advisory only; it never mutates checkpoint state. */
+  outcome: 'completed' | 'not-dispatched' | 'uncertain';
+  evidence?: readonly string[];
+}
+
+export type ComputerTaskReconciliationResolution = 'completed' | 'not-dispatched';
+
 export interface ComputerTaskRuntimeHooks {
   /** Must use bounded adapter/domain observations; raw observations are not retained by the runtime. */
   revalidateTarget?: (
@@ -80,6 +107,8 @@ export interface ComputerTaskRuntimeHooks {
   ) => Promise<ComputerTaskTargetRevalidation>;
   approve?: (context: ComputerTaskApprovalContext) => Promise<boolean>;
   verifiers?: Readonly<Record<string, (context: ComputerTaskVerificationContext) => Promise<ComputerTaskVerificationDecision>>>;
+  /** Domain-specific assessment only. Caller must separately call resolveReconciliation before run can progress. */
+  reconcile?: (context: ComputerTaskReconciliationContext) => Promise<ComputerTaskReconciliationAssessment>;
 }
 
 export interface ComputerTaskRuntimeOptions {
@@ -169,6 +198,12 @@ function terminalFromVerification(state: ComputerVerificationState): ComputerTas
   return 'unverified';
 }
 
+function uncertaintyFromVerification(state: ComputerVerificationState): ComputerTaskCheckpointUncertainty | undefined {
+  if (state === 'pending') return 'verification-pending';
+  if (state === 'mismatch' || state === 'rejected') return 'verification-mismatch';
+  return undefined;
+}
+
 export class ComputerTaskRuntime {
   private readonly program: ComputerTaskProgram;
   private readonly registry: ComputerEnvironmentRegistry;
@@ -176,9 +211,9 @@ export class ComputerTaskRuntime {
   private readonly hooks: ComputerTaskRuntimeHooks;
   private readonly stepById: Map<string, ComputerTaskStep>;
   private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
+  private readonly actionUncertainties = new Map<string, ComputerTaskCheckpointUncertainty>();
   private currentStepId: string | undefined;
   private stepsExecuted = 0;
-  private unresolvedCheckpointDispatch = false;
   private observationsDropped = 0;
 
   constructor(
@@ -209,9 +244,7 @@ export class ComputerTaskRuntime {
       this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
       for (const action of options.checkpoint.actions) {
         this.actionStates.set(action.stepId, action.state);
-        if (action.state === 'unknown-dispatch' || action.state === 'dispatched-unverified') {
-          this.unresolvedCheckpointDispatch = true;
-        }
+        if (action.uncertainty) this.actionUncertainties.set(action.stepId, action.uncertainty);
       }
     }
   }
@@ -223,7 +256,53 @@ export class ComputerTaskRuntime {
       nextStepId: this.currentStepId,
       stepsExecuted: this.stepsExecuted,
       actions: this.actionStates,
+      uncertainties: this.actionUncertainties,
     });
+  }
+
+  pendingReconciliations(): readonly ComputerTaskReconciliationCase[] {
+    const cases: ComputerTaskReconciliationCase[] = [];
+    for (const step of this.program.steps) {
+      if (step.kind !== 'action') continue;
+      const state = this.actionStates.get(step.id);
+      if (state !== 'unknown-dispatch' && state !== 'dispatched-unverified') continue;
+      cases.push(Object.freeze({
+        stepId: step.id,
+        state: this.actionUncertainties.get(step.id) ?? state,
+      }));
+    }
+    return Object.freeze(cases);
+  }
+
+  async assessReconciliation(stepId: string): Promise<ComputerTaskReconciliationAssessment> {
+    const reconciliation = this.pendingReconciliations().find((entry) => entry.stepId === stepId);
+    if (!reconciliation) throw new Error('computer task action does not require reconciliation');
+    const step = this.stepById.get(stepId);
+    if (!step || step.kind !== 'action') throw new Error('computer task reconciliation step is invalid');
+    const hook = this.hooks.reconcile;
+    if (!hook) return Object.freeze({ outcome: 'uncertain' as const, evidence: ['reconciliation-hook-not-found'] });
+    const assessment = await hook({ step, state: reconciliation.state, registry: this.registry });
+    if (!assessment || !['completed', 'not-dispatched', 'uncertain'].includes(assessment.outcome)) {
+      return Object.freeze({ outcome: 'uncertain' as const, evidence: ['reconciliation-response-invalid'] });
+    }
+    return Object.freeze({ outcome: assessment.outcome, evidence: evidence(assessment.evidence) });
+  }
+
+  /** Explicit caller resolution. No reconciliation hook can call this implicitly through run(). */
+  resolveReconciliation(stepId: string, resolution: ComputerTaskReconciliationResolution): void {
+    const state = this.actionStates.get(stepId);
+    if (state !== 'unknown-dispatch' && state !== 'dispatched-unverified') {
+      throw new Error('computer task action does not require reconciliation');
+    }
+    if (resolution !== 'completed' && resolution !== 'not-dispatched') {
+      throw new Error('invalid computer task reconciliation resolution');
+    }
+    this.actionStates.set(stepId, resolution === 'completed' ? 'completed' : 'not-started');
+    this.actionUncertainties.delete(stepId);
+  }
+
+  private hasUnresolvedReconciliation(): boolean {
+    return this.pendingReconciliations().length > 0;
   }
 
   private preflight(step: ComputerTaskStep): ComputerTaskRunResult | undefined {
@@ -273,6 +352,7 @@ export class ComputerTaskRuntime {
   }
 
   private recordDispatchBeforeVerification(stepId: string, adapterResult: ComputerActionResult): void {
+    this.actionUncertainties.delete(stepId);
     if (adapterResult.dispatch === 'unknown') {
       this.actionStates.set(stepId, 'unknown-dispatch');
     } else if (adapterResult.dispatch === 'dispatched-once') {
@@ -280,6 +360,12 @@ export class ComputerTaskRuntime {
     } else {
       this.actionStates.set(stepId, 'not-started');
     }
+  }
+
+  private recordVerificationUncertainty(stepId: string, adapterResult: ComputerActionResult, verification: ComputerVerificationState): void {
+    if (adapterResult.dispatch !== 'dispatched-once') return;
+    const uncertainty = uncertaintyFromVerification(verification);
+    if (uncertainty) this.actionUncertainties.set(stepId, uncertainty);
   }
 
   private verifierFailureResult(adapterResult: ComputerActionResult): ComputerTaskRunResult {
@@ -299,6 +385,7 @@ export class ComputerTaskRuntime {
       return { result: this.result('reconciliation-required', [], ['checkpoint-unresolved-dispatch']) };
     }
     this.actionStates.set(step.id, 'not-started');
+    this.actionUncertainties.delete(step.id);
 
     const firstFresh = await this.targetFresh(step);
     if (firstFresh.state !== 'fresh') {
@@ -333,6 +420,7 @@ export class ComputerTaskRuntime {
         return { result: this.verifierFailureResult(adapterResult) };
       }
 
+      this.recordVerificationUncertainty(step.id, adapterResult, verification.state);
       const verificationStatus = terminalFromVerification(verification.state);
       const effectfulDispatchedWithoutVerification =
         step.request.effect !== 'observe-only' && adapterResult.dispatch === 'dispatched-once' && verification.state === 'not-applicable';
@@ -348,6 +436,7 @@ export class ComputerTaskRuntime {
           return { result: this.result('unknown-dispatch', [], evidence(adapterResult.evidence, verification.evidence)) };
         }
         this.actionStates.set(step.id, 'completed');
+        this.actionUncertainties.delete(step.id);
         return { result: this.result('completed', [], evidence(adapterResult.evidence, verification.evidence)), next: step.onSuccess };
       }
 
@@ -378,7 +467,7 @@ export class ComputerTaskRuntime {
   async run(): Promise<ComputerTaskRunResult> {
     const observations: ComputerTaskObservationRecord[] = [];
     this.observationsDropped = 0;
-    if (this.unresolvedCheckpointDispatch) {
+    if (this.hasUnresolvedReconciliation()) {
       return this.result('reconciliation-required', observations, ['checkpoint-unresolved-dispatch']);
     }
     const maxSteps = Math.max(1, this.program.steps.length * (4 + 3));

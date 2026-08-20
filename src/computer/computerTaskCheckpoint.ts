@@ -7,10 +7,13 @@ export const COMPUTER_TASK_CHECKPOINT_MAX_BYTES = 64 * 1024;
 export const COMPUTER_TASK_CHECKPOINT_MAX_STEPS_EXECUTED = 1_000_000;
 
 export type ComputerTaskActionCheckpointState = 'not-started' | 'completed' | 'dispatched-unverified' | 'unknown-dispatch';
+export type ComputerTaskCheckpointUncertainty = 'verification-pending' | 'verification-mismatch';
 
 export interface ComputerTaskActionCheckpoint {
   stepId: string;
   state: ComputerTaskActionCheckpointState;
+  /** Optional non-secret subtype for explicit post-restart reconciliation. */
+  uncertainty?: ComputerTaskCheckpointUncertainty;
 }
 
 export interface ComputerTaskCheckpoint {
@@ -45,6 +48,7 @@ const ACTION_STATES: readonly ComputerTaskActionCheckpointState[] = [
   'dispatched-unverified',
   'unknown-dispatch',
 ];
+const UNCERTAINTIES: readonly ComputerTaskCheckpointUncertainty[] = ['verification-pending', 'verification-mismatch'];
 const CHECKPOINT_PROVENANCE = Symbol('computer-task-checkpoint-provenance');
 type ProvenancedCheckpoint = ComputerTaskCheckpoint & { readonly [CHECKPOINT_PROVENANCE]: true };
 
@@ -144,8 +148,6 @@ function cursorReachableUnderHistory(
       continue;
     }
     if (state === 'not-started' && step.onFailure) {
-      // A definitely-not-dispatched failure may legitimately have followed onFailure
-      // while leaving the action replay-safe. Treat that edge as history-reachable.
       queue.push({ stepId: step.onFailure, moved: true });
     }
   }
@@ -206,6 +208,11 @@ export function validateComputerTaskCheckpoint(
     if (!boundedIdentifier(action?.stepId, 128) || !ACTION_STATES.includes(action.state) || seen.has(action.stepId)) {
       throw new Error('invalid computer task checkpoint action entry');
     }
+    if (action.uncertainty !== undefined) {
+      if (action.state !== 'dispatched-unverified' || !UNCERTAINTIES.includes(action.uncertainty)) {
+        throw new Error('invalid computer task checkpoint uncertainty');
+      }
+    }
     seen.add(action.stepId);
   }
 
@@ -254,17 +261,27 @@ export function createComputerTaskCheckpoint(options: {
   nextStepId?: string;
   stepsExecuted: number;
   actions: ReadonlyMap<string, ComputerTaskActionCheckpointState> | Readonly<Record<string, ComputerTaskActionCheckpointState>>;
+  uncertainties?: ReadonlyMap<string, ComputerTaskCheckpointUncertainty> | Readonly<Record<string, ComputerTaskCheckpointUncertainty>>;
 }): ComputerTaskCheckpoint {
   const programErrors = validateComputerTaskProgram(options.program);
   if (programErrors.length > 0) throw new Error(`invalid computer task program: ${programErrors.join('; ')}`);
   const supplied = options.actions instanceof Map ? new Map(options.actions) : new Map(Object.entries(options.actions));
-  const actions = actionStepIds(options.program).map((stepId) => ({
-    stepId,
-    state: supplied.get(stepId) ?? 'not-started',
-  }));
+  const suppliedUncertainties = options.uncertainties instanceof Map
+    ? new Map(options.uncertainties)
+    : new Map(Object.entries(options.uncertainties ?? {}));
+  const actions = actionStepIds(options.program).map((stepId): ComputerTaskActionCheckpoint => {
+    const state = supplied.get(stepId) ?? 'not-started';
+    const uncertainty = suppliedUncertainties.get(stepId);
+    return uncertainty === undefined ? { stepId, state } : { stepId, state, uncertainty };
+  });
   for (const suppliedStepId of supplied.keys()) {
     if (!actions.some((action) => action.stepId === suppliedStepId)) {
       throw new Error('computer task checkpoint action names a missing or non-action step');
+    }
+  }
+  for (const suppliedStepId of suppliedUncertainties.keys()) {
+    if (!actions.some((action) => action.stepId === suppliedStepId)) {
+      throw new Error('computer task checkpoint uncertainty names a missing or non-action step');
     }
   }
   const checkpoint: ComputerTaskCheckpoint = {
