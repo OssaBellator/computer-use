@@ -1,7 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { ComputerTaskProgram } from './computerTask.js';
+import { snapshotComputerTaskProgram, type ComputerTaskProgram } from './computerTask.js';
 import {
   computerTaskProgramHash,
   decodeComputerTaskCheckpoint,
@@ -98,6 +98,28 @@ function verifyAuthentication(key: Uint8Array, value: unknown, kind: string): vo
   const expected = Buffer.from(hmac(key, canonicalJson(unsigned)), 'hex');
   const actual = Buffer.from(authentication.tag, 'hex');
   if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error(`${kind} authentication mismatch`);
+}
+
+function snapshotPersistenceBinding(binding: ComputerTaskCheckpointPersistenceBinding): ComputerTaskCheckpointPersistenceBinding {
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) throw new Error('invalid computer task checkpoint persistence binding');
+  let programDescriptor: PropertyDescriptor | undefined;
+  let executionDescriptor: PropertyDescriptor | undefined;
+  try {
+    programDescriptor = Object.getOwnPropertyDescriptor(binding, 'program');
+    executionDescriptor = Object.getOwnPropertyDescriptor(binding, 'executionId');
+  } catch {
+    throw new Error('invalid computer task checkpoint persistence binding');
+  }
+  if (!programDescriptor || !('value' in programDescriptor) || !executionDescriptor || !('value' in executionDescriptor)) {
+    throw new Error('computer task checkpoint persistence binding must use own data properties');
+  }
+  if (typeof executionDescriptor.value !== 'string' || !EXECUTION_ID.test(executionDescriptor.value)) {
+    throw new Error('computer task execution id is invalid');
+  }
+  return Object.freeze({
+    program: snapshotComputerTaskProgram(programDescriptor.value as ComputerTaskProgram),
+    executionId: executionDescriptor.value,
+  });
 }
 
 function bindingIdentity(binding: ComputerTaskCheckpointPersistenceBinding): PersistedCheckpointUnsignedEnvelope['binding'] {
@@ -260,7 +282,8 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
   }
 
   async load(binding: ComputerTaskCheckpointPersistenceBinding): Promise<ComputerTaskCheckpoint | undefined> {
-    const expectedBinding = bindingIdentity(binding);
+    const bindingSnapshot = snapshotPersistenceBinding(binding);
+    const expectedBinding = bindingIdentity(bindingSnapshot);
     const [encoded, anchorEncoded] = await Promise.all([
       readBounded(this.filePath, this.maxBytes),
       readBounded(this.anchorPath, this.maxBytes),
@@ -287,15 +310,20 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
       await this.writeAnchor(envelope.generation, envelopeDigest, expectedBinding);
     }
     const checkpoint = decodeComputerTaskCheckpoint(envelope.checkpoint);
-    validateComputerTaskCheckpoint(checkpoint, { program: binding.program, executionId: binding.executionId, requireRuntimeProvenance: true });
+    validateComputerTaskCheckpoint(checkpoint, {
+      program: bindingSnapshot.program,
+      executionId: bindingSnapshot.executionId,
+      requireRuntimeProvenance: true,
+    });
     return checkpoint;
   }
 
   async save(checkpoint: ComputerTaskCheckpoint, binding: ComputerTaskCheckpointPersistenceBinding): Promise<void> {
-    const expectedBinding = bindingIdentity(binding);
+    const bindingSnapshot = snapshotPersistenceBinding(binding);
+    const expectedBinding = bindingIdentity(bindingSnapshot);
     const checkpointSnapshot = snapshotComputerTaskCheckpoint(checkpoint, {
-      program: binding.program,
-      executionId: binding.executionId,
+      program: bindingSnapshot.program,
+      executionId: bindingSnapshot.executionId,
       requireRuntimeProvenance: true,
     });
     const existing = await readBounded(this.filePath, this.maxBytes);
@@ -314,8 +342,8 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
     if (existingEnvelope) {
       const existingCheckpoint = decodeComputerTaskCheckpoint(existingEnvelope.checkpoint);
       validateComputerTaskCheckpoint(existingCheckpoint, {
-        program: binding.program,
-        executionId: binding.executionId,
+        program: bindingSnapshot.program,
+        executionId: bindingSnapshot.executionId,
         requireRuntimeProvenance: true,
       });
       assertSafeCheckpointProgression(existingCheckpoint, checkpointSnapshot);
