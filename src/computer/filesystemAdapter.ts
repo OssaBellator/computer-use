@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import { lstat, open, opendir, readlink, realpath } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { validateComputerActionRequest } from './environmentAdapter.js';
 import type {
   ComputerActionRequest,
   ComputerActionResult,
@@ -315,6 +316,14 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
+    if (validateComputerActionRequest(request, this.descriptor).length > 0) {
+      return {
+        status: 'rejected',
+        dispatch: 'not-dispatched',
+        verification: 'rejected',
+        evidence: ['filesystem-read-request-rejected'],
+      };
+    }
     if (request.capability !== 'filesystem.read') {
       return {
         status: 'unsupported',
