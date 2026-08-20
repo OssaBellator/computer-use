@@ -65,21 +65,9 @@ export interface ObserveMediaStateOptions {
   maxTimeSeconds?: number;
 }
 
-interface RawFrame {
-  id: string;
-  parentId?: string;
-}
-
-interface RawFrameTree {
-  frame: RawFrame;
-  childFrames?: RawFrameTree[];
-}
-
-interface FrameDescriptor {
-  frameId: string;
-  depth: number;
-}
-
+interface RawFrame { id: string; parentId?: string; }
+interface RawFrameTree { frame: RawFrame; childFrames?: RawFrameTree[]; }
+interface FrameDescriptor { frameId: string; depth: number; }
 interface RawMediaValue {
   tagName?: unknown;
   id?: unknown;
@@ -92,12 +80,7 @@ interface RawMediaValue {
   playbackRate?: unknown;
   visible?: unknown;
 }
-
-interface RawFullscreenValue {
-  tagName?: unknown;
-  id?: unknown;
-  ariaLabel?: unknown;
-}
+interface RawFullscreenValue { tagName?: unknown; id?: unknown; ariaLabel?: unknown; }
 
 const DEFAULT_MAX_FRAMES = 16;
 const DEFAULT_MAX_MEDIA_ELEMENTS = 32;
@@ -109,91 +92,55 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(value!)));
 }
-
 function boundedText(value: unknown, maxLength: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.trim();
   if (!normalized) return undefined;
   return normalized.length <= maxLength ? normalized : normalized.slice(0, maxLength);
 }
-
 function boundedNumber(value: unknown, min: number, max: number): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) return undefined;
   return value;
 }
-
 function errorMessage(error: unknown, maxTextLength: number): string {
   const text = error instanceof Error ? error.message : String(error);
   return text.length <= maxTextLength ? text : text.slice(0, maxTextLength);
 }
-
 function flattenFrames(frameTree: RawFrameTree, maxFrames: number): { frames: FrameDescriptor[]; truncated: boolean } {
   const frames: FrameDescriptor[] = [];
   let truncated = false;
   const visit = (tree: RawFrameTree, depth: number) => {
-    if (frames.length >= maxFrames) {
-      truncated = true;
-      return;
-    }
+    if (frames.length >= maxFrames) { truncated = true; return; }
     frames.push({ frameId: tree.frame.id, depth });
     for (const child of tree.childFrames ?? []) visit(child, depth + 1);
   };
   visit(frameTree, 0);
   return { frames, truncated };
 }
-
-function remoteObjectId(result: any): string | undefined {
-  const objectId = result?.result?.objectId;
-  return typeof objectId === 'string' ? objectId : undefined;
-}
-
 function throwForException(result: any, operation: string): void {
   if (!result?.exceptionDetails) return;
   const description = result.exceptionDetails?.exception?.description ?? result.exceptionDetails?.text ?? 'runtime exception';
   throw new Error(`${operation}: ${String(description)}`);
 }
-
 async function createWorld(session: CdpSessionLike, frameId: string): Promise<number> {
-  const result = await session.send('Page.createIsolatedWorld', {
-    frameId,
-    worldName: 'browser-automation-media-observer',
-  });
+  const result = await session.send('Page.createIsolatedWorld', { frameId, worldName: 'browser-automation-media-observer' });
   if (!Number.isInteger(result?.executionContextId)) throw new Error('Page.createIsolatedWorld returned no executionContextId');
   return result.executionContextId;
 }
-
 async function evaluateObject(session: CdpSessionLike, contextId: number, expression: string): Promise<any> {
-  const result = await session.send('Runtime.evaluate', {
-    expression,
-    contextId,
-    returnByValue: false,
-    silent: true,
-  });
+  const result = await session.send('Runtime.evaluate', { expression, contextId, returnByValue: false, silent: true });
   throwForException(result, 'Runtime.evaluate');
   return result?.result;
 }
-
 async function callByValue(session: CdpSessionLike, objectId: string, functionDeclaration: string): Promise<any> {
-  const result = await session.send('Runtime.callFunctionOn', {
-    objectId,
-    functionDeclaration,
-    returnByValue: true,
-    awaitPromise: true,
-    silent: true,
-  });
+  const result = await session.send('Runtime.callFunctionOn', { objectId, functionDeclaration, returnByValue: true, awaitPromise: true, silent: true });
   throwForException(result, 'Runtime.callFunctionOn');
   return result?.result?.value;
 }
-
 async function releaseObject(session: CdpSessionLike, objectId: string | undefined): Promise<void> {
   if (!objectId) return;
-  try {
-    await session.send('Runtime.releaseObject', { objectId });
-  } catch {
-    // Observation cleanup must not hide the primary result.
-  }
+  try { await session.send('Runtime.releaseObject', { objectId }); } catch {}
 }
-
 async function describeBackendNodeId(session: CdpSessionLike, objectId: string): Promise<number> {
   const result = await session.send('DOM.describeNode', { objectId, depth: 0, pierce: true });
   const backendNodeId = result?.node?.backendNodeId;
@@ -201,19 +148,11 @@ async function describeBackendNodeId(session: CdpSessionLike, objectId: string):
   return backendNodeId;
 }
 
-function parseMediaState(
-  frameId: string,
-  ordinal: number,
-  backendNodeId: number,
-  raw: RawMediaValue,
-  maxTextLength: number,
-  maxTimeSeconds: number,
-): MediaElementState {
+function parseMediaState(frameId: string, ordinal: number, backendNodeId: number, raw: RawMediaValue, maxTextLength: number, maxTimeSeconds: number): MediaElementState {
   const rawTagName = typeof raw.tagName === 'string' ? raw.tagName.toLowerCase() : '';
   const tagName: MediaElementIdentity['tagName'] = rawTagName === 'audio' || rawTagName === 'video' ? rawTagName : 'unknown';
   const rawPlayback = raw.playbackState;
-  const playbackState: MediaPlaybackState =
-    rawPlayback === 'playing' || rawPlayback === 'paused' || rawPlayback === 'ended' ? rawPlayback : 'unknown';
+  const playbackState: MediaPlaybackState = rawPlayback === 'playing' || rawPlayback === 'paused' || rawPlayback === 'ended' ? rawPlayback : 'unknown';
   return {
     identity: {
       frameId,
@@ -232,6 +171,18 @@ function parseMediaState(
     visible: typeof raw.visible === 'boolean' ? raw.visible : undefined,
   };
 }
+
+const MEDIA_ELEMENTS_EXPRESSION = `(() => {
+  const found = [];
+  const visit = (root) => {
+    for (const media of root.querySelectorAll('audio,video')) found.push(media);
+    for (const element of root.querySelectorAll('*')) {
+      if (element.shadowRoot) visit(element.shadowRoot);
+    }
+  };
+  visit(document);
+  return found;
+})()`;
 
 const MEDIA_STATE_FUNCTION = `function() {
   const text = (value, max) => {
@@ -256,6 +207,14 @@ const MEDIA_STATE_FUNCTION = `function() {
   };
 }`;
 
+const FULLSCREEN_ELEMENT_EXPRESSION = `(() => {
+  let owner = document.fullscreenElement;
+  while (owner && owner.shadowRoot && owner.shadowRoot.fullscreenElement) {
+    owner = owner.shadowRoot.fullscreenElement;
+  }
+  return owner;
+})()`;
+
 const FULLSCREEN_IDENTITY_FUNCTION = `function() {
   const text = (value) => {
     if (typeof value !== 'string') return undefined;
@@ -278,14 +237,8 @@ function mediaActivityScore(state: MediaElementState): number {
   return score;
 }
 
-/**
- * Observe bounded HTML media and fullscreen state across the current frame tree.
- * The function is read-only: it does not play media, request fullscreen, or mutate permissions.
- */
-export async function observeMediaState(
-  session: CdpSessionLike,
-  options: ObserveMediaStateOptions = {},
-): Promise<MediaStateSnapshot> {
+/** Observe bounded HTML media and fullscreen state across the current frame tree. */
+export async function observeMediaState(session: CdpSessionLike, options: ObserveMediaStateOptions = {}): Promise<MediaStateSnapshot> {
   const maxFrames = boundedInteger(options.maxFrames, DEFAULT_MAX_FRAMES, 1, 128);
   const maxMediaElements = boundedInteger(options.maxMediaElements, DEFAULT_MAX_MEDIA_ELEMENTS, 1, 256);
   const maxErrors = boundedInteger(options.maxErrors, DEFAULT_MAX_ERRORS, 1, 128);
@@ -293,8 +246,10 @@ export async function observeMediaState(
   const maxTimeSeconds = boundedInteger(options.maxTimeSeconds, DEFAULT_MAX_TIME_SECONDS, 60, 31 * 24 * 60 * 60);
 
   const errors: MediaObservationError[] = [];
+  let errorsTruncated = false;
   const recordError = (error: MediaObservationError) => {
     if (errors.length < maxErrors) errors.push(error);
+    else errorsTruncated = true;
   };
 
   let frames: FrameDescriptor[] = [];
@@ -318,19 +273,14 @@ export async function observeMediaState(
     try {
       contextId = await createWorld(session, frame.frameId);
     } catch (error) {
-      recordError({
-        scope: 'frame',
-        operation: 'Page.createIsolatedWorld',
-        frameId: frame.frameId,
-        message: errorMessage(error, maxTextLength),
-      });
+      recordError({ scope: 'frame', operation: 'Page.createIsolatedWorld', frameId: frame.frameId, message: errorMessage(error, maxTextLength) });
       continue;
     }
 
     if (media.length < maxMediaElements) {
       let mediaArrayId: string | undefined;
       try {
-        const mediaArray = await evaluateObject(session, contextId, `Array.from(document.querySelectorAll('audio,video'))`);
+        const mediaArray = await evaluateObject(session, contextId, MEDIA_ELEMENTS_EXPRESSION);
         mediaArrayId = typeof mediaArray?.objectId === 'string' ? mediaArray.objectId : undefined;
         if (mediaArrayId) {
           const properties = await session.send('Runtime.getProperties', { objectId: mediaArrayId, ownProperties: true });
@@ -345,33 +295,16 @@ export async function observeMediaState(
                 describeBackendNodeId(session, objectId),
                 callByValue(session, objectId, MEDIA_STATE_FUNCTION),
               ]);
-              media.push(parseMediaState(
-                frame.frameId,
-                Number(property.name),
-                backendNodeId,
-                (raw ?? {}) as RawMediaValue,
-                maxTextLength,
-                maxTimeSeconds,
-              ));
+              media.push(parseMediaState(frame.frameId, Number(property.name), backendNodeId, (raw ?? {}) as RawMediaValue, maxTextLength, maxTimeSeconds));
             } catch (error) {
-              recordError({
-                scope: 'media',
-                operation: 'observe-element',
-                frameId: frame.frameId,
-                message: errorMessage(error, maxTextLength),
-              });
+              recordError({ scope: 'media', operation: 'observe-element', frameId: frame.frameId, message: errorMessage(error, maxTextLength) });
             } finally {
               await releaseObject(session, objectId);
             }
           }
         }
       } catch (error) {
-        recordError({
-          scope: 'media',
-          operation: 'enumerate-elements',
-          frameId: frame.frameId,
-          message: errorMessage(error, maxTextLength),
-        });
+        recordError({ scope: 'media', operation: 'enumerate-elements', frameId: frame.frameId, message: errorMessage(error, maxTextLength) });
       } finally {
         await releaseObject(session, mediaArrayId);
       }
@@ -381,7 +314,7 @@ export async function observeMediaState(
 
     let fullscreenObjectId: string | undefined;
     try {
-      const fullscreenObject = await evaluateObject(session, contextId, 'document.fullscreenElement');
+      const fullscreenObject = await evaluateObject(session, contextId, FULLSCREEN_ELEMENT_EXPRESSION);
       fullscreenChecks += 1;
       fullscreenObjectId = typeof fullscreenObject?.objectId === 'string' ? fullscreenObject.objectId : undefined;
       if (fullscreenObjectId) {
@@ -390,24 +323,16 @@ export async function observeMediaState(
           callByValue(session, fullscreenObjectId, FULLSCREEN_IDENTITY_FUNCTION),
         ]);
         const value = (raw ?? {}) as RawFullscreenValue;
-        fullscreenCandidates.push({
-          depth: frame.depth,
-          identity: {
-            frameId: frame.frameId,
-            backendNodeId,
-            tagName: boundedText(value.tagName, maxTextLength) ?? 'unknown',
-            id: boundedText(value.id, maxTextLength),
-            ariaLabel: boundedText(value.ariaLabel, maxTextLength),
-          },
-        });
+        fullscreenCandidates.push({ depth: frame.depth, identity: {
+          frameId: frame.frameId,
+          backendNodeId,
+          tagName: boundedText(value.tagName, maxTextLength) ?? 'unknown',
+          id: boundedText(value.id, maxTextLength),
+          ariaLabel: boundedText(value.ariaLabel, maxTextLength),
+        } });
       }
     } catch (error) {
-      recordError({
-        scope: 'fullscreen',
-        operation: 'document.fullscreenElement',
-        frameId: frame.frameId,
-        message: errorMessage(error, maxTextLength),
-      });
+      recordError({ scope: 'fullscreen', operation: 'document.fullscreenElement', frameId: frame.frameId, message: errorMessage(error, maxTextLength) });
     } finally {
       await releaseObject(session, fullscreenObjectId);
     }
@@ -420,18 +345,11 @@ export async function observeMediaState(
     if (windowState === 'fullscreen') browserWindowState = 'fullscreen';
     else if (typeof windowState === 'string') browserWindowState = 'not-fullscreen';
   } catch (error) {
-    recordError({
-      scope: 'browser-window',
-      operation: 'Browser.getWindowForTarget',
-      message: errorMessage(error, maxTextLength),
-    });
+    recordError({ scope: 'browser-window', operation: 'Browser.getWindowForTarget', message: errorMessage(error, maxTextLength) });
   }
 
   const owner = fullscreenCandidates.sort((a, b) => b.depth - a.depth)[0]?.identity;
-  const pageState: PageFullscreenState = owner
-    ? 'active'
-    : (frames.length > 0 && fullscreenChecks === frames.length ? 'inactive' : 'unknown');
-
+  const pageState: PageFullscreenState = owner ? 'active' : (frames.length > 0 && fullscreenChecks === frames.length ? 'inactive' : 'unknown');
   const playing = media.filter((state) => state.playbackState === 'playing');
   const activeMedia = playing
     .map((state, index) => ({ state, index, score: mediaActivityScore(state) }))
@@ -442,7 +360,7 @@ export async function observeMediaState(
     activeMedia,
     activeMediaCount: playing.length,
     fullscreen: { pageState, owner, browserWindowState },
-    truncated,
+    truncated: truncated || errorsTruncated,
     errors,
   };
 }
