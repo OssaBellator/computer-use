@@ -13,6 +13,7 @@ function fixture() {
 
 const surface = { adapterId:'desktop:test', environment:'desktop-ui' as const, surfaceId:'win-1', generation:1 };
 const save = { adapterId:'desktop:test', environment:'desktop-ui' as const, kind:'ui-control' as const, entityId:'save', surfaceId:'win-1', generation:1 };
+const windowTarget = { adapterId:'desktop:test', environment:'desktop-ui' as const, kind:'surface' as const, entityId:'win-1', generation:1 };
 
 test('window identity includes owner, native identity, generation, and focus state', async () => {
   const {adapter} = fixture();
@@ -112,9 +113,28 @@ test('stale control is rejected before native dispatch', async () => {
   assert.equal(backend.actions.length,0);
 });
 
+test('window-level input rejects ui-control targets it cannot bind exactly', async () => {
+  for (const [capability,payload] of [
+    ['desktop.keyboard',{kind:'key-down',key:'A'}],
+    ['desktop.pointer.absolute',{kind:'click',x:150,y:150,button:'left'}],
+    ['desktop.pointer.relative',{dx:1,dy:2}],
+  ] as const) {
+    const {backend,adapter} = fixture();
+    backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:[
+      {controlId:'save',role:'button',focused:false,bounds:{x:0,y:0,width:20,height:20}},
+      {controlId:'field',role:'textbox',focused:true,bounds:{x:100,y:100,width:200,height:200}},
+    ]}});
+    const result = await adapter.act({adapterId:'desktop:test',actionId:`control-target-${capability}`,capability,effect:'local-reversible',idempotency:'idempotent',target:save,payload});
+    assert.equal(result.status,'rejected');
+    assert.equal(result.dispatch,'not-dispatched');
+    assert.deepEqual(result.evidence,['desktop-control-target-unsupported']);
+    assert.equal(backend.actions.length,0);
+  }
+});
+
 test('native action result maps dispatch and verification safely', async () => {
   const {backend,adapter} = fixture();
-  const result = await adapter.act({adapterId:'desktop:test',actionId:'key-1',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'non-idempotent',target:save,payload:{kind:'key-down',key:'Enter'}});
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'key-1',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'non-idempotent',target:windowTarget,payload:{kind:'key-down',key:'Enter'}});
   assert.deepEqual({status:result.status,dispatch:result.dispatch,verification:result.verification},{status:'completed',dispatch:'dispatched-once',verification:'verified'});
   assert.equal(backend.actions[0]?.kind,'keyboard');
 });
@@ -142,7 +162,7 @@ test('malformed and oversized keyboard payloads never dispatch', async () => {
 test('backend action exception becomes conservative unknown dispatch', async () => {
   const {backend,adapter} = fixture();
   backend.throwOnAction = 'pointer-absolute';
-  const result = await adapter.act({adapterId:'desktop:test',actionId:'ptr-1',capability:'desktop.pointer.absolute',effect:'local-reversible',idempotency:'idempotent',payload:{kind:'move',x:10,y:20},target:save});
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'ptr-1',capability:'desktop.pointer.absolute',effect:'local-reversible',idempotency:'idempotent',payload:{kind:'move',x:10,y:20},target:windowTarget});
   assert.equal(result.status,'unknown');
   assert.equal(result.dispatch,'unknown');
   assert.equal(result.verification,'unverified');
@@ -223,8 +243,7 @@ test('unavailable and unsupported visual results reject capture fields', async (
 
 test('surface entity supports window-targeted native input without inventing a control', async () => {
   const {backend,adapter} = fixture();
-  const windowEntity = {adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'surface' as const,entityId:'win-1',generation:1};
-  const result = await adapter.act({adapterId:'desktop:test',actionId:'focus-window',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:windowEntity});
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'focus-window',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:windowTarget});
   assert.equal(result.status,'completed');
   assert.equal(backend.actions[0]?.kind,'focus');
 });
