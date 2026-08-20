@@ -126,6 +126,10 @@ process.once('message', async (raw: unknown) => {
     const inputCheck = canonicalize(parsed, byteLength(message.inputEncoded), message.limits.maxJsonDepth, message.limits.maxJsonItems);
     if (inputCheck.encoded !== message.inputEncoded) throw new Error('input-canonical-mismatch');
     const input = deepFreeze(parsed);
+    let moduleProtocol: string;
+    try { moduleProtocol = new URL(message.moduleUrl).protocol; }
+    catch { throw new Error('registered-module-url-invalid'); }
+    if (moduleProtocol !== 'file:') throw new Error('registered-module-scheme-rejected');
     const loaded = await import(message.moduleUrl);
     const exported = loaded[message.exportName];
     const execute = typeof exported === 'function' ? exported : exported?.execute;
