@@ -14,6 +14,8 @@ import { validateComputerActionRequest, validateComputerObservationRequest } fro
 const DEFAULT_PROCESS_ITEMS = 64;
 const MAX_PROCESS_ITEMS = 256;
 const MAX_NAME_BYTES = 160;
+const DEFAULT_PROCESS_TEXT_BYTES = 16 * 1024;
+const MAX_PROCESS_TEXT_BYTES = 64 * 1024;
 const SYNTHETIC_GENERATION_BASE = Number.MAX_SAFE_INTEGER - 1_000_000;
 
 export type ProcessState = 'running' | 'sleeping' | 'waiting' | 'stopped' | 'zombie' | 'dead' | 'unknown';
@@ -202,6 +204,36 @@ export class ProcessIdentityStore {
   }
 }
 
+function applyTextBudget(
+  items: readonly BoundedProcessSnapshot[],
+  maxTextBytes: number,
+): { items: BoundedProcessSnapshot[]; truncated: boolean } {
+  let remaining = maxTextBytes;
+  let truncated = false;
+  const bounded = items.map((item) => {
+    const name = truncateUtf8(item.name, remaining);
+    const nameBytes = utf8Bytes(name);
+    if (nameBytes < utf8Bytes(item.name)) truncated = true;
+    remaining = Math.max(0, remaining - nameBytes);
+
+    let executable: string | undefined;
+    if (item.executable !== undefined) {
+      executable = truncateUtf8(item.executable, remaining);
+      const executableBytes = utf8Bytes(executable);
+      if (executableBytes < utf8Bytes(item.executable)) truncated = true;
+      remaining = Math.max(0, remaining - executableBytes);
+      if (executable.length === 0 && item.executable.length > 0) executable = undefined;
+    }
+
+    return {
+      ...item,
+      name,
+      ...(executable !== undefined ? { executable } : { executable: undefined }),
+    };
+  });
+  return { items: bounded, truncated };
+}
+
 function parsePid(ref: ComputerEntityRef): number | undefined {
   if (ref.kind !== 'process' || ref.environment !== 'process') return undefined;
   const match = /^pid:(\d+)$/u.exec(ref.entityId);
@@ -262,31 +294,36 @@ export class HostProcessAdapter implements ComputerEnvironmentAdapter {
         : request.target.generation !== undefined && current.ref.generation !== request.target.generation
           ? 'replaced'
           : 'current';
+      const textLimit = boundedInt(request.limits?.maxTextBytes, DEFAULT_PROCESS_TEXT_BYTES, MAX_PROCESS_TEXT_BYTES);
+      const textBounded = applyTextBudget(identity === 'current' && current ? [current] : [], textLimit);
       return {
         adapterId: this.descriptor.id,
         environment: 'process',
         channel: 'process',
         sequence,
-        complete: true,
-        truncated: false,
+        complete: !textBounded.truncated,
+        truncated: textBounded.truncated,
         target: request.target,
         data: {
-          processes: identity === 'current' && current ? [current] : [],
+          processes: textBounded.items,
           identity,
         } satisfies ProcessObservationData,
       };
     }
 
     const limit = boundedInt(request.limits?.maxItems, DEFAULT_PROCESS_ITEMS, MAX_PROCESS_ITEMS);
+    const textLimit = boundedInt(request.limits?.maxTextBytes, DEFAULT_PROCESS_TEXT_BYTES, MAX_PROCESS_TEXT_BYTES);
     const observed = await this.identities.list(limit);
+    const textBounded = applyTextBudget(observed.items, textLimit);
+    const truncated = observed.truncated || textBounded.truncated;
     return {
       adapterId: this.descriptor.id,
       environment: 'process',
       channel: 'process',
       sequence,
-      complete: !observed.truncated,
-      truncated: observed.truncated,
-      data: { processes: observed.items } satisfies ProcessObservationData,
+      complete: !truncated,
+      truncated,
+      data: { processes: textBounded.items } satisfies ProcessObservationData,
     };
   }
 
