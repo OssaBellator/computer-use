@@ -268,16 +268,16 @@ function cloneVisualArtifact(value: unknown): DesktopVisualArtifactRef | undefin
   const raw = captureKnownDataObject(value, ['token','mediaType','byteLength']);
   if (!raw || !validBoundedString(raw.token, MAX_VISUAL_TOKEN_BYTES)) throw new Error('desktop visual artifact metadata invalid');
   if (raw.mediaType !== undefined && !validBoundedString(raw.mediaType, MAX_MEDIA_TYPE_BYTES)) throw new Error('desktop visual artifact metadata invalid');
-  if (raw.byteLength !== undefined && (!Number.isSafeInteger(raw.byteLength) || (raw.byteLength as number) < 0)) throw new Error('desktop visual artifact metadata invalid');
+  if (!Number.isSafeInteger(raw.byteLength) || (raw.byteLength as number) < 0) throw new Error('desktop visual artifact metadata invalid');
   return Object.freeze({
     token:raw.token,
     ...(raw.mediaType !== undefined ? {mediaType:raw.mediaType} : {}),
-    ...(raw.byteLength !== undefined ? {byteLength:raw.byteLength as number} : {}),
+    byteLength:raw.byteLength as number,
   });
 }
 
-function validVisualDimension(value: unknown): value is number | undefined {
-  return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= MAX_VISUAL_DIMENSION);
+function validVisualDimension(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= MAX_VISUAL_DIMENSION;
 }
 
 function captureNativeWindowRef(value: unknown): DesktopNativeWindowRef | undefined {
@@ -345,17 +345,25 @@ function captureSystemObservation(value: unknown, maxItems: number): DesktopSyst
   });
 }
 
-function captureVisualObservation(value: unknown): {status:'available'|'unavailable'|'unsupported';window:DesktopNativeWindowRef;width?:unknown;height?:unknown;artifact?:unknown;reason?:unknown} | undefined {
+type CapturedVisualObservation =
+  | { status:'available'; window:DesktopNativeWindowRef; width:unknown; height:unknown; artifact:unknown }
+  | { status:'unavailable'|'unsupported'; window:DesktopNativeWindowRef; reason?:unknown };
+
+function captureVisualObservation(value: unknown): CapturedVisualObservation | undefined {
   const raw = captureKnownDataObject(value, ['status','window','width','height','artifact','reason']);
   if (!raw || (raw.status !== 'available' && raw.status !== 'unavailable' && raw.status !== 'unsupported')) return undefined;
   const window = captureNativeWindowRef(raw.window);
   if (!window) return undefined;
-  return Object.freeze({status:raw.status,window,
-    ...(Object.hasOwn(raw,'width') ? {width:raw.width} : {}),
-    ...(Object.hasOwn(raw,'height') ? {height:raw.height} : {}),
-    ...(Object.hasOwn(raw,'artifact') ? {artifact:raw.artifact} : {}),
-    ...(Object.hasOwn(raw,'reason') ? {reason:raw.reason} : {}),
-  });
+  const hasWidth = Object.hasOwn(raw,'width');
+  const hasHeight = Object.hasOwn(raw,'height');
+  const hasArtifact = Object.hasOwn(raw,'artifact');
+  const hasReason = Object.hasOwn(raw,'reason');
+  if (raw.status === 'available') {
+    if (!hasWidth || !hasHeight || !hasArtifact || hasReason) return undefined;
+    return Object.freeze({status:'available',window,width:raw.width,height:raw.height,artifact:raw.artifact});
+  }
+  if (hasWidth || hasHeight || hasArtifact) return undefined;
+  return Object.freeze({status:raw.status,window,...(hasReason ? {reason:raw.reason} : {})});
 }
 
 function captureAccessibilityObservation(value: unknown): {status:'available'|'unavailable'|'unsupported';window:DesktopNativeWindowRef;root?:unknown;reason?:unknown} | undefined {
@@ -722,13 +730,18 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       const raw = captureVisualObservation(await this.backend.observeVisual(ref, acquisition));
       if (!raw) throw new Error('desktop visual observation invalid');
       if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
-      if (!validVisualDimension(raw.width) || !validVisualDimension(raw.height)) throw new Error('desktop visual dimensions invalid');
-      if (raw.width !== undefined && raw.height !== undefined && raw.width * raw.height > acquisition.maxPixels) throw new Error('desktop visual capture budget exceeded');
-      const artifact = cloneVisualArtifact(raw.artifact);
-      if (artifact?.byteLength !== undefined && artifact.byteLength > acquisition.maxBytes) throw new Error('desktop visual capture budget exceeded');
+      if (raw.status === 'available') {
+        if (!validVisualDimension(raw.width) || !validVisualDimension(raw.height)) throw new Error('desktop visual dimensions invalid');
+        if (raw.width * raw.height > acquisition.maxPixels) throw new Error('desktop visual capture budget exceeded');
+        const artifact = cloneVisualArtifact(raw.artifact);
+        if (!artifact) throw new Error('desktop visual artifact metadata invalid');
+        if (artifact.byteLength > acquisition.maxBytes) throw new Error('desktop visual capture budget exceeded');
+        const data:DesktopVisualObservationData = Object.freeze({ status:'available', window, width:raw.width, height:raw.height, artifact });
+        return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:true, truncated:false, surface:window.surface, target:snapshotRequest.target, data };
+      }
       if (!validReasonCode(raw.reason)) throw new Error('desktop visual reason code invalid');
-      const data:DesktopVisualObservationData = Object.freeze({ status:raw.status, window, width:raw.width, height:raw.height, ...(artifact ? {artifact} : {}), reason:raw.reason });
-      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:snapshotRequest.target, data };
+      const data:DesktopVisualObservationData = Object.freeze({ status:raw.status, window, reason:raw.reason });
+      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:false, truncated:false, surface:window.surface, target:snapshotRequest.target, data };
     }
     const l = limits(snapshotRequest.limits);
     const raw = captureAccessibilityObservation(await this.backend.observeAccessibility(ref, l));
