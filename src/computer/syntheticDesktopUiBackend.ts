@@ -1,4 +1,5 @@
 import type {
+  DesktopAccessibilityNode,
   DesktopAccessibilityObservation,
   DesktopAbsolutePointerInput,
   DesktopBackendActionResult,
@@ -32,6 +33,7 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
   systemEnumeratedWindows = 0;
   focusedControlId?: string;
   accessibility = new Map<string, DesktopAccessibilityObservation>();
+  private observedAccessibilityRoots = new Map<string, DesktopAccessibilityNode>();
   visuals = new Map<string, DesktopVisualObservation>();
   lazyVisuals = new Map<string, {width:number;height:number;byteLength:number;token?:string;mediaType?:string}>();
   visualMaterializations = 0;
@@ -61,7 +63,10 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
     return Promise.resolve({ windows:emitted, truncated, foregroundWindow:foreground&&{nativeWindowId:foreground.nativeWindowId,generation:foreground.generation}, focusedWindow:focused&&{nativeWindowId:focused.nativeWindowId,generation:focused.generation}, focusedControlId:focused ? this.focusedControlId : undefined });
   }
   observeAccessibility(window:DesktopNativeWindowRef, _limits:Required<ComputerObservationLimits>):Promise<DesktopAccessibilityObservation> {
-    return Promise.resolve(this.accessibility.get(this.key(window)) ?? {status:'unavailable',window,reason:'not-configured'});
+    const observation = this.accessibility.get(this.key(window)) ?? {status:'unavailable' as const,window,reason:'not-configured'};
+    if (observation.status === 'available' && observation.root) this.observedAccessibilityRoots.set(this.key(window), observation.root);
+    else this.observedAccessibilityRoots.delete(this.key(window));
+    return Promise.resolve(observation);
   }
   observeVisual(window:DesktopNativeWindowRef, limits:DesktopVisualAcquisitionLimits):Promise<DesktopVisualObservation> {
     this.lastVisualLimits = limits;
@@ -83,7 +88,33 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
     if (this.throwOnAction===kind) throw new Error('synthetic action failure');
     return {status:'completed',dispatched:true,verified:true,evidence:[`synthetic-${kind}`]};
   }
-  focus(target:DesktopFocusTarget,effect:ComputerEffectClass):Promise<DesktopBackendActionResult> { return Promise.resolve(this.dispatch('focus',target.window,target,effect)); }
+  private currentControlExists(window:DesktopNativeWindowRef, controlId:string): boolean {
+    const observation = this.accessibility.get(this.key(window));
+    const leasedRoot = this.observedAccessibilityRoots.get(this.key(window));
+    if (!observation || observation.status !== 'available' || !observation.root || observation.root !== leasedRoot) return false;
+    const queue: Array<{node:DesktopAccessibilityNode;depth:number}> = [{node:observation.root,depth:0}];
+    let cursor = 0;
+    let seen = 0;
+    while (cursor < queue.length && seen < 256) {
+      const {node,depth} = queue[cursor++]!;
+      seen += 1;
+      if (node.controlId === controlId) return true;
+      if (depth >= 16 || !node.children) continue;
+      const remaining = 256 - seen - (queue.length - cursor);
+      const childLimit = Math.min(node.children.length, Math.max(0, remaining));
+      for (let index = 0; index < childLimit; index += 1) {
+        const child = node.children[index];
+        if (child) queue.push({node:child,depth:depth + 1});
+      }
+    }
+    return false;
+  }
+  focus(target:DesktopFocusTarget,effect:ComputerEffectClass):Promise<DesktopBackendActionResult> {
+    if (target.controlId !== undefined && !this.currentControlExists(target.window,target.controlId)) {
+      return Promise.resolve({status:'rejected',dispatched:false,verified:false,evidence:['synthetic-control-stale']});
+    }
+    return Promise.resolve(this.dispatch('focus',target.window,target,effect));
+  }
   keyboard(window:DesktopNativeWindowRef,input:DesktopKeyboardInput,effect:ComputerEffectClass):Promise<DesktopBackendActionResult> { return Promise.resolve(this.dispatch('keyboard',window,input,effect)); }
   pointerAbsolute(window:DesktopNativeWindowRef,input:DesktopAbsolutePointerInput,effect:ComputerEffectClass):Promise<DesktopBackendActionResult> { return Promise.resolve(this.dispatch('pointer-absolute',window,input,effect)); }
   pointerRelative(window:DesktopNativeWindowRef,input:DesktopRelativePointerInput,effect:ComputerEffectClass):Promise<DesktopBackendActionResult> { return Promise.resolve(this.dispatch('pointer-relative',window,input,effect)); }
