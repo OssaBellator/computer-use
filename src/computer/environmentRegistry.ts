@@ -1,5 +1,7 @@
 import {
   COMPUTER_ENVIRONMENT_KINDS,
+  sameComputerEntity,
+  sameComputerSurface,
   type ComputerActionRequest,
   type ComputerActionResult,
   type ComputerEnvironmentAdapter,
@@ -90,6 +92,15 @@ function invalidObservationResponse(
       errors.push('response target does not belong to routed adapter');
     }
   }
+  if (request.surface && (!response.surface || !sameComputerSurface(request.surface, response.surface))) {
+    errors.push('response surface identity does not match requested surface');
+  }
+  if (request.target && (!response.target || !sameComputerEntity(request.target, response.target))) {
+    errors.push('response target identity does not match requested target');
+  }
+  if (response.surface && response.target?.surfaceId !== undefined && response.surface.surfaceId !== response.target.surfaceId) {
+    errors.push('response target surfaceId does not match response surface');
+  }
   return errors;
 }
 
@@ -109,6 +120,19 @@ function validEvidence(evidence: readonly string[] | undefined): boolean {
   if (evidence === undefined) return true;
   if (!Array.isArray(evidence) || evidence.length > 32) return false;
   return evidence.every((code) => /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(code));
+}
+
+function coherentActionResult(result: ComputerActionResult): boolean {
+  if (result.status === 'completed') {
+    if (result.dispatch === 'unknown') return false;
+    if (result.verification !== 'verified' && result.verification !== 'not-applicable') return false;
+  }
+  if (result.verification === 'verified' && result.status !== 'completed') return false;
+  if (result.verification === 'pending') {
+    if (result.dispatch === 'not-dispatched') return false;
+    if (result.status === 'completed') return false;
+  }
+  return true;
 }
 
 /**
@@ -184,7 +208,8 @@ export class ComputerEnvironmentRegistry {
       if (
         !['completed', 'rejected', 'unsupported', 'failed', 'unknown'].includes(result.status) ||
         !['not-dispatched', 'dispatched-once', 'unknown'].includes(result.dispatch) ||
-        !['not-applicable', 'verified', 'pending', 'rejected', 'mismatch', 'unverified'].includes(result.verification)
+        !['not-applicable', 'verified', 'pending', 'rejected', 'mismatch', 'unverified'].includes(result.verification) ||
+        !coherentActionResult(result)
       ) {
         return {
           status: 'unknown',
