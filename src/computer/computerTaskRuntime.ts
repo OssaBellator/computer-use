@@ -99,6 +99,7 @@ export class ComputerTaskRuntime {
   private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
   private currentStepId: string | undefined;
   private stepsExecuted = 0;
+  private unresolvedCheckpointDispatch = false;
 
   constructor(
     private readonly program: ComputerTaskProgram,
@@ -120,7 +121,12 @@ export class ComputerTaskRuntime {
       if (options.checkpoint.execution.id !== options.executionId) throw new Error('computer task checkpoint belongs to another execution');
       this.currentStepId = options.checkpoint.cursor.nextStepId;
       this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
-      for (const action of options.checkpoint.actions) this.actionStates.set(action.stepId, action.state);
+      for (const action of options.checkpoint.actions) {
+        this.actionStates.set(action.stepId, action.state);
+        if (action.state === 'unknown-dispatch' || action.state === 'dispatched-unverified') {
+          this.unresolvedCheckpointDispatch = true;
+        }
+      }
     }
   }
 
@@ -175,8 +181,8 @@ export class ComputerTaskRuntime {
   private async executeAction(step: ComputerTaskActionStep): Promise<{ result: ComputerTaskRunResult; next?: string }> {
     const prior = this.actionStates.get(step.id);
     if (prior === 'completed') return { result: this.result('completed', []), next: step.onSuccess };
-    if (prior === 'unknown-dispatch') {
-      return { result: this.result('reconciliation-required', [], ['checkpoint-unknown-dispatch']) };
+    if (prior === 'unknown-dispatch' || prior === 'dispatched-unverified') {
+      return { result: this.result('reconciliation-required', [], ['checkpoint-unresolved-dispatch']) };
     }
     this.actionStates.set(step.id, 'not-started');
 
@@ -204,9 +210,11 @@ export class ComputerTaskRuntime {
 
       if (adapterResult.status === 'completed') {
         if (effectfulDispatchedWithoutVerification) {
+          if (adapterResult.dispatch === 'dispatched-once') this.actionStates.set(step.id, 'dispatched-unverified');
           return { result: this.result('unverified', [], evidence(adapterResult.evidence, ['post-dispatch-verification-required'])) };
         }
         if (verificationStatus) {
+          if (adapterResult.dispatch === 'dispatched-once') this.actionStates.set(step.id, 'dispatched-unverified');
           return { result: this.result(verificationStatus, [], evidence(adapterResult.evidence, verification.evidence)) };
         }
         this.actionStates.set(step.id, 'completed');
@@ -223,6 +231,7 @@ export class ComputerTaskRuntime {
         this.actionStates.set(step.id, 'unknown-dispatch');
         return { result: this.result('unknown-dispatch', [], evidence(adapterResult.evidence, verification.evidence)) };
       }
+      if (adapterResult.dispatch === 'dispatched-once') this.actionStates.set(step.id, 'dispatched-unverified');
       if (adapterResult.status === 'unsupported') return { result: this.result('unsupported', [], adapterResult.evidence) };
       if (adapterResult.status === 'rejected') return { result: this.result('rejected', [], adapterResult.evidence) };
       if (adapterResult.status === 'failed' && adapterResult.dispatch === 'not-dispatched') {
@@ -240,6 +249,9 @@ export class ComputerTaskRuntime {
 
   async run(): Promise<ComputerTaskRunResult> {
     const observations: ComputerObservationEnvelope[] = [];
+    if (this.unresolvedCheckpointDispatch) {
+      return this.result('reconciliation-required', observations, ['checkpoint-unresolved-dispatch']);
+    }
     const maxSteps = Math.max(1, this.program.steps.length * (4 + 3));
     let loopSteps = 0;
 
