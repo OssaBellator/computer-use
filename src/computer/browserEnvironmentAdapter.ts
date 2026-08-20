@@ -22,9 +22,19 @@ import {
 
 const DEFAULT_MAX_ITEMS = 128;
 const DEFAULT_MAX_TEXT_BYTES = 32 * 1024;
+const MAX_OBSERVATION_ITEMS = 256;
+const MAX_OBSERVATION_TEXT_BYTES = 64 * 1024;
+const MAX_OBSERVATION_DEPTH = 32;
 const DEFAULT_VISUAL_MAX_BYTES = 2 * 1024 * 1024;
+const MAX_MEDIA_ELEMENTS = 64;
+const MAX_MEDIA_TEXT_LENGTH = 2048;
+const MAX_TYPE_TEXT_BYTES = 64 * 1024;
+const MAX_EXPECTED_VALUE_BYTES = 64 * 1024;
+const MAX_KEY_BYTES = 64;
+const MAX_TYPE_DELAY_MS = 1_000;
+const MAX_SCROLL_DELTA = 100_000;
 const MAX_EVIDENCE = 12;
-const MAX_EVIDENCE_BYTES = 96;
+const MAX_EVIDENCE_BYTES = 63;
 
 export type BrowserComputerCapability =
   | 'browser.semantic-ui.observe'
@@ -82,6 +92,11 @@ interface BoundedSemanticNode {
   capabilities: readonly string[];
 }
 
+interface ResolvedEntity {
+  node: InteractionNode;
+  surface: ComputerSurfaceRef;
+}
+
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
@@ -132,9 +147,66 @@ function verificationFromTaskStatus(status: TaskRunResult['status']): ComputerVe
   }
 }
 
+function boundedPositive(value: number | undefined, fallback: number, ceiling: number): number {
+  return Math.min(value ?? fallback, ceiling);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function boundedKey(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && utf8Bytes(value) <= MAX_KEY_BYTES && !/[\r\n\0]/.test(value);
+}
+
+function validateActivatePayload(value: unknown): BrowserActivatePayload | undefined {
+  if (value === undefined) return {};
+  if (!isRecord(value)) return undefined;
+  const method = value.method;
+  const key = value.key;
+  if (method !== undefined && method !== 'auto' && method !== 'keyboard' && method !== 'pointer') return undefined;
+  if (key !== undefined && !boundedKey(key)) return undefined;
+  return { ...(method !== undefined ? { method } : {}), ...(key !== undefined ? { key } : {}) } as BrowserActivatePayload;
+}
+
+function validateTypePayload(value: unknown): BrowserTypePayload | undefined {
+  if (!isRecord(value) || typeof value.text !== 'string' || utf8Bytes(value.text) > MAX_TYPE_TEXT_BYTES) return undefined;
+  if (value.expectedValue !== undefined && (typeof value.expectedValue !== 'string' || utf8Bytes(value.expectedValue) > MAX_EXPECTED_VALUE_BYTES)) return undefined;
+  if (value.delayMs !== undefined && (!Number.isSafeInteger(value.delayMs) || (value.delayMs as number) < 0 || (value.delayMs as number) > MAX_TYPE_DELAY_MS)) return undefined;
+  return {
+    text: value.text,
+    ...(value.expectedValue !== undefined ? { expectedValue: value.expectedValue as string } : {}),
+    ...(value.delayMs !== undefined ? { delayMs: value.delayMs as number } : {}),
+  };
+}
+
+function validatePressKeyPayload(value: unknown): BrowserPressKeyPayload | undefined {
+  if (!isRecord(value) || !boundedKey(value.key)) return undefined;
+  return { key: value.key };
+}
+
+function validateScrollPayload(value: unknown): BrowserScrollPayload | undefined {
+  if (value !== undefined && !isRecord(value)) return undefined;
+  const record = (value ?? {}) as Record<string, unknown>;
+  const deltaX = record.deltaX ?? 0;
+  const deltaY = record.deltaY ?? 0;
+  if (
+    typeof deltaX !== 'number' || typeof deltaY !== 'number' ||
+    !Number.isFinite(deltaX) || !Number.isFinite(deltaY) ||
+    Math.abs(deltaX) > MAX_SCROLL_DELTA || Math.abs(deltaY) > MAX_SCROLL_DELTA ||
+    (deltaX === 0 && deltaY === 0)
+  ) return undefined;
+  return { deltaX, deltaY };
+}
+
+function documentToken(timeOrigin: number): string | undefined {
+  return Number.isFinite(timeOrigin) && timeOrigin >= 0 ? timeOrigin.toString(36) : undefined;
+}
+
 export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor;
   private sequence = 0;
+  private readonly activeDocumentTokens = new Map<string, string>();
 
   constructor(
     readonly runtime: BrowserComputerRuntime,
@@ -194,51 +266,73 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     if (surface.adapterId !== this.descriptor.id || surface.environment !== 'browser') return { ok: false, code: 'browser.surface.adapter-mismatch' };
     const target = this.targetById(surface.surfaceId);
     if (!target) return { ok: false, code: 'browser.surface.stale' };
-    if (surface.generation !== target.sequence) return { ok: false, code: 'browser.surface.generation-mismatch' };
+    if (surface.generation === undefined || surface.generation !== target.sequence) return { ok: false, code: 'browser.surface.generation-mismatch' };
     return { ok: true, targetId: target.targetId, generation: target.sequence };
   }
 
-  entityForNode(node: InteractionNode, surface = this.currentSurface()): ComputerEntityRef {
-    const stableId = node.backendNodeId !== undefined ? `backend:${node.backendNodeId}` : node.id;
+  private async activeDocumentToken(surface: ComputerSurfaceRef): Promise<string | undefined> {
+    if (this.runtime.activePageTargetId?.() !== surface.surfaceId) return undefined;
+    const state = await this.runtime.browserState();
+    const token = documentToken(state.timeOrigin);
+    if (token) this.activeDocumentTokens.set(surface.surfaceId, token);
+    return token;
+  }
+
+  entityForNode(node: InteractionNode, surface = this.currentSurface(), token = surface ? this.activeDocumentTokens.get(surface.surfaceId) : undefined): ComputerEntityRef {
+    const stableId = node.backendNodeId !== undefined ? `backend:${node.backendNodeId}` : `node:${encodeURIComponent(node.id)}`;
+    const entityId = token
+      ? `doc:${token}:frame:${encodeURIComponent(node.frameId)}:${stableId}`
+      : `unbound:frame:${encodeURIComponent(node.frameId)}:${stableId}`;
     return {
       adapterId: this.descriptor.id,
       environment: 'browser',
       kind: 'ui-control',
-      entityId: `${node.frameId}:${stableId}`,
+      entityId,
       ...(surface ? { surfaceId: surface.surfaceId, generation: surface.generation } : {}),
     };
   }
 
-  private async resolveEntity(target: ComputerEntityRef | undefined): Promise<{ node: InteractionNode; surface?: ComputerSurfaceRef } | undefined> {
-    if (!target || target.adapterId !== this.descriptor.id || target.environment !== 'browser' || target.kind !== 'ui-control') return undefined;
-    let surface: ComputerSurfaceRef | undefined;
-    if (target.surfaceId) {
-      const browserTarget = this.targetById(target.surfaceId);
-      if (!browserTarget || target.generation !== browserTarget.sequence) return undefined;
-      if (this.runtime.activePageTargetId?.() !== target.surfaceId) return undefined;
-      surface = this.surfaceForTarget(browserTarget);
-    }
-    const separator = target.entityId.indexOf(':');
-    if (separator < 0) return undefined;
-    const frameId = target.entityId.slice(0, separator);
-    const id = target.entityId.slice(separator + 1);
+  private async resolveEntity(target: ComputerEntityRef | undefined): Promise<ResolvedEntity | undefined> {
+    if (
+      !target || target.adapterId !== this.descriptor.id || target.environment !== 'browser' || target.kind !== 'ui-control' ||
+      !target.surfaceId || target.generation === undefined
+    ) return undefined;
+    const browserTarget = this.targetById(target.surfaceId);
+    if (!browserTarget || target.generation !== browserTarget.sequence) return undefined;
+    if (this.runtime.activePageTargetId?.() !== target.surfaceId) return undefined;
+    const surface = this.surfaceForTarget(browserTarget);
+    const match = /^doc:([^:]+):frame:([^:]+):(backend:(\d+)|node:(.+))$/.exec(target.entityId);
+    if (!match) return undefined;
+    const currentToken = await this.activeDocumentToken(surface);
+    if (!currentToken || currentToken !== match[1]) return undefined;
+    let frameId: string;
+    try { frameId = decodeURIComponent(match[2]); } catch { return undefined; }
     const nodes = await this.runtime.refresh();
-    const backendMatch = /^backend:(\d+)$/.exec(id);
-    const node = backendMatch
-      ? nodes.find((candidate) => candidate.frameId === frameId && candidate.backendNodeId === Number(backendMatch[1]))
-      : nodes.find((candidate) => candidate.frameId === frameId && (candidate.id === id || candidate.structuralId === id));
+    const backendNodeId = match[4] !== undefined ? Number(match[4]) : undefined;
+    let nodeId: string | undefined;
+    if (match[5] !== undefined) {
+      try { nodeId = decodeURIComponent(match[5]); } catch { return undefined; }
+    }
+    const node = backendNodeId !== undefined
+      ? nodes.find((candidate) => candidate.frameId === frameId && candidate.backendNodeId === backendNodeId)
+      : nodes.find((candidate) => candidate.frameId === frameId && (candidate.id === nodeId || candidate.structuralId === nodeId));
     return node ? { node, surface } : undefined;
   }
 
-  private boundSemantic(nodes: readonly InteractionNode[], surface: ComputerSurfaceRef | undefined, request: ComputerObservationRequest): { data: BoundedSemanticNode[]; truncated: boolean } {
-    const maxItems = request.limits?.maxItems ?? DEFAULT_MAX_ITEMS;
-    const maxTextBytes = request.limits?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
+  private boundSemantic(
+    nodes: readonly InteractionNode[],
+    surface: ComputerSurfaceRef,
+    token: string,
+    request: ComputerObservationRequest,
+  ): { data: BoundedSemanticNode[]; truncated: boolean } {
+    const maxItems = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
+    const maxTextBytes = boundedPositive(request.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
     const data: BoundedSemanticNode[] = [];
     let textBytes = 0;
     let truncated = nodes.length > maxItems;
     for (const node of nodes.slice(0, maxItems)) {
       const bounded: BoundedSemanticNode = {
-        entity: this.entityForNode(node, surface),
+        entity: this.entityForNode(node, surface, token),
         focused: node.focused,
         disabled: node.disabled,
         visible: node.mainViewportVisible !== false && node.viewportVisible !== false,
@@ -258,25 +352,56 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     return { data, truncated };
   }
 
+  private observationTargetSurface(request: ComputerObservationRequest): ComputerSurfaceRef | undefined {
+    if (request.surface) return request.surface;
+    if (!request.target?.surfaceId || request.target.generation === undefined) return undefined;
+    const target = this.targetById(request.target.surfaceId);
+    if (!target || target.sequence !== request.target.generation) return undefined;
+    return this.surfaceForTarget(target);
+  }
+
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
     const errors = validateComputerObservationRequest(request, this.descriptor);
     if (errors.length) throw new Error(`invalid computer observation request: ${errors.join('; ')}`);
-    const surfaceCheck = this.validateSurface(request.surface);
+    if (request.target && request.channel !== 'semantic-ui') throw new Error('browser.observation.target-unsupported');
+    if (request.target && (request.target.kind !== 'ui-control' || !request.target.surfaceId || request.target.generation === undefined)) {
+      throw new Error('browser.observation.target-invalid');
+    }
+    const requestedSurface = this.observationTargetSurface(request) ?? request.surface;
+    const surfaceCheck = this.validateSurface(requestedSurface);
     if (!surfaceCheck.ok) throw new Error(surfaceCheck.code);
-    const surface = request.surface ?? this.currentSurface();
+    const surface = requestedSurface ?? this.currentSurface();
     const sequence = ++this.sequence;
 
     if (request.channel === 'semantic-ui') {
-      if (surface?.surfaceId && this.runtime.activePageTargetId?.() !== surface.surfaceId) throw new Error('browser.surface.not-active');
+      if (!surface || this.runtime.activePageTargetId?.() !== surface.surfaceId) throw new Error('browser.surface.not-active');
+      const token = await this.activeDocumentToken(surface);
+      if (!token) throw new Error('browser.document.identity-unavailable');
       const nodes = await this.runtime.refresh();
-      const bounded = this.boundSemantic(nodes, surface, request);
-      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: !bounded.truncated, truncated: bounded.truncated, ...(surface ? { surface } : {}), data: bounded.data };
+      let selected = nodes;
+      if (request.target) {
+        const resolved = await this.resolveEntity(request.target);
+        if (!resolved) throw new Error('browser.observation.target-stale');
+        selected = [resolved.node];
+      }
+      const bounded = this.boundSemantic(selected, surface, token, request);
+      return {
+        adapterId: this.descriptor.id,
+        environment: 'browser',
+        channel: request.channel,
+        sequence,
+        complete: !bounded.truncated,
+        truncated: bounded.truncated,
+        surface,
+        ...(request.target ? { target: request.target } : {}),
+        data: bounded.data,
+      };
     }
 
     if (request.channel === 'document') {
-      const maxBlocks = request.limits?.maxItems ?? DEFAULT_MAX_ITEMS;
-      const maxTextBytes = request.limits?.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
-      const maxDepth = request.limits?.maxDepth;
+      const maxBlocks = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
+      const maxTextBytes = boundedPositive(request.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
+      const maxDepth = boundedPositive(request.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
       let snapshot: DocumentContentSnapshot | undefined;
       if (surface?.surfaceId && this.runtime.documentContentForPage) snapshot = await this.runtime.documentContentForPage(surface.surfaceId, { maxBlocks, maxTextBytes, maxDepth });
       else snapshot = await this.runtime.documentContent?.({ maxBlocks, maxTextBytes, maxDepth });
@@ -294,7 +419,11 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
 
     if (request.channel === 'media') {
       if (!this.runtime.mediaSnapshot) throw new Error('browser.media.unsupported');
-      const snapshot = await this.runtime.mediaSnapshot(surface?.surfaceId, { maxMediaElements: request.limits?.maxItems ?? 32, maxFrames: request.limits?.maxDepth ?? 16, maxTextLength: Math.min(request.limits?.maxTextBytes ?? 256, 2048) });
+      const snapshot = await this.runtime.mediaSnapshot(surface?.surfaceId, {
+        maxMediaElements: boundedPositive(request.limits?.maxItems, 32, MAX_MEDIA_ELEMENTS),
+        maxFrames: boundedPositive(request.limits?.maxDepth, 16, MAX_OBSERVATION_DEPTH),
+        maxTextLength: boundedPositive(request.limits?.maxTextBytes, 256, MAX_MEDIA_TEXT_LENGTH),
+      });
       if (!snapshot) throw new Error('browser.media.unavailable');
       return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: !snapshot.truncated && snapshot.errors.length === 0, truncated: snapshot.truncated, ...(surface ? { surface } : {}), data: snapshot };
     }
@@ -329,17 +458,20 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     return failedPreDispatch(`browser.runtime.${result.status}`, 'failed');
   }
 
-  private async runCommitmentAwareAction(request: ComputerActionRequest, node?: InteractionNode): Promise<ComputerActionResult> {
+  private async runCommitmentAwareAction(
+    request: ComputerActionRequest,
+    payload: BrowserActivatePayload | BrowserPressKeyPayload,
+    node?: InteractionNode,
+  ): Promise<ComputerActionResult> {
     const runtime = new TaskRuntime(this.runtime);
     const risk = request.effect === 'observe-only' || request.effect === 'local-reversible' ? 'interaction' : 'external-side-effect';
-    const payload = request.payload as BrowserActivatePayload | BrowserPressKeyPayload | undefined;
     const action = request.capability === 'browser.activate'
       ? {
           id: 'act' as const,
           kind: 'activate' as const,
           target: { backendNodeId: node!.backendNodeId, frameId: node!.frameId },
-          method: (payload as BrowserActivatePayload | undefined)?.method,
-          key: (payload as BrowserActivatePayload | undefined)?.key,
+          method: (payload as BrowserActivatePayload).method,
+          key: (payload as BrowserActivatePayload).key,
           risk,
           next: 'done' as const,
         }
@@ -369,57 +501,64 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const errors = validateComputerActionRequest(request, this.descriptor);
     if (errors.length) return failedPreDispatch('browser.request.invalid');
     if (!this.descriptor.capabilities.includes(request.capability)) return failedPreDispatch('browser.capability.unsupported', 'unsupported');
-    const resolved = request.target ? await this.resolveEntity(request.target) : undefined;
-    if (request.target && !resolved) return failedPreDispatch('browser.target.stale');
-    const node = resolved?.node;
+
+    if (request.capability.endsWith('.observe')) {
+      return request.effect === 'observe-only' && request.idempotency === 'read-only'
+        ? { status: 'completed', dispatch: 'not-dispatched', verification: 'verified', evidence: ['browser.verified-noop'] }
+        : failedPreDispatch('browser.effect.invalid');
+    }
 
     if (request.capability === 'browser.activate') {
-      if (!node || node.backendNodeId === undefined) return failedPreDispatch('browser.target.identity-unavailable');
-      try { return await this.runCommitmentAwareAction(request, node); }
+      const payload = validateActivatePayload(request.payload);
+      if (!payload) return failedPreDispatch('browser.payload.invalid');
+      const resolved = await this.resolveEntity(request.target);
+      if (!resolved) return failedPreDispatch('browser.target.stale');
+      if (resolved.node.backendNodeId === undefined) return failedPreDispatch('browser.target.identity-unavailable');
+      try { return await this.runCommitmentAwareAction(request, payload, resolved.node); }
       catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
 
     if (request.capability === 'browser.press-key') {
-      const payload = request.payload as BrowserPressKeyPayload | undefined;
-      if (!payload || typeof payload.key !== 'string' || !payload.key.trim()) return failedPreDispatch('browser.payload.invalid');
-      try { return await this.runCommitmentAwareAction(request); }
+      const payload = validatePressKeyPayload(request.payload);
+      if (!payload) return failedPreDispatch('browser.payload.invalid');
+      try { return await this.runCommitmentAwareAction(request, payload); }
       catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
+
+    if (request.effect !== 'local-reversible') return failedPreDispatch('browser.effect.unsupported');
 
     let invoked = false;
     try {
       if (request.capability === 'browser.hover') {
-        if (!node) return failedPreDispatch('browser.target.required');
+        const resolved = await this.resolveEntity(request.target);
+        if (!resolved) return failedPreDispatch('browser.target.stale');
         invoked = true;
-        const result = await this.runtime.hover?.({ backendNodeId: node.backendNodeId, frameId: node.frameId }, { requireUnambiguous: true, autoReveal: true });
+        const result = await this.runtime.hover?.({ backendNodeId: resolved.node.backendNodeId, frameId: resolved.node.frameId }, { requireUnambiguous: true, autoReveal: true });
         if (!result) return unknownAfterInvocation('browser.hover.unsupported-after-invocation');
         return result.status === 'verified'
           ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] }
           : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
       if (request.capability === 'browser.type') {
-        if (!node) return failedPreDispatch('browser.target.required');
-        const payload = request.payload as BrowserTypePayload | undefined;
-        if (!payload || typeof payload.text !== 'string') return failedPreDispatch('browser.payload.invalid');
+        const payload = validateTypePayload(request.payload);
+        if (!payload) return failedPreDispatch('browser.payload.invalid');
+        const resolved = await this.resolveEntity(request.target);
+        if (!resolved) return failedPreDispatch('browser.target.stale');
         invoked = true;
-        const result = await this.runtime.typeInto({ backendNodeId: node.backendNodeId, frameId: node.frameId }, payload.text, { requireUnambiguous: true, autoReveal: true, delayMs: payload.delayMs, expectedValue: payload.expectedValue });
+        const result = await this.runtime.typeInto({ backendNodeId: resolved.node.backendNodeId, frameId: resolved.node.frameId }, payload.text, { requireUnambiguous: true, autoReveal: true, delayMs: payload.delayMs, expectedValue: payload.expectedValue });
         return result.status === 'verified'
           ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] }
           : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
       if (request.capability === 'browser.scroll-viewport') {
-        const payload = (request.payload ?? {}) as BrowserScrollPayload;
-        const deltaX = payload.deltaX ?? 0, deltaY = payload.deltaY ?? 0;
-        if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY) || (deltaX === 0 && deltaY === 0)) return failedPreDispatch('browser.payload.invalid');
+        const payload = validateScrollPayload(request.payload);
+        if (!payload) return failedPreDispatch('browser.payload.invalid');
         invoked = true;
-        const result = await this.runtime.scrollViewport?.({ x: deltaX, y: deltaY });
+        const result = await this.runtime.scrollViewport?.({ x: payload.deltaX ?? 0, y: payload.deltaY ?? 0 });
         if (!result) return unknownAfterInvocation('browser.scroll.unsupported-after-invocation');
         return result.status === 'verified'
           ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] }
           : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
-      }
-      if (request.capability.endsWith('.observe')) {
-        return { status: 'completed', dispatch: 'not-dispatched', verification: 'verified', evidence: ['browser.verified-noop'] };
       }
       return failedPreDispatch('browser.capability.unsupported', 'unsupported');
     } catch {
