@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ComputerActionRequest, ComputerActionResult } from '../src/computer/environmentAdapter.js';
+import { ComputerEnvironmentRegistry } from '../src/computer/environmentRegistry.js';
 import {
   SystemDeviceEnvironmentAdapter,
   type BoundedDeviceMetadata,
@@ -90,6 +91,15 @@ class BoundaryBackend implements SystemDeviceBackend {
   async verifyMutation(): Promise<SystemDeviceMutationVerification> {
     this.mutationCalls += 1;
     return { state: 'verified', evidence: ['post-state-match'] };
+  }
+}
+
+class MutableEvidenceBackend extends BoundaryBackend {
+  readonly retainedEvidence = ['post-state-match'];
+
+  override async verifyMutation(): Promise<SystemDeviceMutationVerification> {
+    this.mutationCalls += 1;
+    return { state: 'verified', evidence: this.retainedEvidence };
   }
 }
 
@@ -254,4 +264,27 @@ test('mutation requires an exactly matching generation-bearing neutral target be
     assert.deepEqual(ledger.claims, [], scenario.name);
     assert.equal(backend.mutationCalls, 0, scenario.name);
   }
+});
+
+test('verification evidence is copied and frozen before neutral result escapes backend ownership', async () => {
+  const backend = new MutableEvidenceBackend();
+  const verifier: SystemDeviceApprovalVerifier = { async verify() { return true; } };
+  const adapter = new SystemDeviceEnvironmentAdapter('system-device-boundary', backend, {
+    enableMutations: true,
+    approvalVerifier: verifier,
+    actionLedger: new BoundaryLedger(),
+  });
+  const registry = new ComputerEnvironmentRegistry();
+  registry.register(adapter);
+
+  const result = await registry.act(validMutationRequest('action:owned-evidence'));
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.evidence, ['post-state-match']);
+  assert.equal(Object.isFrozen(result.evidence), true);
+
+  backend.retainedEvidence[0] = 'backend-mutated-after-return';
+  backend.retainedEvidence.push('x'.repeat(500));
+
+  assert.deepEqual(result.evidence, ['post-state-match']);
+  assert.equal(Object.isFrozen(result.evidence), true);
 });
