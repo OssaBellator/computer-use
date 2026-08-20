@@ -88,6 +88,16 @@ test('checkpoint codec round-trips deterministically with execution identity', (
   assert.equal(decoded.execution.id, EXECUTION_ID);
 });
 
+test('created and decoded checkpoints are deeply frozen to preserve validated budgets and counters', () => {
+  const created = checkpoint();
+  const decoded = deserializeTaskCheckpoint(serializeTaskCheckpoint(created));
+  for (const value of [
+    created, created.program, created.execution, created.cursor, created.cursor.visits, created.cursor.visits[0], created.budgets,
+    decoded, decoded.program, decoded.execution, decoded.cursor, decoded.cursor.visits, decoded.cursor.visits[0], decoded.budgets,
+  ]) assert.equal(Object.isFrozen(value), true);
+  assert.throws(() => { (decoded.budgets as { maxSteps: number }).maxSteps = 999; }, TypeError);
+});
+
 test('program hashing covers the full valid program and is independent of object key insertion order', () => {
   const reordered: CheckpointableTaskProgram = {
     steps: program.steps,
