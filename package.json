@@ -1,8 +1,8 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.41.0",
+  "version": "0.43.0",
   "private": true,
-  "description": "Standalone raw-CDP browser agent with bounded pre/post commitment safety, structured reading, document-driven tasks, rich selection/editing foundations, web task capabilities, and realtime game perception.",
+  "description": "Framework-independent browser-agent foundations evolving into a bounded multi-adapter computer-use core with structured observation, verified native input, commitment safety, and realtime interaction.",
   "type": "module",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
