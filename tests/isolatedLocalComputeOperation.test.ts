@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {
   createIsolatedLocalComputeAdapter,
   defineIsolatedLocalComputeOperation,
-  type LocalComputeJson,
-} from '../src/index.js';
+} from '../src/computer/isolatedLocalComputeOperation.js';
+import type { LocalComputeJson } from '../src/computer/localComputeAdapter.js';
 
 const moduleUrl = new URL('./fixtures/isolatedLocalComputeOperations.js', import.meta.url).href;
 

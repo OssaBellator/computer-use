@@ -14,8 +14,3 @@ export function frozenInput(input: Json): Json {
   if (!input || typeof input !== 'object' || !Object.isFrozen(input)) throw new Error('input-not-frozen');
   return input;
 }
-export function symbolOutput(): Json {
-  const output: Record<PropertyKey, unknown> = { visible: true };
-  output[Symbol('hidden')] = 'must-not-be-silently-dropped';
-  return output as Json;
-}
