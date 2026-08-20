@@ -127,7 +127,12 @@ function mutationRequest(
 ): ComputerActionRequest {
   return {
     adapterId: 'system-device-test', actionId, capability: 'device.peripheral.configure',
-    effect, idempotency: 'non-idempotent', payload,
+    effect, idempotency: 'non-idempotent',
+    target: {
+      adapterId: 'system-device-test', environment: 'device', kind: payload.target.kind,
+      entityId: payload.target.id, generation: payload.target.generation,
+    },
+    payload,
   };
 }
 function approvedPeripheralPayload(target: SystemDeviceIdentity = peripheral, approvalId = 'approval:synthetic:1'): SystemDeviceMutationPayload {
