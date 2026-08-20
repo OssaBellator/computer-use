@@ -258,33 +258,88 @@ function operationCapability(operation: SystemDeviceMutationPayload['operation']
   }
 }
 
-/** Rebuild caller-owned mutation input before the first await; no caller references survive this boundary. */
-function snapshotMutationPayload(value: unknown): Readonly<SystemDeviceMutationPayload> | undefined {
+function snapshotOwnDataProperties(
+  value: unknown,
+  requiredKeys: readonly string[],
+): Readonly<Record<string, unknown>> | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const candidate = value as Partial<SystemDeviceMutationPayload>;
-  if (!['system-setting-change', 'security-setting-change', 'peripheral-configuration'].includes(String(candidate.operation))) return undefined;
-  if (!candidate.target || !validIdentity(candidate.target)) return undefined;
-  if (typeof candidate.setting !== 'string' || !SAFE_SETTING.test(candidate.setting)) return undefined;
-  const scalar = safeScalar(candidate.value);
-  if (scalar === undefined) return undefined;
-  if (!candidate.approval || candidate.approval.approved !== true || !validIdentity(candidate.approval.target)) return undefined;
-  if (!boundedText(candidate.approval.approvalId, MAX_ID_BYTES) || !validRevision(candidate.approval.configurationRevision)) return undefined;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const captured: Record<string, unknown> = {};
+    for (const key of requiredKeys) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return undefined;
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return undefined;
+  }
+}
 
-  const target = cloneIdentity(candidate.target);
-  const approvalTarget = cloneIdentity(candidate.approval.target);
-  const approval = Object.freeze({
-    approved: true as const,
-    approvalId: candidate.approval.approvalId,
-    effect: candidate.approval.effect,
-    target: approvalTarget,
-    configurationRevision: candidate.approval.configurationRevision,
+function snapshotIdentity(value: unknown): Readonly<SystemDeviceIdentity> | undefined {
+  const captured = snapshotOwnDataProperties(value, ['id', 'kind', 'generation']);
+  if (!captured) return undefined;
+  const id = captured.id;
+  const kind = captured.kind;
+  const generation = captured.generation;
+  if (typeof id !== 'string' || !boundedText(id, MAX_ID_BYTES)) return undefined;
+  if (typeof kind !== 'string' || !SYSTEM_DEVICE_IDENTITY_KINDS.includes(kind as SystemDeviceIdentityKind)) return undefined;
+  if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 0) return undefined;
+  return Object.freeze({ id, kind: kind as SystemDeviceIdentityKind, generation });
+}
+
+/**
+ * Rebuild caller-owned mutation input before the first await. Each accepted field
+ * is captured exactly once from an ordinary own data descriptor; accessors and
+ * non-plain object shapes fail closed before approval or backend work.
+ */
+function snapshotMutationPayload(value: unknown): Readonly<SystemDeviceMutationPayload> | undefined {
+  const captured = snapshotOwnDataProperties(value, ['operation', 'target', 'setting', 'value', 'approval']);
+  if (!captured) return undefined;
+
+  const operation = captured.operation;
+  if (operation !== 'system-setting-change' &&
+      operation !== 'security-setting-change' &&
+      operation !== 'peripheral-configuration') return undefined;
+  const target = snapshotIdentity(captured.target);
+  if (!target) return undefined;
+  const setting = captured.setting;
+  if (typeof setting !== 'string' || !SAFE_SETTING.test(setting)) return undefined;
+  const scalar = safeScalar(captured.value);
+  if (scalar === undefined) return undefined;
+
+  const approvalCaptured = snapshotOwnDataProperties(
+    captured.approval,
+    ['approved', 'approvalId', 'effect', 'target', 'configurationRevision'],
+  );
+  if (!approvalCaptured || approvalCaptured.approved !== true) return undefined;
+  const approvalId = approvalCaptured.approvalId;
+  const approvalEffect = approvalCaptured.effect;
+  const configurationRevision = approvalCaptured.configurationRevision;
+  if (typeof approvalId !== 'string' || !boundedText(approvalId, MAX_ID_BYTES)) return undefined;
+  if (approvalEffect !== 'system-configuration' &&
+      approvalEffect !== 'security-sensitive' &&
+      approvalEffect !== 'hardware-affecting') return undefined;
+  if (typeof configurationRevision !== 'string' || !validRevision(configurationRevision)) return undefined;
+  const approvalTarget = snapshotIdentity(approvalCaptured.target);
+  if (!approvalTarget) return undefined;
+
+  const approval: Readonly<SystemDeviceMutationApproval> = Object.freeze({
+    approved: true,
+    approvalId,
+    effect: approvalEffect,
+    target: approvalTarget as SystemDeviceIdentity,
+    configurationRevision,
   });
   return Object.freeze({
-    operation: candidate.operation as SystemDeviceMutationPayload['operation'],
-    target,
-    setting: candidate.setting,
+    operation,
+    target: target as SystemDeviceIdentity,
+    setting,
     value: scalar,
-    approval,
+    approval: approval as SystemDeviceMutationApproval,
   });
 }
 
@@ -333,7 +388,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'device' as const,
-      version: 'system-device-foundation-v3',
+      version: 'system-device-foundation-v4',
       capabilities: Object.freeze([
         'device.observe',
         'system.observe',
