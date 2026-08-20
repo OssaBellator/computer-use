@@ -1,184 +1,141 @@
 # Semantic Browser Interaction Engine
 
-A TypeScript foundation for a standalone, closed-loop browser agent intended to cover the broad range of tasks people perform on the web while keeping browser actions bounded, observable, and policy-controlled.
+A framework-independent browser-agent foundation centered on semantic interaction, raw Chromium DevTools Protocol (CDP) control, bounded task execution, explicit side-effect safety, structured document research, rich editing, media/permission state, and realtime visual control.
 
-The primary Chromium path launches the browser directly from Node, speaks CDP over Chromium's `--remote-debugging-pipe`, routes page sessions in-repo, reads structured document content, builds semantic/spatial interaction state, plans and verifies actions, manages multiple pages and browser lifecycle features, supports bounded rich-document selection/editing, runs realtime game control/perception, and adds page-grounded pre/post commitment safety around high-consequence actions.
+The primary stack launches and controls Chromium directly over `--remote-debugging-pipe`. Playwright is not required by the standalone runtime; the repository retains an optional input adapter for integrations that already use it.
 
-## Scope
+## Current standalone profile: 0.42
 
-The primary Chromium architecture does **not** require Playwright, Puppeteer, Selenium/WebDriver, or a third-party CDP websocket client. A structural Playwright-compatible input adapter remains optional for callers that already have one; it is not required by the standalone runtime.
+`CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` is now `standalone-chromium-0.42`.
 
-The project uses browser-native input/protocol operations rather than page-side synthetic `dispatchEvent()` calls. It targets browser testing, HCI research, accessibility tooling, reproducible workflows, and permitted interactive-page/game use. It does **not** claim hardware provenance, anti-bot bypass, CAPTCHA bypass, fingerprint spoofing, navigator mutation, stealth patches, or timing camouflage intended to evade abuse controls.
+The 0.42 stack combines the earlier semantic/spatial interaction engine with:
 
-## Seven web-task categories
+- bounded `TaskRuntime` programs, predicates, branching, waits, page switching, navigation/history, dialogs, uploads/downloads, select/range controls, and network-idle observation;
+- structured multi-frame document observation and document predicates;
+- deterministic research ranking, boilerplate classification, table relationships, document diffs, and uncertainty-aware refresh hints;
+- document selection/caret observation, exact native text insertion/replacement/select-all/delete, and bounded rich-formatting observation with verified native bold/italic/underline operations;
+- commitment detection, explicit approval, fresh pre-dispatch revalidation, neutral result baselines, exactly-one dispatch, explicit post-commit result verification, and durable labeled result identity across supported redirects/opener-bound popups;
+- multi-page raw-CDP routing without searching unrelated tabs for transaction/result evidence;
+- media playback/fullscreen observation and narrowly scoped native controls that preserve normal browser user-activation policy;
+- passive page Permissions API / Permissions Policy observation without automatic grant/deny mutation;
+- persistent realtime held input, relative pointer movement, pointer-lock/pointer-capture lifecycle observation and bounded recovery;
+- game-region acquisition/lifecycle, screenshot sampling, visual diffing, temporal motion tracks, and a composed visual pipeline;
+- bounded generic game-control calibration with explicit safety/focus attestation for key probes; and
+- a deterministic, privacy-bounded task checkpoint codec for future runtime persistence/replay integration.
 
-The long-term target is broad capability across:
+The capability profile is intentionally conservative. A merged primitive does not automatically make an entire task category “fully supported.”
 
-1. **Information Retrieval & Research** — search, factual/news/weather lookup, guides, academic/market/product research, and synthesis.
-2. **Communication & Collaboration** — messaging/email, shared documents, whiteboards, conferencing controls, project/team workflows.
-3. **Transactions & Commerce** — shopping, permitted banking/bill workflows, bookings/reservations, travel, and subscriptions.
-4. **Content Consumption & Entertainment** — articles/forums/ebooks, media controls, and browser games.
-5. **Content Creation & Publishing** — writing/posting, media upload, design/editing tools, browser coding environments.
-6. **Identity & Account Management** — forms, profiles/privacy/password settings, and user-mediated MFA/identity steps.
-7. **Automation & Process Triggering** — submitting workflows, triggering web-app automations/webhooks, and scheduling through browser interfaces.
+## Side-effect safety
 
-`WEB_TASK_CATEGORY_DEFINITIONS`, `WEB_TASK_CATEGORY_CAPABILITY_TARGETS`, and standalone capability profiles make that scope machine-readable. `supported`, `partial`, and `unsupported` are kept distinct so broad coverage is not inferred from generic clicking and typing.
+The standalone runtime treats potentially consequential browser actions differently from ordinary UI interaction.
 
-## Current standalone profile: 0.41
+For detected purchases, bookings, transfers, subscriptions, publishing, destructive actions, identity/security changes, and external process triggers, the intended chain is:
 
-The historical `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` remains the immutable 0.35 snapshot. `CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` describes the current stack.
+**detect commitment → approval → fresh target/material revalidation → complete neutral result baseline → exactly one dispatch → explicit result verification**
 
-### Strong foundations
+Post-dispatch verification never retries the action merely because the generic click/key verifier is uncertain. Pending, declined, canceled, mismatched, or unverified side effects terminate that runtime path instead of redispatching.
 
-- Node → Chromium `--remote-debugging-pipe` → in-repo CDP framing/session routing
-- semantic/spatial interaction graph, modality-aware planning, verification, and closed-loop replanning
-- bounded `TaskProgram` / `TaskRuntime` execution
-- multi-page target lifecycle, navigation/history, dialogs, selection controls, downloads/uploads, optional network-idle observation
-- bounded structured document reading across frames and open Shadow DOM
-- browser state and visual observation
-- keyboard, pointer, relative-pointer, wheel, select, text-entry, and browser-native CDP input
-- realtime held-input control, automatic game-surface acquisition, renderer lifecycle, visual motion sampling/tracking, and composed game visual pipeline
-- explicit approval/max-risk policy boundaries
+0.42 strengthens result binding with bounded, explicitly labeled, non-secret identifiers. A unique pre-dispatch reference can bind a later receipt/result across a redirect or an opener-associated popup. Positive cross-origin confirmation requires that exact binding; arbitrary or pre-existing tabs are never searched for success text. Identifier values remain out of ordinary task traces.
 
-### Partial foundations
+See:
 
-- **Rich-text editing:** bounded DOM/text-control selection and caret observation plus native insertion/replacement/select-all/delete; formatting runs, rich clipboard, drag/drop, and editor-specific model verification remain incomplete.
-- **Commitment detection:** strong and context-corroborated purchase/booking/transfer/subscription/publish/destructive/security/process actions are inferred from bounded semantic/document state immediately before activation; site-specific semantics remain heuristic.
-- **External side-effect verification:** approved detected commitments receive frame-scoped bounded post-action classification for confirmed/pending/declined/canceled/unknown states and explicit material-term mismatches. Provider-specific receipts, durable result IDs, and arbitrary handoff semantics remain incomplete.
-- **Process-trigger verification:** explicit queued/started/completed/failed/canceled result text is classified without redispatching the trigger, but provider-specific process identity is not first-class.
-- uploads/download observation and network activity depend on explicit configuration where documented.
-- generic media and user-mediated authentication flows are reachable, but media/fullscreen/permission/MFA/passkey state is not yet first-class.
+- [`docs/commitment-safety.md`](docs/commitment-safety.md)
+- [`docs/commitment-result-identity.md`](docs/commitment-result-identity.md)
 
-### Transaction status
+## Structured research
 
-At 0.41, `transactions-commerce` is mechanically **runnable** in the capability model because no required primitive is completely unsupported. It is **not fully supported**: commitment detection and specialized external-side-effect verification remain partial.
+`DocumentContentSnapshot` remains the browser extraction contract. Research analysis is a derived layer rather than a second extractor.
 
-This is a safety distinction, not permission for unattended financial actions. The runtime's dynamic commitment gate requires approval before inferred commitments by default, and detected commitments are not allowed to silently succeed after browser input without explicit post-action evidence.
+`documentRanking.ts` adds deterministic primary-content ranking, generic boilerplate classification, reading/section order, and table row/column header relationships. `documentDiff.ts` separates exact source-identity changes from conservative relocation/content-update hints.
 
-## Commitment safety
+If a frame is unreadable in either snapshot, the diff fails closed: observation failure is reported as incomplete/frame-refresh evidence rather than as an exact deletion or addition. Equal inputs produce deterministic output using locale-independent ordering.
 
-`TaskRuntime` now wraps detected commitments in two bounded phases.
+See:
 
-Before input:
+- [`docs/document-content-observation.md`](docs/document-content-observation.md)
+- [`docs/document-research-ranking.md`](docs/document-research-ranking.md)
+- [`docs/document-task-predicates.md`](docs/document-task-predicates.md)
 
-- `activate`, plus Enter/Space on a focused activation control, is checked immediately before browser input;
-- strong target labels such as `Place order`, `Pay now`, `Confirm transfer`, `Publish`, `Change password`, `Delete account`, or `Run workflow` can trigger approval from the semantic target alone;
-- generic labels such as `Confirm`, `Submit`, `Continue`, or `Delete` request one bounded structured-document snapshot when the engine exposes that channel;
-- contextual evidence is scoped to the target's owning frame and can classify purchase, booking, transfer, subscription, publication, destructive, identity/security, or process-trigger commitments;
-- an available document channel that fails or is too incomplete to safely rule out an ambiguous commitment fails closed through approval;
-- approval callbacks may receive bounded amount/currency, explicitly labeled counterparty, schedule, recurrence, irreversibility/security flags, and evidence codes.
+## Rich document editing
 
-After approved input:
+The rich-text foundation is frame/editing-host scoped. It includes bounded selection/caret identity and text geometry, native CDP insertion, select-all/delete replacement, and structured formatting observation.
 
-- the runtime polls bounded structured-document state without redispatching the action;
-- generic navigation or DOM change cannot by itself prove success;
-- explicit result evidence is classified as `confirmed`, `pending`, `declined`, `canceled`, `mismatch`, or `unknown`;
-- visible amount/currency/counterparty/schedule/recurrence can be compared with the approved summary;
-- only `confirmed` advances normally;
-- pending/declined/canceled/mismatch/unknown terminate with a distinct `side-effect-*` status and never follow the commitment step's `onFailure` edge, preventing accidental duplicate effects;
-- a matching explicit receipt can override weak generic click verification, while a generic `verified` action result cannot override an adverse or unknown commitment result.
+0.42 adds formatting state for inline/block context and verified native bold/italic/underline operations. Mixed formatting remains explicit rather than being collapsed into a false boolean.
 
-Detailed observed result terms are available only through `onCommitmentVerification`. Ordinary traces retain commitment classifications plus names of mismatched fields, not amount/counterparty/schedule/page excerpts.
+Rich clipboard transfer, drag/drop, collaborative-editor synchronization, and editor-specific model verification are still incomplete.
 
-`commitmentDetection: 'off'` and `commitmentVerification: 'off'` are explicit compatibility opt-outs. They are not the standalone defaults.
+See [`docs/rich-document-formatting.md`](docs/rich-document-formatting.md).
 
-Repository regressions use synthetic local fixtures only; they do not execute real purchases, payments, transfers, bookings, publications, deletions, security changes, or deployments.
+## Media, fullscreen, and permissions
 
-See [`docs/commitment-safety.md`](docs/commitment-safety.md).
+The media layer observes bounded HTML `audio`/`video` state and uses frame/backend-node identity rather than retaining media source URLs. Native play/pause/mute/volume/seek/playback-rate and document-fullscreen operations are verified without setting CDP `userGesture: true`; autoplay/fullscreen policy can therefore legitimately reject an operation.
+
+Permission observation combines frame-visible Permissions API state with Permissions Policy information. Browser/profile grant state remains explicitly unknown when CDP provides no passive readback. This layer does not auto-grant camera, microphone, clipboard, geolocation, notification, or other sensitive permissions.
+
+See [`docs/media-permission-state.md`](docs/media-permission-state.md).
+
+## Realtime and game control
+
+The realtime stack supports held keys/buttons, relative pointer movement, independent perception/control cadence, renderer/game-region leases, screenshot sampling, visual diffs, motion regions, and temporal tracks.
+
+Pointer-lock/pointer-capture lifecycle state now guards relative motion with owner identity, loss detection, and bounded recovery hooks. Generic game-control calibration can run short budgeted probes and compare visual effects, but key probing fails closed unless the caller explicitly attests that the candidate and current keyboard-focus ownership are safe for calibration.
+
+See:
+
+- [`docs/pointer-lock-lifecycle.md`](docs/pointer-lock-lifecycle.md)
+- [`docs/game-control-calibration.md`](docs/game-control-calibration.md)
+- [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md)
+- [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md)
+- [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md)
+
+## Task checkpoints
+
+`src/agent/taskCheckpoint.ts` is a pure versioned checkpoint/replay codec. It records program identity/hash, current step, visit counters, remaining budgets, and bounded non-sensitive browser fingerprints while excluding typed inputs, cookies/tokens, page excerpts, financial/counterparty details, and DOM snapshots.
+
+Serialization is deterministic and locale-independent; decoding validates schema/version/integrity and resume compatibility. The codec deliberately does **not** integrate with `TaskRuntime` yet, and its execution identifier is not an authentication or rollback-protection mechanism.
+
+See [`docs/task-checkpoints.md`](docs/task-checkpoints.md).
 
 ## Architecture
 
-```text
-Node
- |
- | child_process + --remote-debugging-pipe
- v
-CdpPipeConnection
- |
- v
-CdpTargetSessionRouter ---------------- browser-root lifecycle
- |
- +-------------------+-------------------+
- |                   |                   |
- v                   v                   v
-page session      page session       page session
- |                   |                   |
- +---------- MultiPageCdpAgent ---------+
-                     |
-              MultiPageTaskEngine
-                     |
-       +-------------+--------------+
-       |             |              |
-       v             v              v
- structured       semantic      visual/game
- document read    interaction    perception
-       |             |              |
-       +-------------+--------------+
-                     |
-               TaskRuntime
-                     |
-         pre-action target state
-                     |
-          bounded commitment gate
-                     |
-        explicit approval if needed
-                     |
-          browser-native CDP input
-                     |
-          bounded result observation
-                     |
-       commitment-bound verification
-                     |
-                     v
-                 web page
-```
+The main layers are intentionally separable:
 
-## Perception and identity
+- `src/browser/` — CDP/page observation, navigation/dialog/download/upload/select/history/network state, document/research/formatting, commitment/result identity, media/permissions, pointer ownership, and visual perception.
+- `src/controller/` — semantic/pointer/focus/keyboard/scroll/rich-text/pointer-lock controllers.
+- `src/input/` — browser-input abstraction, raw CDP adapter, key mapping, and optional framework adapters.
+- `src/agent/` — bounded task programs/runtime, post-commit verification, checkpoint codec, realtime control, and game calibration.
+- `src/engine/` — standalone page engine, pure-CDP construction, multi-page routing, and the top-level standalone browser agent.
+- `src/capabilities/` — explicit task-capability vocabulary and current standalone profile.
 
-The structured reader and semantic observer remain separate models rather than bloating controls with article text.
+`src/index.ts` exports the supported public foundations, including the 0.42 modules.
 
-The reader covers headings, paragraphs, lists, definitions, tables, code, quotes, figure captions, links, images/alt text, landmarks, and page metadata with independent browser-side and exact host-side UTF-8/node/depth budgets. Rendered offscreen content can be read; hidden content is excluded by default. Open Shadow DOM and assigned slots are supported, and frame errors are surfaced without discarding other usable frames.
+## Seven broad web-task categories
 
-Interactive observation adds stable structural/CDP backend/accessibility identity, frame ownership, browser-authoritative geometry, visibility clipping through scroll ancestors and frame viewports, ARIA widget state, `aria-activedescendant`, browser-computed `tabIndex`, roving composite ownership, hit-tested target points, and capability inference.
+The repository tracks capability targets for:
 
-## Planning and browser actions
+1. Information Retrieval & Research
+2. Communication & Collaboration
+3. Transactions & Commerce
+4. Content Consumption & Entertainment
+5. Content Creation & Publishing
+6. Identity & Account Management
+7. Automation & Process Triggering
 
-The interaction engine combines:
+The capability model distinguishes `supported`, `partial`, and `unsupported` primitives and evaluates required versus preferred capabilities. It is the source of truth for category claims.
 
-- weighted semantic/spatial graph routing;
-- modality-aware A* costs over time, failure, scroll, uncertainty, and switching;
-- observed Tab/Shift+Tab and Arrow-key topology learning;
-- conservative speculative geometry constrained by ARIA composite ownership;
-- empirical edge-performance learning;
-- semantic ambiguity reporting and fail-closed target acquisition;
-- pointer target revalidation immediately before click;
-- action-specific settling/verification and closed-loop replanning.
+Current highlights:
 
-Browser lifecycle controllers cover navigation/history, page target creation/close/switch, dialogs, select controls, downloads/uploads, optional request-boundary navigation policy, and optional network activity.
+- research has structured extraction plus deterministic ranking/diffing, while network-assisted refresh/reconciliation remains incomplete;
+- communication has text entry, uploads, and partial rich editing, but clipboard/media-auth workflows remain incomplete;
+- transactions are mechanically runnable behind commitment approval/result verification, but provider-specific transaction reconciliation remains incomplete;
+- content consumption has visual/realtime foundations and partial native media control;
+- broad content creation/publishing is still blocked by missing general clipboard read/write and drag/drop support despite rich editing and publishing-side commitment verification;
+- identity/account tasks remain user-mediated around credentials/passkeys/MFA and do not bypass authentication or permissions; and
+- automation/process triggering has bounded task execution and post-trigger verification, plus a checkpoint codec that is not yet wired into runtime persistence.
 
-## Rich-document editing
+## Running locally
 
-The current editing foundation includes:
-
-- frame-scoped DOM/contenteditable selection state;
-- focused input/textarea selection start/end/direction;
-- open-shadow structural paths and editing-host identity;
-- bounded selected text and geometry;
-- native CDP `Input.insertText` for exact current-selection insertion/replacement;
-- verified select-all and delete-selection operations;
-- fail-closed ambiguous cross-frame/no-editable-selection behavior.
-
-Formatting runs, rich clipboard, drag/drop, collaborative-editor synchronization, and editor-specific document-model verification remain future work.
-
-## Realtime/game stack
-
-For permitted browser games and interactive canvases, the stack includes persistent held key/button state, relative pointer deltas, independent perception/control cadence, automatic game-region acquisition, stable renderer leases/generations, cropped/downscaled screenshot sampling, local PNG differencing, connected motion regions, bounded temporal tracks/velocity/confidence, and a composed `CdpGameVisualPipeline` that resets perception baselines correctly across resize and renderer replacement.
-
-Pointer-lock acquisition/loss/recovery, global camera-motion separation, semantic object understanding, and arbitrary-game control discovery/calibration remain open frontiers.
-
-## Local validation
-
-GitHub Actions is intentionally disabled. Run locally:
+Requires Node.js 22+ and TypeScript 5.8.x for development. Raw Chromium integration tests also require a local Chromium executable; the fixtures default to `/usr/bin/chromium` when available.
 
 ```bash
 npm install
@@ -187,32 +144,28 @@ npm test
 npm run test:chromium
 ```
 
-Set `CHROMIUM_BIN=/path/to/chromium` if Chromium is not `/usr/bin/chromium`.
+`npm run test:live` is opt-in and intended only for explicitly selected live-web checks. High-consequence feature validation should use synthetic/local fixtures rather than real purchases, payments, bookings, transfers, publications, security changes, deletions, deployments, or external process triggers.
 
-The Chromium suite uses local deterministic fixtures. It covers the raw remote-debugging pipe, target/session routing, semantic actions, frames/shadow DOM, structured reading, navigation/lifecycle controllers, realtime/game behavior, rich selection/insertion, and synthetic commitment safety. The commitment smoke test proves an unapproved synthetic checkout is blocked before input, an approved run performs exactly one independently verified browser activation, and the resulting synthetic receipt is independently classified before the task completes. It does not make a real purchase or use an external merchant.
+## Validation policy
 
-`npm run test:live` is a separate opt-in general live-site smoke path behind `RUN_LIVE_WEB=1`; it is not used for transaction testing.
+GitHub Actions are intentionally disabled for this repository and are not part of the validation path. Windows Tester is not used.
 
-## Key documentation
+Development and review should use focused local TypeScript/unit tests and raw-CDP synthetic Chromium fixtures. Do not claim the full repository or Chromium suite passed unless it was actually run on the exact reviewed files.
 
-- [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) — framework-independent Chromium process/CDP path
-- [`docs/task-program-runtime.md`](docs/task-program-runtime.md) — bounded control-flow runtime and policy boundary
-- [`docs/document-content-observation.md`](docs/document-content-observation.md) — structured reading semantics and bounds
-- [`docs/document-task-predicates.md`](docs/document-task-predicates.md) — document-driven task conditions
-- [`docs/rich-document-selection.md`](docs/rich-document-selection.md) — selection/caret and native insertion foundation
-- [`docs/commitment-safety.md`](docs/commitment-safety.md) — dynamic pre-commit approval and retry-safe post-commit verification
-- [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md) — seven-category capability model
-- [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md), [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md), [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md), [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md), [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md), and [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) — realtime/game stack
+The primary architecture must remain usable without Playwright, Puppeteer, Selenium, or WebDriver. Optional adapters may exist, but standalone capabilities should be implemented against the repository abstractions/raw CDP rather than making an automation framework mandatory.
+
+The project does not implement anti-bot stealth, fingerprint spoofing, CAPTCHA bypass, permission bypass, or abuse-control evasion.
 
 ## Current frontier
 
-Highest-leverage remaining work:
+The highest-value remaining work after 0.42 is:
 
-1. **Durable commitment/result identity** — bind provider/result identifiers across redirects, popups, and multi-provider handoffs without weakening the fail-closed verification boundary.
-2. **Rich clipboard/formatting/drag-drop/editor verification** — needed for broad collaboration and content creation/publishing.
-3. **Permissions/media/user-mediated authentication** — first-class permission, fullscreen/playback, MFA/passkey handoff, and user-presence state.
-4. **Long-running checkpoint/replay** — durable, non-sensitive restartable task progress.
-5. **Research refinement** — article/main-content ranking, boilerplate suppression, richer table relationships, incremental document diffs, and targeted refresh.
-6. **Pointer capture and semantic visual understanding** — pointer-lock state, camera/global-motion separation, object/task association.
-7. **Game control discovery/calibration** — bounded inference of which controls affect which observed state variables.
-8. **Browser-engine portability** — native in-repo protocol runtimes for non-Chromium engines rather than reintroducing framework dependence.
+1. **Rich clipboard, drag/drop, and collaborative-editor verification** — browser-native copy/cut/paste/drop semantics with bounded payload/privacy rules and post-operation verification.
+2. **TaskRuntime checkpoint persistence/replay** — integrate the pure codec with explicit trusted storage, freshness/rollback policy, input re-provisioning, and safe resume points without replaying side effects.
+3. **User-mediated authentication and capture lifecycles** — passkeys/MFA/credential boundaries plus camera/microphone device/capture state without bypassing browser permission or user-presence requirements.
+4. **Provider/result reconciliation** — strengthen labeled result identity with provider-neutral navigation/handoff lifecycle and, where safely available, external result-state reconciliation without exposing financial secrets or enabling redispatch.
+5. **Semantic visual understanding** — camera/global-motion separation, object/task association, and more robust visual scene semantics beyond motion tracks.
+6. **Game-control discovery refinement** — broader safe candidate discovery, richer effect attribution, reset/rebaseline behavior, and calibration under pointer-lock/camera motion.
+7. **Browser-engine portability** — preserve the semantic/input/verification contracts while adding non-Chromium backends or adapters.
+
+These remain incremental capability slices rather than justification for introducing a heavyweight browser framework into the core.
