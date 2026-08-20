@@ -12,8 +12,10 @@ import { CdpHistoryController, type BrowserHistoryAction, type BrowserHistoryCon
 import { CdpNavigationGuard } from '../browser/navigationGuard.js';
 import { CdpNavigationController, type BrowserNavigationOptions, type BrowserNavigationResult, type BrowserNavigator, type NavigationPolicy } from '../browser/navigationController.js';
 import { CdpNetworkActivityMonitor, type NetworkIdleOptions, type NetworkIdleResult } from '../browser/networkActivityMonitor.js';
+import { observeMediaState, type MediaStateSnapshot, type ObserveMediaStateOptions } from '../browser/mediaState.js';
 import { CdpSelectController, type BrowserSelectMatch, type BrowserSelectResult } from '../browser/selectController.js';
 import { CdpTargetController, type BrowserTargetSummary, type CloseBrowserTargetResult, type CreateBrowserTargetResult } from '../browser/targetController.js';
+import { CdpVisualObserver, type VisualCaptureOptions, type VisualSnapshot } from '../browser/visualObserver.js';
 import { RichTextController } from '../controller/richTextController.js';
 import type { TargetQuery, TargetResolution } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
@@ -57,6 +59,14 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
 
   documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
     return this.interaction.observer.documentContent?.(options) ?? Promise.resolve(undefined);
+  }
+
+  visualSnapshot(options?: VisualCaptureOptions): Promise<VisualSnapshot> {
+    return new CdpVisualObserver(this.session).capture(options);
+  }
+
+  mediaSnapshot(options?: ObserveMediaStateOptions): Promise<MediaStateSnapshot> {
+    return observeMediaState(this.session, options);
   }
 
   dialogState(): BrowserDialogState | undefined {

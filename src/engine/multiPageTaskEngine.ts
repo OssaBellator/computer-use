@@ -4,10 +4,12 @@ import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryAction, BrowserHistoryOptions, BrowserHistoryResult } from '../browser/historyController.js';
+import type { MediaStateSnapshot, ObserveMediaStateOptions } from '../browser/mediaState.js';
 import type { NetworkIdleOptions, NetworkIdleResult } from '../browser/networkActivityMonitor.js';
 import type { BrowserNavigationOptions, BrowserNavigationResult } from '../browser/navigationController.js';
 import type { BrowserSelectMatch, BrowserSelectResult } from '../browser/selectController.js';
-import type { BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
+import type { BrowserTargetState, BrowserTargetSummary, CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
+import type { VisualCaptureOptions, VisualSnapshot } from '../browser/visualObserver.js';
 import type { TargetQuery } from '../model/targetResolver.js';
 import type { InteractionNode, Point } from '../types.js';
 import type { TaskPageSelection } from '../agent/taskProgram.js';
@@ -74,6 +76,10 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     return this.pages.summary().activeTargetId;
   }
 
+  browserTargets(): BrowserTargetState[] {
+    return this.pages.targets.targets();
+  }
+
   async browserStateForPage(targetId: string): Promise<BrowserStateSnapshot | undefined> {
     return (await this.pages.inspectEngine(targetId))?.browserState();
   }
@@ -83,6 +89,16 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     options?: DocumentContentOptions,
   ): Promise<DocumentContentSnapshot | undefined> {
     return (await this.pages.inspectEngine(targetId))?.interaction.observer.documentContent?.(options);
+  }
+
+  async visualSnapshot(targetId: string | undefined, options?: VisualCaptureOptions): Promise<VisualSnapshot | undefined> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.visualSnapshot(options);
+  }
+
+  async mediaSnapshot(targetId: string | undefined, options?: ObserveMediaStateOptions): Promise<MediaStateSnapshot | undefined> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.mediaSnapshot(options);
   }
 
   dialogState(): BrowserDialogState | undefined {
