@@ -109,6 +109,40 @@ test('game region lease reacquires and increments generation when renderer ident
   assert.equal(locateCalls, 2);
 });
 
+test('fallback reacquisition of the same renderer does not invent a geometry change', async () => {
+  let locateCalls = 0;
+  const candidate = region(40, 5, 6, 300, 170);
+  const locator: GameRegionLocatorLike = {
+    async locate() {
+      locateCalls += 1;
+      return {
+        viewportRect: { x: 0, y: 0, width: 800, height: 600 },
+        primary: candidate,
+        candidates: [candidate],
+      };
+    },
+  };
+  const session: CdpSessionLike = {
+    async send(method) {
+      if (method === 'Page.getLayoutMetrics') {
+        return { cssVisualViewport: { clientWidth: 800, clientHeight: 600 } };
+      }
+      if (method === 'DOM.getBoxModel') throw new Error('transient probe failure');
+      throw new Error(`unexpected CDP method: ${method}`);
+    },
+  };
+
+  const lease = new CdpGameRegionLease(session, locator);
+  await lease.acquire();
+  const reacquired = await lease.refresh();
+
+  assert.equal(reacquired.status, 'reacquired');
+  assert.equal(reacquired.generation, 1);
+  assert.equal(reacquired.geometryChanged, false);
+  assert.equal(reacquired.region?.backendNodeId, 40);
+  assert.equal(locateCalls, 2);
+});
+
 test('game region lease reports stable refreshes and returns cloned current state', async () => {
   const candidate = region(30, 10, 20, 300, 160);
   const locator: GameRegionLocatorLike = {
