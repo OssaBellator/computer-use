@@ -86,6 +86,36 @@ test('multi-page agent lazily attaches, activates, reuses, and redacts target me
   assert.equal(serialized.includes('Secret'), false);
 });
 
+test('read-only page inspection attaches without activating or switching the active page', async () => {
+  const connection = new Connection();
+  connection.targets.push({
+    targetId: 'page-2', type: 'page', attached: false,
+    openerId: 'page-1', url: 'https://result.example/', title: 'Result',
+  });
+  const router = new CdpTargetSessionRouter(connection);
+  const agent = new MultiPageCdpAgent(
+    router,
+    {},
+    undefined,
+    async (session) => fakeEngine(session.targetId),
+  );
+
+  await agent.switchTo('page-1');
+  const activationCallsBefore = connection.calls.filter(([method]) => method === 'Target.activateTarget').length;
+  const inspected = await agent.inspectEngine('page-2');
+
+  assert.equal((inspected as unknown as { marker?: string })?.marker, 'page-2');
+  assert.equal(agent.summary().activeTargetId, 'page-1');
+  assert.equal(
+    connection.calls.filter(([method]) => method === 'Target.activateTarget').length,
+    activationCallsBefore,
+  );
+  assert.equal(
+    connection.calls.filter(([method, params]) => method === 'Target.attachToTarget' && params.targetId === 'page-2').length,
+    1,
+  );
+});
+
 test('multi-page create-and-switch enforces target navigation policy before creation', async () => {
   const connection = new Connection();
   const router = new CdpTargetSessionRouter(connection);
