@@ -1,5 +1,7 @@
 import {
-  STANDALONE_CHROMIUM_CAPABILITY_PROFILE,
+  CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE,
+} from '../capabilities/standaloneChromiumCapabilities.js';
+import {
   assessWebTaskCategory,
   type BrowserCapabilityProfile,
   type CapabilityAssessment,
@@ -39,7 +41,7 @@ export class StandaloneBrowserAgent {
   readonly pages: MultiPageCdpAgent;
   readonly taskEngine: MultiPageTaskEngine;
   readonly capabilityProfile: BrowserCapabilityProfile =
-    STANDALONE_CHROMIUM_CAPABILITY_PROFILE;
+    CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE;
   private shutdownPromise?: Promise<void>;
 
   constructor(
