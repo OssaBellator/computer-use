@@ -124,6 +124,24 @@ function snapshotAuthority(value: unknown): Readonly<RemoteSessionAuthority> | u
   if (typeof endpointId !== 'string' || typeof remoteHostId !== 'string' || typeof sessionId !== 'string' || typeof generation !== 'number' || !bounded(endpointId) || !bounded(remoteHostId) || !bounded(sessionId) || !Number.isSafeInteger(generation) || generation < 0) return undefined;
   return Object.freeze({ endpointId, remoteHostId, sessionId, generation });
 }
+function snapshotConnectionCapabilities(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > MAX_CAPABILITIES) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value), allowed = new Set(['length', ...Array.from({length:value.length}, (_,i)=>String(i))]);
+  for (const [key, descriptor] of Object.entries(descriptors)) if (!allowed.has(key) || !('value' in descriptor)) return undefined;
+  const out:string[]=[];
+  for(let i=0;i<value.length;i++){const descriptor=Object.getOwnPropertyDescriptor(value,String(i));if(!descriptor||!('value' in descriptor)||typeof descriptor.value!=='string')return undefined;out.push(descriptor.value);}
+  return Object.freeze(out);
+}
+function snapshotConnectionCandidate(value: unknown): Readonly<RemoteSessionConnection> | undefined {
+  const record=plainRecord(value);if(!record||!exactOwnKeys(record,['sessionId','remoteHostId','capabilities'],['sessionId','remoteHostId','capabilities']))return undefined;
+  const sessionId=ownData(record,'sessionId'),remoteHostId=ownData(record,'remoteHostId'),capabilities=snapshotConnectionCapabilities(ownData(record,'capabilities'));
+  if(typeof sessionId!=='string'||typeof remoteHostId!=='string'||!capabilities)return undefined;
+  return Object.freeze({sessionId,remoteHostId,capabilities});
+}
+function validatedConnectionCandidate(candidate: Readonly<RemoteSessionConnection>): Readonly<RemoteSessionConnection> | undefined {
+  if(!bounded(candidate.sessionId)||!bounded(candidate.remoteHostId))return undefined;
+  return Object.freeze({sessionId:candidate.sessionId,remoteHostId:candidate.remoteHostId,capabilities:safeCapabilities(candidate.capabilities)});
+}
 function snapshotStringArray(value: unknown): readonly string[] | undefined {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > MAX_COMMAND_ARGS) return undefined;
   const descriptors = Object.getOwnPropertyDescriptors(value);
@@ -204,7 +222,7 @@ function snapshotDispatchOutcome<T>(value: unknown, snapshotValue?: (value: unkn
 export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor;
   readonly endpoint: Readonly<RemoteEndpointIdentity>;
-  private lifecycle: RemoteConnectionLifecycle='disconnected'; private connection?:RemoteSessionConnection; private generation=0; private sequence=0; private discoveredCapabilities:readonly string[]=[];
+  private lifecycle: RemoteConnectionLifecycle='disconnected'; private connection?:Readonly<RemoteSessionConnection>; private generation=0; private sequence=0; private discoveredCapabilities:readonly string[]=[];
   private lifecycleTail: Promise<void> = Promise.resolve();
   constructor(readonly adapterId:string, endpoint:RemoteEndpointIdentity, private readonly backend:RemoteSessionBackend){const endpointSnapshot=snapshotEndpoint(endpoint);if(!bounded(adapterId)||!endpointSnapshot||backend.protocol!==endpointSnapshot.protocol)throw new Error('invalid remote-session adapter configuration');this.endpoint=endpointSnapshot;this.descriptor=Object.freeze({id:adapterId,kind:'remote-session' as const,version:'0.1.0',capabilities:Object.freeze(['remote.session.observe','remote.metadata.observe',...(endpointSnapshot.protocol==='ssh'?['remote.ssh.execute']:['remote.display.observe','remote.visual.input'])])});}
   state():Readonly<{lifecycle:RemoteConnectionLifecycle;endpoint:RemoteEndpointIdentity;authority?:RemoteSessionAuthority;capabilities:readonly string[]}>{return Object.freeze({lifecycle:this.lifecycle,endpoint:this.endpoint,authority:this.connection?Object.freeze(this.currentAuthority()):undefined,capabilities:this.discoveredCapabilities});}
@@ -217,17 +235,17 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
     if(request.capability==='remote.visual.input'){if((this.endpoint.protocol!=='rdp'&&this.endpoint.protocol!=='vnc')||!this.backend.sendVisualInput)return this.unsupported('remote-visual-input-unavailable');const input=snapshotVisualInput(ownData(payload as Record<string, unknown>,'input'));if(!input)return this.reject('remote-input-invalid');let mapped:ComputerActionResult;try{mapped=this.fromDispatch(await this.backend.sendVisualInput(connection,input));}catch(error){mapped=this.transportFailure(error);}if(mapped.status==='completed')return{...mapped,status:'unknown',verification:'unverified',evidence:[...(mapped.evidence??[]),'remote-visual-effect-unverified']};return mapped;}
     return this.unsupported('remote-capability-unsupported');}
   private enqueueLifecycle<T>(operation:()=>Promise<T>):Promise<T>{const result=this.lifecycleTail.then(operation,operation);this.lifecycleTail=result.then(()=>undefined,()=>undefined);return result;}
-  private async connectTransition(credential?:Readonly<RemoteSecretHandle>):Promise<RemoteSessionAuthority>{const prior=this.connection;this.lifecycle=prior?'reconnecting':'connecting';let candidate:RemoteSessionConnection;try{candidate=await this.backend.connect(this.endpoint,credential);}catch(error){if(prior){this.connection=prior;this.discoveredCapabilities=safeCapabilities(prior.capabilities);this.lifecycle='connected';}else this.failClosed();throw error;}
-    if(!bounded(candidate.sessionId)||!bounded(candidate.remoteHostId)||!Array.isArray(candidate.capabilities)){const cleaned=await this.cleanupCandidate(candidate);if(cleaned&&prior){this.connection=prior;this.discoveredCapabilities=safeCapabilities(prior.capabilities);this.lifecycle='connected';}else if(cleaned)this.failClosed();if(!cleaned)throw new Error('remote candidate cleanup failed');throw new Error('invalid remote identity');}
-    const committed=Object.freeze({...candidate,capabilities:safeCapabilities(candidate.capabilities)});
+  private async connectTransition(credential?:Readonly<RemoteSecretHandle>):Promise<RemoteSessionAuthority>{const prior=this.connection;this.lifecycle=prior?'reconnecting':'connecting';let rawCandidate:unknown;try{rawCandidate=await this.backend.connect(this.endpoint,credential);}catch(error){if(prior){this.connection=prior;this.discoveredCapabilities=prior.capabilities;this.lifecycle='connected';}else this.failClosed();throw error;}
+    const candidate=snapshotConnectionCandidate(rawCandidate);if(!candidate){this.failClosed();throw new Error('invalid remote identity');}
+    const committed=validatedConnectionCandidate(candidate);if(!committed){const cleaned=await this.cleanupCandidate(candidate);if(cleaned&&prior){this.connection=prior;this.discoveredCapabilities=prior.capabilities;this.lifecycle='connected';}else if(cleaned)this.failClosed();if(!cleaned)throw new Error('remote candidate cleanup failed');throw new Error('invalid remote identity');}
     if(prior){try{await this.backend.disconnect(prior);}catch(error){const cleaned=await this.cleanupCandidate(committed);this.failClosed();if(!cleaned)throw new Error('remote candidate cleanup failed');throw error;}}
     this.connection=committed;this.generation+=1;this.discoveredCapabilities=committed.capabilities;this.lifecycle='connected';return Object.freeze(this.currentAuthority());}
   private async disconnectTransition():Promise<void>{const connection=this.connection;if(!connection){this.discoveredCapabilities=[];this.lifecycle='disconnected';return;}this.lifecycle='reconnecting';try{await this.backend.disconnect(connection);}catch(error){this.failClosed();throw error;}this.connection=undefined;this.discoveredCapabilities=[];this.lifecycle='disconnected';}
-  private async cleanupCandidate(candidate:RemoteSessionConnection):Promise<boolean>{try{await this.backend.disconnect(candidate);return true;}catch{this.failClosed();return false;}}
+  private async cleanupCandidate(candidate:Readonly<RemoteSessionConnection>):Promise<boolean>{try{await this.backend.disconnect(candidate);return true;}catch{this.failClosed();return false;}}
   private failClosed():void{this.connection=undefined;this.discoveredCapabilities=[];this.lifecycle='failed';}
   private currentAuthority():RemoteSessionAuthority{const c=this.requireConnection();return{endpointId:this.endpoint.endpointId,remoteHostId:c.remoteHostId,sessionId:c.sessionId,generation:this.generation};}
   private surfaceRef():ComputerSurfaceRef{const c=this.requireConnection();return{adapterId:this.adapterId,environment:'remote-session',surfaceId:c.sessionId,generation:this.generation,parentSurfaceId:c.remoteHostId};}
-  private requireConnection():RemoteSessionConnection{if(!this.connection||this.lifecycle!=='connected')throw new Error('remote session is not connected');return this.connection;}
+  private requireConnection():Readonly<RemoteSessionConnection>{if(!this.connection||this.lifecycle!=='connected')throw new Error('remote session is not connected');return this.connection;}
   private assertRequestAdapter(adapterId:string):void{if(adapterId!==this.adapterId)throw new Error('remote adapter mismatch');}
   private assertSurfaceAuthority(surface:ComputerSurfaceRef|undefined):void{if(!surface)return;const current=this.surfaceRef();if(surface.adapterId!==current.adapterId||surface.environment!==current.environment||surface.surfaceId!==current.surfaceId||surface.generation!==current.generation||surface.parentSurfaceId!==current.parentSurfaceId)throw new Error('stale or mismatched remote surface');}
   private authorityError(authority:RemoteSessionAuthority):string|undefined{const current=this.currentAuthority();if(authority.endpointId!==current.endpointId||authority.remoteHostId!==current.remoteHostId)return'remote-host-mismatch';if(authority.sessionId!==current.sessionId)return'remote-session-replaced';if(authority.generation!==current.generation)return'remote-session-stale-generation';return undefined;}
