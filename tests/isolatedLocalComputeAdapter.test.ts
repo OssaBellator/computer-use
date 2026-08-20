@@ -20,7 +20,7 @@ function adapter(options: Partial<ConstructorParameters<typeof IsolatedLocalComp
 }
 
 function request(jobId: string, generation: number, operation: string, input: LocalComputeJson, effect: 'observe-only' | 'local-reversible' = 'observe-only', idempotency: 'read-only' | 'non-idempotent' = 'read-only', limits?: object) {
-  return { adapterId: 'compute-isolated-test', actionId: `action-${jobId}-${generation}`, capability: LOCAL_COMPUTE_CAPABILITY, effect, idempotency, payload: { job: { jobId, generation }, operation, input, limits } } as const;
+  return { adapterId: 'compute-isolated-test', actionId: `action-${jobId}-${generation}`, capability: LOCAL_COMPUTE_CAPABILITY, effect, idempotency, payload: { job: { jobId, generation }, operation, inputEncoded: JSON.stringify(input), limits } } as const;
 }
 
 test('cooperative local compute mode and claims remain unchanged', async () => {
@@ -37,7 +37,7 @@ test('isolated execution advertises a distinct enforceable timeout model', () =>
 
 test('registered operation authority rejects command-shaped and unregistered requests before dispatch', async () => {
   const a = adapter();
-  const command = await a.act({ ...request('command', 0, 'test.echo', null), payload: { job: { jobId: 'command', generation: 0 }, operation: 'test.echo', input: null, command: 'sh -c whoami' } } as any);
+  const command = await a.act({ ...request('command', 0, 'test.echo', null), payload: { job: { jobId: 'command', generation: 0 }, operation: 'test.echo', inputEncoded: 'null', command: 'sh -c whoami' } } as any);
   assert.equal(command.dispatch, 'not-dispatched');
   assert.deepEqual(command.evidence, ['compute-isolated-request-invalid']);
   const missing = await a.act(request('missing', 0, 'test.not-registered', null));
@@ -110,7 +110,7 @@ test('artifact output is explicitly verified, generation-bound, and retrievable'
   const ref = (result.details as any).artifact;
   assert.equal(ref.generation, 7);
   assert.match(ref.contentHash, /^sha256-[a-f0-9]{64}$/);
-  assert.deepEqual(a.artifactContent(ref), { kind: 'artifact', input: { value: 3 } });
+  assert.deepEqual(a.artifactContent(ref), { input: { value: 3 }, kind: 'artifact' });
   assert.equal(a.artifactContent({ ...ref, byteLength: ref.byteLength + 1 }), undefined);
 });
 
@@ -144,13 +144,14 @@ test('concurrent generations use independent exactly-once identities', async () 
   assert.equal((await a.act(generation1)).dispatch, 'dispatched-once');
 });
 
-test('operation definitions and serialized input snapshots are immutable after acceptance', async () => {
+test('operation definitions and encoded input snapshots are immutable after acceptance', async () => {
   const mutable: IsolatedLocalComputeOperationDefinition = { id: 'test.mutable', effect: 'pure-read-only', moduleUrl, exportName: 'frozenInput' };
   const a = new IsolatedLocalComputeAdapter({ id: 'compute-isolated-test', operations: [mutable] });
   mutable.moduleUrl = 'file:///definitely/not/the/registered/module.js';
   mutable.exportName = 'missing';
   const input: any = { nested: { value: 1 } };
-  const pending = a.act(request('snapshot', 0, 'test.mutable', input));
+  const req = request('snapshot', 0, 'test.mutable', input);
+  const pending = a.act(req);
   input.nested.value = 99;
   const result = await pending;
   assert.equal(result.status, 'completed');
