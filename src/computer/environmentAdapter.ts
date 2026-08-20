@@ -21,6 +21,7 @@ export const COMPUTER_OBSERVATION_CHANNELS = [
   'network',
   'media',
   'device',
+  'system',
 ] as const;
 
 export type ComputerObservationChannel = typeof COMPUTER_OBSERVATION_CHANNELS[number];
