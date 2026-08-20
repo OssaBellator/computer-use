@@ -23,30 +23,63 @@ export interface NativeDesktopHelperDescriptor {
   capabilities: readonly ('relative-pointer')[];
 }
 
+function ownData(value: object, key: string): unknown {
+  let property:PropertyDescriptor|undefined;
+  try { property = Object.getOwnPropertyDescriptor(value, key); }
+  catch { throw new Error('native desktop helper descriptor malformed'); }
+  if (!property || !('value' in property) || property.get !== undefined || property.set !== undefined || !property.enumerable) {
+    throw new Error('native desktop helper descriptor malformed');
+  }
+  return property.value;
+}
+
+function descriptorObject(value: unknown): object {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('native desktop helper descriptor malformed');
+  return value;
+}
+
+function capturedArray(value: unknown, maxItems: number): readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error('native desktop helper descriptor malformed');
+  let lengthProperty:PropertyDescriptor|undefined;
+  try { lengthProperty = Object.getOwnPropertyDescriptor(value, 'length'); }
+  catch { throw new Error('native desktop helper descriptor malformed'); }
+  if (!lengthProperty || !('value' in lengthProperty) || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0 || lengthProperty.value > maxItems) {
+    throw new Error('native desktop helper descriptor malformed');
+  }
+  const length = lengthProperty.value as number;
+  const result: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    let property:PropertyDescriptor|undefined;
+    try { property = Object.getOwnPropertyDescriptor(value, String(index)); }
+    catch { throw new Error('native desktop helper descriptor malformed'); }
+    if (!property || !('value' in property) || property.get !== undefined || property.set !== undefined || !property.enumerable) {
+      throw new Error('native desktop helper descriptor malformed');
+    }
+    result.push(property.value);
+  }
+  return Object.freeze(result);
+}
+
 function descriptor(value: unknown): NativeDesktopHelperDescriptor {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+  const object = descriptorObject(value);
+  const protocolVersion = ownData(object, 'protocolVersion');
+  const platform = ownData(object, 'platform');
+  const operations = capturedArray(ownData(object, 'operations'), HELPER_OPERATIONS.length);
+  const capabilities = capturedArray(ownData(object, 'capabilities'), 1);
+
+  if (protocolVersion !== 1 ||
+      (platform !== 'windows-uia' && platform !== 'macos-accessibility' && platform !== 'linux-atspi')) {
     throw new Error('native desktop helper descriptor malformed');
   }
-  const raw = value as Record<string, unknown>;
-  if (Object.keys(raw).some((key) => !['protocolVersion', 'platform', 'operations', 'capabilities'].includes(key))) {
-    throw new Error('native desktop helper descriptor malformed');
-  }
-  if (raw.protocolVersion !== 1 ||
-      (raw.platform !== 'windows-uia' && raw.platform !== 'macos-accessibility' && raw.platform !== 'linux-atspi') ||
-      !Array.isArray(raw.operations) || !Array.isArray(raw.capabilities)) {
-    throw new Error('native desktop helper descriptor malformed');
-  }
-  const operations = raw.operations as unknown[];
   if (operations.length !== new Set(operations).size || operations.some((operation) => !HELPER_OPERATIONS.includes(operation as HelperOperation))) {
     throw new Error('native desktop helper operations malformed');
   }
-  const capabilities = raw.capabilities as unknown[];
-  if (capabilities.length > 1 || capabilities.some((capability) => capability !== 'relative-pointer')) {
+  if (capabilities.some((capability) => capability !== 'relative-pointer')) {
     throw new Error('native desktop helper capabilities malformed');
   }
   return Object.freeze({
     protocolVersion: 1,
-    platform: raw.platform,
+    platform,
     operations: Object.freeze([...operations] as HelperOperation[]),
     capabilities: Object.freeze([...capabilities] as ('relative-pointer')[]),
   });
@@ -56,6 +89,10 @@ function descriptor(value: unknown): NativeDesktopHelperDescriptor {
  * Adds an observation-only helper contract gate in front of the normal native
  * JSON bridge. `describe` itself must never emit OS input. A failed/mismatched
  * description blocks the actual desktop operation.
+ *
+ * Only the four authority-bearing descriptor fields and bounded array indices
+ * are acquired. Unknown provider-owned fields/symbols are ignored because they
+ * confer no authority; this avoids unbounded own-key enumeration.
  *
  * This is protocol/configuration conformance, not executable-file identity. A
  * native helper must still atomically revalidate target instance tokens inside
