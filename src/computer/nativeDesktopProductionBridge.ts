@@ -1,44 +1,42 @@
 import { ContractCheckedDesktopPlatformBridge } from './nativeDesktopHelperContract.js';
 import type { DesktopBridgeExecutor } from './nativeDesktopJsonBridge.js';
-import { StdioDesktopBridgeExecutor, type NativeDesktopStdioCommand } from './nativeDesktopStdioExecutor.js';
+import {
+  StdioDesktopBridgeExecutor,
+  snapshotNativeDesktopStdioCommand,
+  type NativeDesktopStdioCommand,
+  type NativeDesktopStdioCommandSnapshot,
+} from './nativeDesktopStdioExecutor.js';
 
-function options(command: NativeDesktopStdioCommand) {
+function options(command:NativeDesktopStdioCommandSnapshot) {
   return Object.freeze({
-    supportsRelativePointer: command.supportsRelativePointer === true,
-    maxResponseBytes: command.maxResponseBytes,
-    timeoutMs: command.timeoutMs,
+    supportsRelativePointer:command.supportsRelativePointer,
+    maxResponseBytes:command.maxResponseBytes,
+    timeoutMs:command.timeoutMs,
   });
 }
 
-/**
- * Preferred production factory for a Windows UI Automation native helper.
- * Defaults to stdin request transport and helper contract checking.
- */
-export function productionWindowsUiAutomationBridge(
-  command: NativeDesktopStdioCommand,
-  executor: DesktopBridgeExecutor = new StdioDesktopBridgeExecutor(command),
+function productionBridge(
+  id:string,
+  platform:'windows-uia'|'macos-accessibility'|'linux-atspi',
+  command:NativeDesktopStdioCommand,
+  executor?:DesktopBridgeExecutor,
 ) {
-  return new ContractCheckedDesktopPlatformBridge('windows-uia', 'windows-uia', executor, options(command));
+  const snapshot = snapshotNativeDesktopStdioCommand(command);
+  const selectedExecutor = executor ?? new StdioDesktopBridgeExecutor(command);
+  return new ContractCheckedDesktopPlatformBridge(id,platform,selectedExecutor,options(snapshot));
 }
 
-/**
- * Preferred production factory for a macOS Accessibility native helper.
- * Normal Accessibility/Screen Recording permission remains host policy.
- */
-export function productionMacOsAccessibilityBridge(
-  command: NativeDesktopStdioCommand,
-  executor: DesktopBridgeExecutor = new StdioDesktopBridgeExecutor(command),
-) {
-  return new ContractCheckedDesktopPlatformBridge('macos-accessibility', 'macos-accessibility', executor, options(command));
+/** Preferred production factory for a Windows UI Automation native helper. */
+export function productionWindowsUiAutomationBridge(command:NativeDesktopStdioCommand,executor?:DesktopBridgeExecutor) {
+  return productionBridge('windows-uia','windows-uia',command,executor);
 }
 
-/**
- * Preferred production factory for a Linux AT-SPI/native desktop helper.
- * Wayland/X11/portal input and capture authority remains helper/host policy.
- */
-export function productionLinuxAtSpiBridge(
-  command: NativeDesktopStdioCommand,
-  executor: DesktopBridgeExecutor = new StdioDesktopBridgeExecutor(command),
-) {
-  return new ContractCheckedDesktopPlatformBridge('linux-atspi', 'linux-atspi', executor, options(command));
+/** Normal Accessibility/Screen Recording permission remains host policy. */
+export function productionMacOsAccessibilityBridge(command:NativeDesktopStdioCommand,executor?:DesktopBridgeExecutor) {
+  return productionBridge('macos-accessibility','macos-accessibility',command,executor);
+}
+
+/** Wayland/X11/portal input and capture authority remains helper/host policy. */
+export function productionLinuxAtSpiBridge(command:NativeDesktopStdioCommand,executor?:DesktopBridgeExecutor) {
+  return productionBridge('linux-atspi','linux-atspi',command,executor);
 }
