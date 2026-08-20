@@ -193,6 +193,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     for (let index = 0; index < segments.length; index += 1) {
       current = resolve(current, segments[index]);
       const stats = await this.safeLstat(current);
+      await this.assertCanonicalPath(current);
       const kind = statKind(stats);
       if (kind === 'symlink') {
         throw new FilesystemAdapterError('filesystem-symlink-rejected', 'path resolution does not follow symlinks');
@@ -314,6 +315,19 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     }
   }
 
+  private async assertCanonicalPath(path: string): Promise<void> {
+    let canonical: string;
+    try {
+      canonical = await realpath(path);
+    } catch (error) {
+      mapFsError(error, path);
+    }
+    const samePath = relative(path, canonical) === '' && relative(canonical, path) === '';
+    if (!samePath || !withinRoot(this.rootPath, canonical)) {
+      throw new FilesystemAdapterError('filesystem-symlink-rejected', 'filesystem path changed through a symlink or escaped the scoped root');
+    }
+  }
+
   private registerIdentity(path: string, kind: 'file' | 'directory', stats: BigStats): ComputerEntityRef {
     const key = identityKey(stats);
     const existing = this.identities.get(key);
@@ -346,7 +360,9 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
       throw new FilesystemAdapterError('filesystem-generation-mismatch', 'target generation does not match the known filesystem object');
     }
     if (ref.kind !== record.kind) throw new FilesystemAdapterError('filesystem-target-kind-mismatch', 'target kind does not match known identity');
+    await this.assertCanonicalPath(record.path);
     const stats = await this.safeLstat(record.path);
+    await this.assertCanonicalPath(record.path);
     if (statKind(stats) !== record.kind || identityKey(stats) !== record.key) {
       throw new FilesystemAdapterError('filesystem-target-stale', 'filesystem object was deleted or replaced');
     }
@@ -374,6 +390,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     record: IdentityRecord,
     maxItemsInput?: number,
   ): Promise<{ data: FilesystemDirectoryObservation; truncated: boolean }> {
+    await this.assertCanonicalPath(record.path);
     const before = await this.safeLstat(record.path);
     if (identityKey(before) !== record.key || !before.isDirectory()) {
       throw new FilesystemAdapterError('filesystem-target-stale', 'directory was replaced before enumeration');
@@ -414,6 +431,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
       }
       entries.push(entry);
     }
+    await this.assertCanonicalPath(record.path);
     const after = await this.safeLstat(record.path);
     if (identityKey(after) !== record.key || !after.isDirectory()) {
       throw new FilesystemAdapterError('filesystem-race-detected', 'directory changed identity during enumeration');
@@ -436,6 +454,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     let targetType: Exclude<FilesystemEntryType, 'symlink'> | undefined;
     if (targetWithinRoot) {
       try {
+        await this.assertCanonicalPath(resolvedTarget);
         const targetStats = await lstat(resolvedTarget, { bigint: true }) as unknown as BigStats;
         const kind = statKind(targetStats);
         if (kind !== 'symlink') targetType = kind;
@@ -468,6 +487,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
       mapFsError(error, record.path);
     }
     try {
+      await this.assertCanonicalPath(record.path);
       const before = await handle.stat({ bigint: true }) as unknown as BigStats;
       if (!before.isFile() || identityKey(before) !== record.key || before.dev.toString() !== this.rootDevice) {
         throw new FilesystemAdapterError('filesystem-target-stale', 'file identity changed before bounded read');
