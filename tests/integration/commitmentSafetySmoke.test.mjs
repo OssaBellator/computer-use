@@ -109,6 +109,8 @@ test('standalone TaskRuntime gates and verifies a synthetic checkout commitment 
     assert.deepEqual(verification?.identity?.matchedTypes, ['confirmation']);
     assert.equal(allowed.trace[0]?.outcome, 'commitment-confirmed');
     assert.equal(allowed.trace[0]?.commitmentVerificationStatus, 'confirmed');
+    assert.equal(allowed.trace[0]?.commitmentIdentityRelation, 'matched-expected');
+    assert.equal(allowed.trace[0]?.commitmentProviderRelation, 'same-origin');
 
     const traceText = JSON.stringify(allowed.trace);
     assert.equal(traceText.includes('25.00'), false);
