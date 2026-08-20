@@ -68,6 +68,7 @@ export * from './application/structuredTextSemanticAdapter.js';
 export * from './application/spreadsheetSemanticAdapter.js';
 export * from './application/codeBufferSemanticAdapter.js';
 export * from './application/presentationSemanticAdapter.js';
+export * from './application/localDocumentPersistenceAdapter.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
 export * from './input/browserInput.js';
