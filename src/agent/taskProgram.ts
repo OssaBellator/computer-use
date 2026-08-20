@@ -1,5 +1,6 @@
 import type { BrowserDocumentReadyState } from '../browser/browserState.js';
 import type { BrowserDialogType } from '../browser/dialogController.js';
+import type { DocumentContentBlockKind } from '../browser/documentContent.js';
 import type { BrowserHistoryAction } from '../browser/historyController.js';
 import type { NavigationWaitUntil } from '../browser/navigationController.js';
 import type { BrowserSelectMatch } from '../browser/selectController.js';
@@ -17,11 +18,24 @@ export interface TaskBrowserTargetsExpectation { pageCountAtLeast?: number; unat
 export interface TaskDownloadExpectation { completedCountAtLeast?: number; inProgressCountAtLeast?: number; canceledCountAtLeast?: number; }
 export interface TaskDialogExpectation { open?: boolean; type?: BrowserDialogType; }
 export interface TaskBrowserExpectation { url?: ProgramText; urlIncludes?: ProgramText; origin?: ProgramText; title?: ProgramText; titleIncludes?: ProgramText; readyState?: BrowserDocumentReadyState; historyLength?: number; historyLengthAtLeast?: number; }
+export interface TaskDocumentExpectation {
+  kind?: DocumentContentBlockKind;
+  frameId?: string;
+  text?: ProgramText;
+  textIncludes?: ProgramText;
+  href?: ProgramText;
+  hrefIncludes?: ProgramText;
+  rendered?: boolean;
+  inViewport?: boolean;
+  /** Defaults to one matching block. */
+  minMatches?: number;
+}
 
 export type TaskPredicate =
   | { kind: 'exists'; target: TaskTarget; unambiguous?: boolean }
   | { kind: 'state'; target: TaskTarget; state: TaskNodeExpectation; unambiguous?: boolean }
   | { kind: 'browser'; state: TaskBrowserExpectation }
+  | { kind: 'document'; state: TaskDocumentExpectation }
   | { kind: 'dialog'; state: TaskDialogExpectation }
   | { kind: 'targets'; state: TaskBrowserTargetsExpectation }
   | { kind: 'downloads'; state: TaskDownloadExpectation }
@@ -60,10 +74,12 @@ export interface TaskProgramValidation { valid: boolean; errors: string[]; warni
 
 function collectProgramTextInput(text: ProgramText | undefined, into: Set<string>): void { if (text && typeof text !== 'string') into.add(text.input); }
 function collectBrowserExpectationInputs(state: TaskBrowserExpectation, into: Set<string>): void { collectProgramTextInput(state.url, into); collectProgramTextInput(state.urlIncludes, into); collectProgramTextInput(state.origin, into); collectProgramTextInput(state.title, into); collectProgramTextInput(state.titleIncludes, into); }
+function collectDocumentExpectationInputs(state: TaskDocumentExpectation, into: Set<string>): void { collectProgramTextInput(state.text, into); collectProgramTextInput(state.textIncludes, into); collectProgramTextInput(state.href, into); collectProgramTextInput(state.hrefIncludes, into); }
 function collectPredicateInputs(predicate: TaskPredicate, into: Set<string>): void {
   switch (predicate.kind) {
     case 'state': collectProgramTextInput(predicate.state.value, into); collectProgramTextInput(predicate.state.valueIncludes, into); return;
     case 'browser': collectBrowserExpectationInputs(predicate.state, into); return;
+    case 'document': collectDocumentExpectationInputs(predicate.state, into); return;
     case 'dialog': case 'targets': case 'downloads': case 'exists': return;
     case 'all': case 'any': for (const nested of predicate.predicates) collectPredicateInputs(nested, into); return;
     case 'not': collectPredicateInputs(predicate.predicate, into); return;
@@ -99,6 +115,7 @@ function validateObservationFields(kind: 'press-key' | 'hover' | 'scroll-viewpor
 function validatePredicate(predicate: TaskPredicate, stepId: string, errors: string[]): void {
   switch (predicate.kind) {
     case 'browser': { const { historyLength, historyLengthAtLeast } = predicate.state; if (historyLength !== undefined && (!Number.isInteger(historyLength) || historyLength < 0)) errors.push(`step ${stepId} browser historyLength must be a non-negative integer`); if (historyLengthAtLeast !== undefined && (!Number.isInteger(historyLengthAtLeast) || historyLengthAtLeast < 0)) errors.push(`step ${stepId} browser historyLengthAtLeast must be a non-negative integer`); return; }
+    case 'document': { const { minMatches } = predicate.state; if (minMatches !== undefined && (!Number.isInteger(minMatches) || minMatches < 1)) errors.push(`step ${stepId} document minMatches must be a positive integer`); return; }
     case 'targets': { const { pageCountAtLeast, unattachedPageCountAtLeast } = predicate.state; if (pageCountAtLeast !== undefined && (!Number.isInteger(pageCountAtLeast) || pageCountAtLeast < 0)) errors.push(`step ${stepId} targets pageCountAtLeast must be a non-negative integer`); if (unattachedPageCountAtLeast !== undefined && (!Number.isInteger(unattachedPageCountAtLeast) || unattachedPageCountAtLeast < 0)) errors.push(`step ${stepId} targets unattachedPageCountAtLeast must be a non-negative integer`); return; }
     case 'downloads': for (const [name, value] of Object.entries(predicate.state)) if (value !== undefined && (!Number.isInteger(value) || value < 0)) errors.push(`step ${stepId} downloads ${name} must be a non-negative integer`); return;
     case 'all': case 'any': for (const nested of predicate.predicates) validatePredicate(nested, stepId, errors); return;
