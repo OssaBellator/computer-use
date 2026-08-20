@@ -1,0 +1,10 @@
+name: CI (disabled; use local validation)
+
+# GitHub Actions intentionally disabled. Run locally instead:
+#   npm install
+#   npm run typecheck
+#   npm test
+#   npm run test:chromium
+on: []
+
+jobs: {}

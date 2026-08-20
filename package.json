@@ -1,0 +1,22 @@
+{
+  "name": "semantic-browser-interaction-engine",
+  "version": "0.39.0",
+  "private": true,
+  "description": "Standalone raw-CDP browser agent with structured reading, document-driven tasks, rich selection/editing foundations, web task capabilities, and realtime game perception.",
+  "type": "module",
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "test:chromium": "npm run build && node --test tests/integration/*.test.mjs",
+    "test:live": "npm run build && RUN_LIVE_WEB=1 node --test tests/integration/liveWebsiteSmoke.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.2",
+    "typescript": "^5.9.2"
+  }
+}
