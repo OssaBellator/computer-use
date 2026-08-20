@@ -42,23 +42,29 @@ export const COMPUTER_ENTITY_KINDS = [
 
 export type ComputerEntityKind = typeof COMPUTER_ENTITY_KINDS[number];
 
-export type ComputerEffectClass =
-  | 'observe-only'
-  | 'local-reversible'
-  | 'local-destructive'
-  | 'system-configuration'
-  | 'external-communication'
-  | 'external-transaction'
-  | 'security-sensitive'
-  | 'process-trigger'
-  | 'remote-execution'
-  | 'hardware-affecting';
+export const COMPUTER_EFFECT_CLASSES = [
+  'observe-only',
+  'local-reversible',
+  'local-destructive',
+  'system-configuration',
+  'external-communication',
+  'external-transaction',
+  'security-sensitive',
+  'process-trigger',
+  'remote-execution',
+  'hardware-affecting',
+] as const;
 
-export type ComputerActionIdempotency =
-  | 'read-only'
-  | 'idempotent'
-  | 'non-idempotent'
-  | 'unknown';
+export type ComputerEffectClass = typeof COMPUTER_EFFECT_CLASSES[number];
+
+export const COMPUTER_ACTION_IDEMPOTENCY = [
+  'read-only',
+  'idempotent',
+  'non-idempotent',
+  'unknown',
+] as const;
+
+export type ComputerActionIdempotency = typeof COMPUTER_ACTION_IDEMPOTENCY[number];
 
 export type ComputerDispatchState = 'not-dispatched' | 'dispatched-once' | 'unknown';
 
@@ -139,6 +145,7 @@ export interface ComputerActionRequest {
   /** Required because actions like process launch do not have a target entity yet. */
   adapterId: string;
   actionId: string;
+  /** Namespaced machine capability, for example `filesystem.read` or `browser.activate`. */
   capability: string;
   effect: ComputerEffectClass;
   idempotency: ComputerActionIdempotency;
@@ -172,6 +179,7 @@ export interface ComputerEnvironmentAdapter {
 
 const MAX_OPAQUE_ID_BYTES = 256;
 const MAX_LIMIT = 1_000_000_000;
+const CAPABILITY_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
@@ -179,6 +187,10 @@ function utf8Bytes(value: string): number {
 
 function validOpaqueId(value: string): boolean {
   return value.length > 0 && utf8Bytes(value) <= MAX_OPAQUE_ID_BYTES && !/[\r\n\0]/.test(value);
+}
+
+export function validComputerCapabilityId(value: string): boolean {
+  return CAPABILITY_PATTERN.test(value);
 }
 
 function validGeneration(value: number | undefined): boolean {
@@ -253,7 +265,12 @@ export function validateComputerActionRequest(
   const errors: string[] = [];
   if (!validOpaqueId(request.adapterId)) errors.push('request adapterId must be a bounded opaque identifier');
   if (!validOpaqueId(request.actionId)) errors.push('actionId must be a bounded opaque identifier');
-  if (!validOpaqueId(request.capability)) errors.push('capability must be a bounded identifier');
+  if (!validComputerCapabilityId(request.capability)) errors.push('capability must be a bounded machine identifier');
+  if (!COMPUTER_EFFECT_CLASSES.includes(request.effect)) errors.push('effect class is unsupported');
+  if (!COMPUTER_ACTION_IDEMPOTENCY.includes(request.idempotency)) errors.push('idempotency is unsupported');
+  if (request.idempotency === 'read-only' && request.effect !== 'observe-only') {
+    errors.push('read-only idempotency requires observe-only effect');
+  }
   if (request.target) errors.push(...validateComputerEntityRef(request.target).map((error) => `target: ${error}`));
   if (request.target?.adapterId !== undefined && request.target.adapterId !== request.adapterId) {
     errors.push('target adapterId does not match request adapterId');
