@@ -8,7 +8,7 @@ import type { DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { MediaStateSnapshot, ObserveMediaStateOptions } from '../browser/mediaState.js';
 import type { VisualCaptureOptions, VisualSnapshot } from '../browser/visualObserver.js';
 import type { BrowserTargetState } from '../browser/targetController.js';
-import type { InteractionNode } from '../types.js';
+import type { InteractionCapability, InteractionNode } from '../types.js';
 import {
   computerActionMayAutoRetry,
   validateComputerActionRequest,
@@ -40,6 +40,7 @@ const MAX_TYPE_DELAY_BUDGET_MS = 30_000;
 const MAX_SCROLL_DELTA = 100_000;
 const MAX_EVIDENCE = 12;
 const MAX_EVIDENCE_BYTES = 63;
+const MAX_SEMANTIC_CAPABILITIES = 32;
 const MAX_RUNTIME_NO_PROGRESS = 16;
 const MAX_RUNTIME_POLL_COUNT = 32;
 const MAX_RUNTIME_POLL_INTERVAL_MS = 5_000;
@@ -235,6 +236,29 @@ function plainDataRecord(value: unknown, label: string, knownKeys: readonly stri
 }
 function dataProperty(record: Record<string, unknown>, key: string): unknown {
   return Object.getOwnPropertyDescriptor(record, key)?.value;
+}
+function isInteractionCapability(value: unknown): value is InteractionCapability {
+  return value === 'focus' || value === 'activate' || value === 'type' || value === 'upload' ||
+    value === 'select' || value === 'set-range' || value === 'scroll' || value === 'expand' || value === 'dismiss';
+}
+function boundedInteractionCapabilities(value: unknown): { values: InteractionCapability[]; truncated: boolean } {
+  if (!Array.isArray(value)) throw new Error('browser.semantic.capabilities-invalid');
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!lengthDescriptor || !('value' in lengthDescriptor) || typeof lengthDescriptor.value !== 'number' ||
+      !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+    throw new Error('browser.semantic.capabilities-invalid');
+  }
+  const length = lengthDescriptor.value;
+  const limit = Math.min(length, MAX_SEMANTIC_CAPABILITIES);
+  const values: InteractionCapability[] = [];
+  for (let index = 0; index < limit; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !('value' in descriptor) || !isInteractionCapability(descriptor.value)) {
+      throw new Error('browser.semantic.capabilities-invalid');
+    }
+    values.push(descriptor.value);
+  }
+  return { values, truncated: length > MAX_SEMANTIC_CAPABILITIES };
 }
 function snapshotEntityRef(value: unknown): Readonly<ComputerEntityRef> | undefined {
   if (value === undefined) return undefined;
@@ -589,10 +613,12 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     let textBytes = 0, truncated = nodes.length > maxItems;
     for (const node of nodes.slice(0, maxItems)) {
       if ((node.frameId !== 'main' && !identity.complete) || !identity.frameTokens[node.frameId]) throw new Error('browser.frame.identity-unavailable');
+      const capabilities = boundedInteractionCapabilities(node.capabilities);
+      truncated ||= capabilities.truncated;
       const bounded: BoundedSemanticNode = {
         entity: this.entityForNode(node, surface, identity), focused: node.focused, disabled: node.disabled,
         visible: node.mainViewportVisible !== false && node.viewportVisible !== false,
-        capabilities: [...node.capabilities].slice(0, 32),
+        capabilities: capabilities.values,
       };
       for (const field of ['role', 'name', 'value'] as const) {
         const source = node[field];
