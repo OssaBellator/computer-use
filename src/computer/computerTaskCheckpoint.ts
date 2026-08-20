@@ -269,11 +269,11 @@ export function createComputerTaskCheckpoint(options: {
   const suppliedUncertainties = options.uncertainties instanceof Map
     ? new Map(options.uncertainties)
     : new Map(Object.entries(options.uncertainties ?? {}));
-  const actions = actionStepIds(options.program).map((stepId) => ({
-    stepId,
-    state: supplied.get(stepId) ?? 'not-started',
-    uncertainty: suppliedUncertainties.get(stepId),
-  }));
+  const actions = actionStepIds(options.program).map((stepId): ComputerTaskActionCheckpoint => {
+    const state = supplied.get(stepId) ?? 'not-started';
+    const uncertainty = suppliedUncertainties.get(stepId);
+    return uncertainty === undefined ? { stepId, state } : { stepId, state, uncertainty };
+  });
   for (const suppliedStepId of supplied.keys()) {
     if (!actions.some((action) => action.stepId === suppliedStepId)) {
       throw new Error('computer task checkpoint action names a missing or non-action step');
