@@ -64,7 +64,7 @@ function addResultEvidence(result: ComputerTaskRunResult, code: string): Compute
 
 /** Registry facade that inserts a durable write-ahead boundary immediately before adapter dispatch. */
 class WriteAheadComputerEnvironmentRegistry extends ComputerEnvironmentRegistry {
-  private reconciliationAssessment = false;
+  private reconciliationAssessmentDepth = 0;
 
   constructor(
     private readonly inner: ComputerEnvironmentRegistry,
@@ -73,8 +73,12 @@ class WriteAheadComputerEnvironmentRegistry extends ComputerEnvironmentRegistry 
     super();
   }
 
-  blockDispatchDuringReconciliation(blocked: boolean): void {
-    this.reconciliationAssessment = blocked;
+  enterReconciliationAssessment(): void {
+    this.reconciliationAssessmentDepth += 1;
+  }
+
+  leaveReconciliationAssessment(): void {
+    this.reconciliationAssessmentDepth = Math.max(0, this.reconciliationAssessmentDepth - 1);
   }
 
   register(adapter: ComputerEnvironmentAdapter): void { this.inner.register(adapter); }
@@ -84,7 +88,7 @@ class WriteAheadComputerEnvironmentRegistry extends ComputerEnvironmentRegistry 
   observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> { return this.inner.observe(request); }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    if (this.reconciliationAssessment) return reconciliationDispatchBlockedResult();
+    if (this.reconciliationAssessmentDepth > 0) return reconciliationDispatchBlockedResult();
     if (!await this.beforeAction(request)) return persistenceFailureResult();
     return this.inner.act(request);
   }
@@ -163,11 +167,11 @@ export class DurableComputerTaskRuntime {
   pendingReconciliations(): readonly ComputerTaskReconciliationCase[] { return this.runtime.pendingReconciliations(); }
 
   async assessReconciliation(stepId: string): Promise<ComputerTaskReconciliationAssessment> {
-    this.guardedRegistry.blockDispatchDuringReconciliation(true);
+    this.guardedRegistry.enterReconciliationAssessment();
     try {
       return await this.runtime.assessReconciliation(stepId);
     } finally {
-      this.guardedRegistry.blockDispatchDuringReconciliation(false);
+      this.guardedRegistry.leaveReconciliationAssessment();
     }
   }
 
@@ -187,8 +191,10 @@ export class DurableComputerTaskRuntime {
       return result;
     } catch {
       const failed = addResultEvidence(result, PERSISTENCE_FAILURE);
-      if (!this.writeAheadArmed) return { ...failed, status: 'failed' };
-      return { ...failed, status: 'reconciliation-required' };
+      if (this.writeAheadArmed || result.status === 'reconciliation-required') {
+        return { ...failed, status: 'reconciliation-required' };
+      }
+      return { ...failed, status: 'failed' };
     }
   }
 }
