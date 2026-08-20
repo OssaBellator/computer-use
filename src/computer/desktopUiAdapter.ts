@@ -26,11 +26,16 @@ import type {
 
 const DEFAULT_LIMITS: Required<ComputerObservationLimits> = { maxItems: 256, maxTextBytes: 16_384, maxDepth: 16 };
 const MAX_LIMIT = 10_000;
-const SYSTEM_PREFLIGHT_LIMITS: Required<ComputerObservationLimits> = { maxItems: MAX_LIMIT, maxTextBytes: 1_000_000, maxDepth: 1 };
 const MAX_KEY_BYTES = 128;
 const MAX_TEXT_INPUT_BYTES = 4_096;
 const MAX_VISUAL_TOKEN_BYTES = 256;
 const MAX_MEDIA_TYPE_BYTES = 128;
+const MAX_NATIVE_ID_BYTES = 256;
+const MAX_TITLE_BYTES = 4_096;
+const MAX_RECT_MAGNITUDE = 1_000_000;
+const MAX_VISUAL_DIMENSION = 100_000;
+const MAX_BACKEND_EVIDENCE = 16;
+const PREFLIGHT_LIMITS: Required<ComputerObservationLimits> = { maxItems: MAX_LIMIT, maxTextBytes: 1_000_000, maxDepth: 1 };
 const MAX_ABSOLUTE_COORDINATE = 1_000_000;
 const MAX_RELATIVE_DELTA = 100_000;
 const KEY_MODIFIERS = new Set(['alt', 'control', 'meta', 'shift']);
@@ -109,11 +114,59 @@ function validReasonCode(value: string | undefined): boolean {
   return value === undefined || REASON_CODE_PATTERN.test(value);
 }
 
+function sanitizeEvidence(evidence: readonly string[] | undefined): readonly string[] | undefined {
+  if (evidence === undefined) return undefined;
+  if (!Array.isArray(evidence) || evidence.length > MAX_BACKEND_EVIDENCE || evidence.some((code) => !validReasonCode(code))) {
+    return Object.freeze(['desktop-backend-evidence-invalid']);
+  }
+  return Object.freeze([...evidence]);
+}
+
+function boundedFinite(value: unknown, maxMagnitude: number): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= maxMagnitude;
+}
+
+function cloneBounds(value: unknown): DesktopWindowSurface['bounds'] {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') throw new Error('desktop window bounds invalid');
+  const raw = value as {x?:unknown;y?:unknown;width?:unknown;height?:unknown};
+  if (!boundedFinite(raw.x, MAX_RECT_MAGNITUDE) || !boundedFinite(raw.y, MAX_RECT_MAGNITUDE) ||
+      !boundedFinite(raw.width, MAX_RECT_MAGNITUDE) || !boundedFinite(raw.height, MAX_RECT_MAGNITUDE) ||
+      raw.width < 0 || raw.height < 0) throw new Error('desktop window bounds invalid');
+  return Object.freeze({x:raw.x,y:raw.y,width:raw.width,height:raw.height});
+}
+
+function cloneApplication(value: unknown): DesktopWindowSurface['application'] {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') throw new Error('desktop application identity invalid');
+  const raw = value as {applicationId?:unknown;processId?:unknown};
+  if (raw.applicationId !== undefined && !validBoundedString(raw.applicationId, MAX_NATIVE_ID_BYTES)) throw new Error('desktop application identity invalid');
+  if (raw.processId !== undefined && !validBoundedString(raw.processId, MAX_NATIVE_ID_BYTES)) throw new Error('desktop application identity invalid');
+  return Object.freeze({
+    ...(raw.applicationId !== undefined ? {applicationId:raw.applicationId} : {}),
+    ...(raw.processId !== undefined ? {processId:raw.processId} : {}),
+  });
+}
+
 function validVisualArtifact(value: DesktopVisualArtifactRef | undefined): boolean {
   if (value === undefined) return true;
   if (!validBoundedString(value.token, MAX_VISUAL_TOKEN_BYTES)) return false;
   if (value.mediaType !== undefined && !validBoundedString(value.mediaType, MAX_MEDIA_TYPE_BYTES)) return false;
   return value.byteLength === undefined || (Number.isSafeInteger(value.byteLength) && value.byteLength >= 0);
+}
+
+function cloneVisualArtifact(value: DesktopVisualArtifactRef | undefined): DesktopVisualArtifactRef | undefined {
+  if (value === undefined) return undefined;
+  if (!validVisualArtifact(value)) throw new Error('desktop visual artifact metadata invalid');
+  return Object.freeze({
+    token:value.token,
+    ...(value.mediaType !== undefined ? {mediaType:value.mediaType} : {}),
+    ...(value.byteLength !== undefined ? {byteLength:value.byteLength} : {}),
+  });
+}
+
+function validVisualDimension(value: number | undefined): boolean {
+  return value === undefined || (Number.isSafeInteger(value) && value > 0 && value <= MAX_VISUAL_DIMENSION);
 }
 
 function exactKeys(value: object, allowed: readonly string[]): boolean {
@@ -182,17 +235,21 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     this.descriptor = Object.freeze({ id: adapterId, kind: 'desktop-ui', version: '0.1', capabilities: Object.freeze(capabilities) });
   }
 
-  private surface(window: { nativeWindowId:string; generation:number; application?:{applicationId?:string;processId?:string}; title?:string; bounds?:{x:number;y:number;width:number;height:number}; foreground:boolean; focused:boolean }): DesktopWindowSurface {
-    return {
-      surface: { adapterId: this.descriptor.id, environment: 'desktop-ui', surfaceId: window.nativeWindowId, generation: window.generation },
+  private surface(window: { nativeWindowId:string; generation:number; application?:unknown; title?:string; bounds?:unknown; foreground:boolean; focused:boolean }): DesktopWindowSurface {
+    if (!validBoundedString(window.nativeWindowId, MAX_NATIVE_ID_BYTES) || !Number.isSafeInteger(window.generation) || window.generation < 0) throw new Error('desktop window identity invalid');
+    if (window.title !== undefined && !validBoundedString(window.title, MAX_TITLE_BYTES, true)) throw new Error('desktop window title invalid');
+    const application = cloneApplication(window.application);
+    const bounds = cloneBounds(window.bounds);
+    return Object.freeze({
+      surface: Object.freeze({ adapterId: this.descriptor.id, environment: 'desktop-ui', surfaceId: window.nativeWindowId, generation: window.generation }),
       nativeWindowId: window.nativeWindowId,
       generation: window.generation,
-      application: window.application,
-      title: window.title,
-      bounds: window.bounds,
-      foreground: window.foreground,
-      focused: window.focused,
-    };
+      ...(application ? {application} : {}),
+      ...(window.title !== undefined ? {title:window.title} : {}),
+      ...(bounds ? {bounds} : {}),
+      foreground: window.foreground === true,
+      focused: window.focused === true,
+    });
   }
 
   private async system(l: Required<ComputerObservationLimits>): Promise<{ raw:DesktopSystemObservation; windows:DesktopWindowSurface[] }> {
@@ -236,7 +293,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   private async currentWindow(ref: DesktopNativeWindowRef): Promise<DesktopWindowSurface | undefined> {
-    const { windows } = await this.system(SYSTEM_PREFLIGHT_LIMITS);
+    const { windows } = await this.system(PREFLIGHT_LIMITS);
     return windows.find((window) => window.nativeWindowId === ref.nativeWindowId && window.generation === ref.generation);
   }
 
@@ -281,9 +338,10 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     if (request.channel === 'visual') {
       const raw = await this.backend.observeVisual(ref);
       if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
-      if (!validVisualArtifact(raw.artifact)) throw new Error('desktop visual artifact metadata invalid');
+      if (!validVisualDimension(raw.width) || !validVisualDimension(raw.height)) throw new Error('desktop visual dimensions invalid');
+      const artifact = cloneVisualArtifact(raw.artifact);
       if (!validReasonCode(raw.reason)) throw new Error('desktop visual reason code invalid');
-      const data:DesktopVisualObservationData = { status:raw.status, window, width:raw.width, height:raw.height, artifact:raw.artifact, reason:raw.reason };
+      const data:DesktopVisualObservationData = Object.freeze({ status:raw.status, window, width:raw.width, height:raw.height, ...(artifact ? {artifact} : {}), reason:raw.reason });
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:request.target, data };
     }
     const l = limits(request.limits);
@@ -319,10 +377,8 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     return {
       status:result.status,
       dispatch:result.dispatched?'dispatched-once':'not-dispatched',
-      // Backend verification can prove low-level delivery for local-reversible input only.
-      // Higher-risk effects require a separate domain verifier.
       verification:result.status==='completed'?(nativeVerification?'verified':'not-applicable'):'unverified',
-      evidence:result.evidence,
+      evidence:sanitizeEvidence(result.evidence),
     };
   }
 
