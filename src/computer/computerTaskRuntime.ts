@@ -177,7 +177,11 @@ export class ComputerTaskRuntime {
     this.currentStepId = this.program.entry;
 
     if (options.checkpoint) {
-      validateComputerTaskCheckpoint(options.checkpoint, { program: this.program, executionId: this.executionId });
+      validateComputerTaskCheckpoint(options.checkpoint, {
+        program: this.program,
+        executionId: this.executionId,
+        requireRuntimeProvenance: true,
+      });
       this.currentStepId = options.checkpoint.cursor.nextStepId;
       this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
       for (const action of options.checkpoint.actions) {
@@ -245,6 +249,26 @@ export class ComputerTaskRuntime {
     return { state: adapterResult.verification, evidence: evidence(adapterResult.evidence) };
   }
 
+  private recordDispatchBeforeVerification(stepId: string, adapterResult: ComputerActionResult): void {
+    if (adapterResult.dispatch === 'unknown') {
+      this.actionStates.set(stepId, 'unknown-dispatch');
+    } else if (adapterResult.dispatch === 'dispatched-once') {
+      this.actionStates.set(stepId, 'dispatched-unverified');
+    } else {
+      this.actionStates.set(stepId, 'not-started');
+    }
+  }
+
+  private verifierFailureResult(step: ComputerTaskActionStep, adapterResult: ComputerActionResult): ComputerTaskRunResult {
+    if (adapterResult.dispatch === 'unknown') {
+      return this.result('unknown-dispatch', [], evidence(adapterResult.evidence, ['verifier-threw-after-dispatch']));
+    }
+    if (adapterResult.dispatch === 'dispatched-once') {
+      return this.result('unverified', [], evidence(adapterResult.evidence, ['verifier-threw-after-dispatch']));
+    }
+    return this.result('unverified', [], evidence(adapterResult.evidence, ['verifier-threw']));
+  }
+
   private async executeAction(step: ComputerTaskActionStep): Promise<{ result: ComputerTaskRunResult; next?: string }> {
     const prior = this.actionStates.get(step.id);
     if (prior === 'completed') return { result: this.result('completed', []), next: step.onSuccess };
@@ -270,19 +294,28 @@ export class ComputerTaskRuntime {
         return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
       }
       const adapterResult = await this.registry.act(step.request);
-      const verification = await this.verify(step, adapterResult);
+      this.recordDispatchBeforeVerification(step.id, adapterResult);
+
+      let verification: ComputerTaskVerificationDecision;
+      try {
+        verification = await this.verify(step, adapterResult);
+      } catch {
+        return { result: this.verifierFailureResult(step, adapterResult) };
+      }
+
       const verificationStatus = terminalFromVerification(verification.state);
       const effectfulDispatchedWithoutVerification =
         step.request.effect !== 'observe-only' && adapterResult.dispatch === 'dispatched-once' && verification.state === 'not-applicable';
 
       if (adapterResult.status === 'completed') {
         if (effectfulDispatchedWithoutVerification) {
-          if (adapterResult.dispatch === 'dispatched-once') this.actionStates.set(step.id, 'dispatched-unverified');
           return { result: this.result('unverified', [], evidence(adapterResult.evidence, ['post-dispatch-verification-required'])) };
         }
         if (verificationStatus) {
-          if (adapterResult.dispatch === 'dispatched-once') this.actionStates.set(step.id, 'dispatched-unverified');
           return { result: this.result(verificationStatus, [], evidence(adapterResult.evidence, verification.evidence)) };
+        }
+        if (adapterResult.dispatch === 'unknown') {
+          return { result: this.result('unknown-dispatch', [], evidence(adapterResult.evidence, verification.evidence)) };
         }
         this.actionStates.set(step.id, 'completed');
         return { result: this.result('completed', [], evidence(adapterResult.evidence, verification.evidence)), next: step.onSuccess };
@@ -295,10 +328,8 @@ export class ComputerTaskRuntime {
       }
 
       if (adapterResult.dispatch === 'unknown') {
-        this.actionStates.set(step.id, 'unknown-dispatch');
         return { result: this.result('unknown-dispatch', [], evidence(adapterResult.evidence, verification.evidence)) };
       }
-      if (adapterResult.dispatch === 'dispatched-once') this.actionStates.set(step.id, 'dispatched-unverified');
       if (adapterResult.status === 'unsupported') return { result: this.result('unsupported', [], adapterResult.evidence) };
       if (adapterResult.status === 'rejected') return { result: this.result('rejected', [], adapterResult.evidence) };
       if (adapterResult.status === 'failed' && adapterResult.dispatch === 'not-dispatched') {
