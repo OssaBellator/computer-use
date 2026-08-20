@@ -52,6 +52,22 @@ test('extracts only explicit bounded identifiers for the commitment kind', () =>
   assert.equal(identity.origin, 'https://shop.example');
 });
 
+test('whitespace-only labels do not capture ordinary prose as identifiers', () => {
+  const identity = snapshotBrowserCommitmentIdentity('purchase', documentWith([
+    'Order number will be assigned after payment',
+    'Transaction id pending',
+    'Reference number unavailable',
+  ]));
+  assert.deepEqual(identity.identifiers, []);
+});
+
+test('explicit separator may retain a bounded alphabetic identifier', () => {
+  const identity = snapshotBrowserCommitmentIdentity('purchase', documentWith([
+    'Reference ID: SYNTHETIC',
+  ]));
+  assert.deepEqual(identity.identifiers, [{ type: 'reference', value: 'SYNTHETIC' }]);
+});
+
 test('rejects long all-digit values that could be card or account shaped', () => {
   const identity = snapshotBrowserCommitmentIdentity('purchase', documentWith([
     'Reference number: 4111111111111111',
@@ -74,7 +90,7 @@ test('matching value binds across different safe result labels', () => {
   assert.deepEqual(result.matchedTypes, ['confirmation']);
 });
 
-test('new result identifier is fresh only when no baseline value matches', () => {
+test('new result identifier is fresh only when the baseline contains no identifier', () => {
   const baseline = snapshotBrowserCommitmentIdentity('booking', documentWith([
     'Review reservation',
   ]), state('https://travel.example'));
@@ -98,4 +114,34 @@ test('same identifier category with a different value fails as conflict', () => 
 
   assert.equal(result.relation, 'conflict');
   assert.deepEqual(result.conflictingTypes, ['order']);
+});
+
+test('multiple historical baseline identifiers are ambiguous and never treated as expected', () => {
+  const baseline = snapshotBrowserCommitmentIdentity('purchase', documentWith([
+    'Previous order number: ORD-OLD-1',
+    'Previous order number: ORD-OLD-2',
+  ]), state('https://shop.example'));
+  const current = snapshotBrowserCommitmentIdentity('purchase', documentWith([
+    'Order confirmed',
+    'Order number: ORD-OLD-1',
+  ]), state('https://payments.example', 2));
+  const result = evaluateBrowserCommitmentIdentity(baseline, current);
+
+  assert.equal(result.relation, 'unbound');
+  assert.deepEqual(result.matchedTypes, []);
+  assert.deepEqual(result.freshTypes, []);
+  assert.deepEqual(result.conflictingTypes, []);
+});
+
+test('a different result value is not fresh when a pre-dispatch identifier already existed', () => {
+  const baseline = snapshotBrowserCommitmentIdentity('purchase', documentWith([
+    'Order number: ORD-EXPECTED',
+  ]), state('https://shop.example'));
+  const current = snapshotBrowserCommitmentIdentity('purchase', documentWith([
+    'Confirmation number: OTHER-900',
+  ]), state('https://shop.example', 2));
+  const result = evaluateBrowserCommitmentIdentity(baseline, current);
+
+  assert.equal(result.relation, 'unbound');
+  assert.deepEqual(result.freshTypes, []);
 });
