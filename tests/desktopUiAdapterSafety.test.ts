@@ -242,3 +242,51 @@ test('validated action authority cannot drift while asynchronous preflight is in
   assert.deepEqual(backend.actions[0]?.payload,{kind:'key-down',key:'A'});
   assert.equal(backend.actions[0]?.window.nativeWindowId,'win-1');
 });
+
+test('accessibility observation does not scan wide children after depth or item budget exhaustion', async () => {
+  const {backend,adapter} = fixture();
+  let depthReads = 0;
+  const depthChildren = new Proxy(new Array(1_000_000), {
+    get(array, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) depthReads += 1;
+      return Reflect.get(array, property, receiver);
+    },
+  });
+  depthChildren[0] = {controlId:'never-read'};
+  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:depthChildren}} as any);
+  const depthObs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface,limits:{maxItems:10,maxTextBytes:1000,maxDepth:0}});
+  assert.equal(depthObs.truncated,true);
+  assert.equal(depthReads,0);
+
+  let itemReads = 0;
+  const itemChildren = new Proxy(Array.from({length:1_000_000},(_,index)=> index < 10 ? {controlId:`child-${index}`} : undefined), {
+    get(array, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) itemReads += 1;
+      return Reflect.get(array, property, receiver);
+    },
+  });
+  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:itemChildren}} as any);
+  const itemObs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface,limits:{maxItems:3,maxTextBytes:1000,maxDepth:4}});
+  assert.equal(itemObs.truncated,true);
+  assert.equal((itemObs.data as any).itemCount,3);
+  assert.equal(itemReads,2);
+});
+
+test('control preflight bounds wide child enqueueing before native dispatch', async () => {
+  const {backend,adapter} = fixture();
+  let childReads = 0;
+  const wideChildren = new Proxy(Array.from({length:1_000_000},(_,index)=> index < 300 ? {controlId:`child-${index}`} : undefined), {
+    get(array, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) childReads += 1;
+      return Reflect.get(array, property, receiver);
+    },
+  });
+  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:wideChildren}} as any);
+  const controlTarget = {adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'missing',surfaceId:'win-1',generation:1};
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'wide-preflight',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:controlTarget});
+  assert.equal(result.status,'rejected');
+  assert.equal(result.dispatch,'not-dispatched');
+  assert.deepEqual(result.evidence,['stale-control']);
+  assert.equal(backend.actions.length,0);
+  assert.equal(childReads,255);
+});
