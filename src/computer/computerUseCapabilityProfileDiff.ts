@@ -3,20 +3,15 @@ import {
   type ComputerCapability,
 } from './computerCapabilities.js';
 import {
+  compareComputerCapabilityImplementationStatus,
+} from './computerCapabilityImplementationStatusOrdering.js';
+import {
   HIGH_RISK_COMPUTER_CAPABILITIES,
   computerCapabilityImplementationState,
   type ComputerCapabilityImplementationStatus,
   type ComputerCapabilityScope,
   type ComputerUseCapabilityProfile,
 } from './computerUseCapabilityProfiles.js';
-
-const STATUS_RANK: Readonly<Record<ComputerCapabilityImplementationStatus, number>> = Object.freeze({
-  unsupported: 0,
-  'backend-required': 1,
-  'implemented-foundation': 2,
-  partial: 3,
-  implemented: 4,
-});
 
 export type ComputerCapabilityStatusChange = 'promoted' | 'demoted' | 'unchanged';
 
@@ -39,8 +34,9 @@ function statusChange(
   before: ComputerCapabilityImplementationStatus,
   after: ComputerCapabilityImplementationStatus,
 ): ComputerCapabilityStatusChange {
-  if (STATUS_RANK[after] > STATUS_RANK[before]) return 'promoted';
-  if (STATUS_RANK[after] < STATUS_RANK[before]) return 'demoted';
+  const comparison = compareComputerCapabilityImplementationStatus(after, before);
+  if (comparison > 0) return 'promoted';
+  if (comparison < 0) return 'demoted';
   return 'unchanged';
 }
 
