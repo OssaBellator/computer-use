@@ -1,6 +1,9 @@
 import { platform } from 'node:os';
 import { type LinuxSystemDeviceBackendOptions } from './linuxSystemDeviceBackend.js';
-import { KernelVisibilityLinuxSystemDeviceBackend } from './kernelVisibilityLinuxSystemDeviceBackend.js';
+import {
+  TruthfulInventoryLinuxSystemDeviceBackend,
+  TruthfulLinuxSystemDeviceEnvironmentAdapter,
+} from './truthfulInventoryLinuxSystemDeviceBackend.js';
 import {
   SystemDeviceEnvironmentAdapter,
   type BoundedDeviceMetadata,
@@ -103,7 +106,7 @@ export interface HostSystemDeviceBackendOptions {
 export function createHostSystemDeviceBackend(options: HostSystemDeviceBackendOptions = {}): SystemDeviceBackend {
   const hostPlatform = options.platformFamily ?? platform();
   if (hostPlatform === 'linux') {
-    return new KernelVisibilityLinuxSystemDeviceBackend({ ...options.linux, platformFamily: 'linux' });
+    return new TruthfulInventoryLinuxSystemDeviceBackend({ ...options.linux, platformFamily: 'linux' });
   }
   return new UnsupportedHostSystemDeviceBackend(hostPlatform);
 }
@@ -113,5 +116,8 @@ export function createHostSystemDeviceEnvironmentAdapter(
   adapterId: string,
   options: HostSystemDeviceBackendOptions = {},
 ): SystemDeviceEnvironmentAdapter {
-  return new SystemDeviceEnvironmentAdapter(adapterId, createHostSystemDeviceBackend(options));
+  const backend = createHostSystemDeviceBackend(options);
+  return backend instanceof TruthfulInventoryLinuxSystemDeviceBackend
+    ? new TruthfulLinuxSystemDeviceEnvironmentAdapter(adapterId, backend)
+    : new SystemDeviceEnvironmentAdapter(adapterId, backend);
 }
