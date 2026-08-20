@@ -1,9 +1,16 @@
+import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import {
   detectBrowserCommitment,
   type BrowserCommitmentSummary,
 } from '../browser/commitmentDetector.js';
 import {
+  evaluateBrowserCommitmentIdentity,
+  snapshotBrowserCommitmentIdentity,
+  type BrowserCommitmentIdentitySnapshot,
+} from '../browser/commitmentIdentity.js';
+import {
   verifyBrowserCommitment,
+  type BrowserCommitmentResultContext,
   type BrowserCommitmentVerificationSummary,
 } from '../browser/commitmentVerifier.js';
 import type {
@@ -33,6 +40,18 @@ export interface TaskCommitmentVerificationOptions {
 export interface TaskCommitmentVerificationBaseline {
   frameId: string;
   verification: BrowserCommitmentVerificationSummary;
+  /** Bounded operation/result identity captured immediately before dispatch. */
+  identity?: BrowserCommitmentIdentitySnapshot;
+  /** Root CDP target identity is available only on multi-page engines. */
+  pageTargetId?: string;
+  pageCount?: number;
+  latestPageSequence?: number;
+}
+
+interface VerificationPageContext {
+  document: DocumentContentSnapshot;
+  browserState?: BrowserStateSnapshot;
+  resultContext: BrowserCommitmentResultContext;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -71,13 +90,63 @@ function documentForFrame(
   };
 }
 
-async function freshVerificationDocument(
+function sameBrowserDocument(
+  before: BrowserStateSnapshot | undefined,
+  after: BrowserStateSnapshot | undefined,
+): boolean {
+  if (!before || !after) return true;
+  return before.timeOrigin === after.timeOrigin && before.url === after.url && before.origin === after.origin;
+}
+
+async function activePageContext(
   engine: TaskRuntimeEngine,
   frameId: string,
-): Promise<DocumentContentSnapshot | undefined> {
+): Promise<VerificationPageContext | undefined> {
   if (!engine.documentContent) return undefined;
+  const stateBefore = await engine.browserState?.();
   const document = await engine.documentContent(TASK_COMMITMENT_VERIFICATION_DOCUMENT_OPTIONS);
-  return document ? documentForFrame(document, frameId) : undefined;
+  const stateAfter = await engine.browserState?.();
+  if (!sameBrowserDocument(stateBefore, stateAfter)) return undefined;
+  const scoped = document ? documentForFrame(document, frameId) : undefined;
+  return scoped ? {
+    document: scoped,
+    ...(stateAfter ?? stateBefore ? { browserState: stateAfter ?? stateBefore } : {}),
+    resultContext: 'same-page',
+  } : undefined;
+}
+
+async function associatedPopupContext(
+  engine: TaskRuntimeEngine,
+  baseline: TaskCommitmentVerificationBaseline,
+): Promise<VerificationPageContext | undefined> {
+  if (
+    !baseline.pageTargetId || baseline.pageCount === undefined || baseline.latestPageSequence === undefined ||
+    !engine.targetState || !engine.documentContentForPage
+  ) return undefined;
+
+  const targets = engine.targetState();
+  // Exactly one page may have appeared after dispatch. More than one new page is
+  // ambiguous, and a pre-existing page is never searched for result text.
+  if (!targets || targets.pages !== baseline.pageCount + 1) return undefined;
+  const candidate = targets.latestPage;
+  if (
+    !candidate || candidate.sequence <= baseline.latestPageSequence ||
+    candidate.targetId === baseline.pageTargetId || candidate.openerId !== baseline.pageTargetId
+  ) return undefined;
+
+  const stateBefore = await engine.browserStateForPage?.(candidate.targetId);
+  const document = await engine.documentContentForPage(
+    candidate.targetId,
+    TASK_COMMITMENT_VERIFICATION_DOCUMENT_OPTIONS,
+  );
+  const stateAfter = await engine.browserStateForPage?.(candidate.targetId);
+  if (!sameBrowserDocument(stateBefore, stateAfter)) return undefined;
+  const scoped = document ? documentForFrame(document, 'main') : undefined;
+  return scoped ? {
+    document: scoped,
+    ...(stateAfter ?? stateBefore ? { browserState: stateAfter ?? stateBefore } : {}),
+    resultContext: 'bound-popup',
+  } : undefined;
 }
 
 function freshCommitment(
@@ -109,6 +178,25 @@ function approvedCommitmentStillMatches(
   return true;
 }
 
+function verifyPageContext(
+  approved: BrowserCommitmentSummary,
+  baseline: TaskCommitmentVerificationBaseline,
+  context: VerificationPageContext | undefined,
+): BrowserCommitmentVerificationSummary {
+  if (!context) return verifyBrowserCommitment(approved, undefined);
+  if (!baseline.identity) return verifyBrowserCommitment(approved, context.document);
+  const currentIdentity = snapshotBrowserCommitmentIdentity(
+    approved.kind!,
+    context.document,
+    context.browserState,
+  );
+  const identity = evaluateBrowserCommitmentIdentity(baseline.identity, currentIdentity);
+  return verifyBrowserCommitment(approved, context.document, {
+    identity,
+    resultContext: context.resultContext,
+  });
+}
+
 /**
  * Capture a fresh result baseline after approval but before browser input.
  *
@@ -117,7 +205,8 @@ function approvedCommitmentStillMatches(
  * from a fresh bounded document read and must still contain every material term
  * that was present in the approved summary. Finally, the result verifier must be
  * neutral (`unknown`) so a stale receipt/status cannot be attributed to the new
- * action.
+ * action. A bounded identity snapshot and target topology are retained only for
+ * post-dispatch binding; ordinary traces never contain identifier values.
  *
  * Any failure returns undefined; TaskRuntime treats that as a pre-dispatch policy
  * block. The earlier TaskObservation's document is never reused because the page
@@ -130,7 +219,7 @@ export async function captureTaskStepCommitmentVerificationBaseline(
   before: TaskObservation,
 ): Promise<TaskCommitmentVerificationBaseline | undefined> {
   const originalTarget = activationTarget(step, before);
-  if (!originalTarget) return undefined;
+  if (!originalTarget || !approved.kind) return undefined;
   const expectedTargetId = approved.target?.id ?? originalTarget.id;
 
   try {
@@ -140,14 +229,24 @@ export async function captureTaskStepCommitmentVerificationBaseline(
       return undefined;
     }
 
-    const document = await freshVerificationDocument(engine, freshTarget.frameId);
-    if (!document) return undefined;
-    const currentCommitment = freshCommitment(step, freshTarget, document);
+    const context = await activePageContext(engine, freshTarget.frameId);
+    if (!context) return undefined;
+    const currentCommitment = freshCommitment(step, freshTarget, context.document);
     if (!approvedCommitmentStillMatches(approved, currentCommitment)) return undefined;
 
+    const identity = snapshotBrowserCommitmentIdentity(
+      approved.kind,
+      context.document,
+      context.browserState,
+    );
+    const targets = engine.targetState?.();
     return {
       frameId: freshTarget.frameId,
-      verification: verifyBrowserCommitment(approved, document),
+      verification: verifyBrowserCommitment(approved, context.document),
+      identity,
+      ...(engine.activePageTargetId?.() ? { pageTargetId: engine.activePageTargetId!() } : {}),
+      ...(targets ? { pageCount: targets.pages } : {}),
+      ...(targets?.latestPage ? { latestPageSequence: targets.latestPage.sequence } : {}),
     };
   } catch {
     return undefined;
@@ -155,9 +254,11 @@ export async function captureTaskStepCommitmentVerificationBaseline(
 }
 
 /**
- * Poll a bounded structured-document channel after an approved commitment.
- * Terminal outcomes return immediately. Explicit pending state is retained but
- * polling continues briefly in case the page resolves to a terminal outcome.
+ * Poll bounded structured-document channels after an approved commitment.
+ * The original page remains the primary channel. A popup is inspected only when
+ * exactly one new page exists and CDP reports that the approved page opened it.
+ * Cross-origin positive confirmation requires an exact pre-dispatch identifier
+ * match, so arbitrary provider/result pages cannot become proof of success.
  */
 export async function verifyTaskStepCommitment(
   engine: TaskRuntimeEngine,
@@ -172,20 +273,38 @@ export async function verifyTaskStepCommitment(
   let latest = verifyBrowserCommitment(approved, undefined);
 
   for (let poll = 0; poll < maxPolls; poll += 1) {
+    let samePage: BrowserCommitmentVerificationSummary;
     try {
-      const document = await engine.documentContent(TASK_COMMITMENT_VERIFICATION_DOCUMENT_OPTIONS);
-      const scoped = document ? documentForFrame(document, baseline.frameId) : undefined;
-      latest = verifyBrowserCommitment(approved, scoped);
+      samePage = verifyPageContext(
+        approved,
+        baseline,
+        await activePageContext(engine, baseline.frameId),
+      );
     } catch {
-      latest = verifyBrowserCommitment(approved, undefined);
+      samePage = verifyBrowserCommitment(approved, undefined);
     }
 
     if (
-      latest.status === 'confirmed' || latest.status === 'declined' ||
-      latest.status === 'canceled' || latest.status === 'mismatch'
-    ) {
-      return latest;
+      samePage.status === 'confirmed' || samePage.status === 'declined' ||
+      samePage.status === 'canceled' || samePage.status === 'mismatch'
+    ) return samePage;
+    latest = samePage;
+
+    try {
+      const popup = verifyPageContext(
+        approved,
+        baseline,
+        await associatedPopupContext(engine, baseline),
+      );
+      if (
+        popup.status === 'confirmed' || popup.status === 'declined' ||
+        popup.status === 'canceled' || popup.status === 'mismatch'
+      ) return popup;
+      if (popup.status === 'pending' || latest.status === 'unknown') latest = popup;
+    } catch {
+      // Keep the original-page result. An unreadable popup never broadens success.
     }
+
     if (poll + 1 < maxPolls) await defaultSleep(pollIntervalMs);
   }
 
