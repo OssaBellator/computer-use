@@ -2,6 +2,7 @@ import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } f
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
+import { DocumentFormattingObserver } from '../browser/documentFormatting.js';
 import { DocumentSelectionObserver } from '../browser/documentSelection.js';
 import { CdpDownloadController, type BrowserDownloadControllerOptions, type BrowserDownloadSummary } from '../browser/downloadController.js';
 import { CdpDialogController, isCdpEventSessionLike, type BrowserDialogController, type BrowserDialogHandleResult, type BrowserDialogState } from '../browser/dialogController.js';
@@ -237,6 +238,7 @@ export function createCdpBrowserAgentEngine(
   const richText = new RichTextController(
     interaction.input,
     new DocumentSelectionObserver(page),
+    new DocumentFormattingObserver(page),
   );
   return new CdpBrowserAgentEngine(
     interaction,
