@@ -1,3 +1,4 @@
+import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
@@ -61,12 +62,27 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     return this.pages.activeEngine ? this.pages.activeEngine.refresh() : [];
   }
 
-  async browserState() {
+  async browserState(): Promise<BrowserStateSnapshot | undefined> {
     return this.pages.activeEngine?.browserState();
   }
 
   async documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
     return this.pages.activeEngine?.interaction.observer.documentContent?.(options);
+  }
+
+  activePageTargetId(): string | undefined {
+    return this.pages.summary().activeTargetId;
+  }
+
+  async browserStateForPage(targetId: string): Promise<BrowserStateSnapshot | undefined> {
+    return (await this.pages.inspectEngine(targetId))?.browserState();
+  }
+
+  async documentContentForPage(
+    targetId: string,
+    options?: DocumentContentOptions,
+  ): Promise<DocumentContentSnapshot | undefined> {
+    return (await this.pages.inspectEngine(targetId))?.interaction.observer.documentContent?.(options);
   }
 
   dialogState(): BrowserDialogState | undefined {
