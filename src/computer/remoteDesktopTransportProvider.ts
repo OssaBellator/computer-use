@@ -30,6 +30,8 @@ export interface RemoteDesktopProviderFrame {
 export interface RemoteDesktopTransportProvider {
   readonly protocol: 'rdp' | 'vnc';
   connect(endpoint: RemoteEndpointIdentity, credential?: RemoteSecretHandle): Promise<RemoteDesktopProviderSession>;
+  /** Must release any native state represented by a malformed/partial connect result. */
+  cleanupFailedConnect(candidate: unknown): Promise<void>;
   disconnect(session: RemoteDesktopProviderSession): Promise<void>;
   /** Acquisition limits are producer-side ceilings, not post-copy hints. */
   captureDisplay(session: RemoteDesktopProviderSession, limits: RemoteDisplayCaptureLimits): Promise<RemoteDesktopProviderFrame>;
