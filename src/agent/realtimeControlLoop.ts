@@ -24,8 +24,10 @@ export interface RealtimeControlIntent {
   heldKeys?: readonly string[];
   /** Mouse buttons that should remain held after this tick. Omitted means release all held buttons. */
   heldButtons?: readonly MouseButton[];
-  /** Optional viewport point to move to before newly requested button presses. */
+  /** Optional absolute viewport point to move to before newly requested button presses. */
   pointer?: Point;
+  /** Optional per-tick relative mouse movement in viewport CSS pixels. Mutually exclusive with pointer. */
+  pointerDelta?: Point;
   stop?: boolean;
   reason?: string;
 }
@@ -95,10 +97,10 @@ function uniqueButtons(buttons: readonly MouseButton[] | undefined): MouseButton
   return result;
 }
 
-function validatePoint(point: Point | undefined): void {
+function validatePoint(name: string, point: Point | undefined): void {
   if (!point) return;
   if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-    throw new Error('pointer coordinates must be finite');
+    throw new Error(`${name} coordinates must be finite`);
   }
 }
 
@@ -110,8 +112,10 @@ function validatePoint(point: Point | undefined): void {
  * repeated keyDown events while a control is continuously held. Expensive
  * observations can run less often than control decisions; skipped ticks reuse
  * the last observation and expose explicit freshness/age metadata to the policy.
- * All held inputs are released in a final cleanup pass on normal stop, budget
- * exhaustion, observation failure, policy failure, or dispatch failure.
+ * Relative pointer deltas can be issued on every control tick for mouse-look
+ * style interactions when the input adapter exposes that capability. All held
+ * inputs are released in a final cleanup pass on normal stop, budget exhaustion,
+ * observation failure, policy failure, or dispatch failure.
  *
  * This is an input/runtime primitive only. It intentionally contains no stealth,
  * fingerprint spoofing, anti-bot evasion, or page-side synthetic event logic.
@@ -216,7 +220,17 @@ export class RealtimeControlLoop<TObservation> {
   private async applyIntent(intent: RealtimeControlIntent): Promise<void> {
     const desiredKeys = uniqueKeys(intent.heldKeys);
     const desiredButtons = uniqueButtons(intent.heldButtons);
-    validatePoint(intent.pointer);
+    validatePoint('pointer', intent.pointer);
+    validatePoint('pointer delta', intent.pointerDelta);
+    if (intent.pointer && intent.pointerDelta) {
+      throw new Error('pointer and pointerDelta are mutually exclusive');
+    }
+    const relativeMove = intent.pointerDelta
+      ? this.input.movePointerBy?.bind(this.input)
+      : undefined;
+    if (intent.pointerDelta && !relativeMove) {
+      throw new Error('BrowserInput does not support relative pointer movement');
+    }
     const desiredKeySet = new Set(desiredKeys);
     const desiredButtonSet = new Set(desiredButtons);
 
@@ -232,6 +246,7 @@ export class RealtimeControlLoop<TObservation> {
     }
 
     if (intent.pointer) await this.input.movePointer(intent.pointer);
+    else if (intent.pointerDelta) await relativeMove!(intent.pointerDelta);
 
     for (const key of desiredKeys) {
       if (this.heldKeys.has(key)) continue;
