@@ -39,6 +39,9 @@ const MAX_EVIDENCE_BYTES = 63;
 const MAX_RUNTIME_NO_PROGRESS = 16;
 const MAX_RUNTIME_POLL_COUNT = 32;
 const MAX_RUNTIME_POLL_INTERVAL_MS = 5_000;
+const MAX_FRAME_DOCUMENT_TOKENS = 32;
+const MAX_FRAME_DOCUMENT_TOKEN_BYTES = 4 * 1024;
+const FRAME_DOCUMENT_TOKENS_INCOMPLETE = '__browser_identity_incomplete__';
 
 type BrowserRuntimePolicy = Omit<TaskRuntimeOptions, 'maxSteps' | 'maxVisitsPerStep' | 'commitmentDetection' | 'commitmentVerification'>;
 const RUNTIME_POLICY_KEYS = [
@@ -72,11 +75,15 @@ export interface BrowserActivatePayload {
 export interface BrowserTypePayload { text: string; expectedValue?: string; delayMs?: number; }
 export interface BrowserPressKeyPayload { key: string; }
 export interface BrowserScrollPayload { deltaX?: number; deltaY?: number; }
+export interface BrowserFrameDocumentTokenLimits { maxFrames: number; maxTextBytes: number; }
 
 /** Browser-specific runtime hooks stay outside the neutral computer contracts. */
 export interface BrowserComputerRuntime extends TaskRuntimeEngine {
   browserTargets?(): BrowserTargetState[];
-  frameDocumentTokens?(targetId: string | undefined): Promise<Readonly<Record<string, string>> | undefined>;
+  frameDocumentTokens?(
+    targetId: string | undefined,
+    limits: BrowserFrameDocumentTokenLimits,
+  ): Promise<Readonly<Record<string, string>> | undefined>;
   visualSnapshot?(targetId: string | undefined, options?: VisualCaptureOptions): Promise<VisualSnapshot | undefined>;
   mediaSnapshot?(targetId: string | undefined, options?: ObserveMediaStateOptions): Promise<MediaStateSnapshot | undefined>;
 }
@@ -101,6 +108,7 @@ interface BoundedSemanticNode {
 interface BrowserDocumentIdentity {
   topToken: string;
   frameTokens: Readonly<Record<string, string>>;
+  complete: boolean;
 }
 interface ResolvedEntity {
   node: InteractionNode;
@@ -306,7 +314,7 @@ function boundedDocumentToken(value: string): boolean {
   return value.length > 0 && utf8Bytes(value) <= 128 && !/[\r\n\0]/.test(value);
 }
 function sameDocumentIdentity(left: BrowserDocumentIdentity, right: BrowserDocumentIdentity): boolean {
-  if (left.topToken !== right.topToken) return false;
+  if (left.topToken !== right.topToken || left.complete !== right.complete) return false;
   const leftEntries = Object.entries(left.frameTokens).sort(([a], [b]) => a.localeCompare(b));
   const rightEntries = Object.entries(right.frameTokens).sort(([a], [b]) => a.localeCompare(b));
   if (leftEntries.length !== rightEntries.length) return false;
@@ -360,17 +368,38 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     if (this.runtime.activePageTargetId?.() !== surface.surfaceId) return undefined;
     const [state, suppliedFrameTokens] = await Promise.all([
       this.runtime.browserState?.(),
-      this.runtime.frameDocumentTokens?.(surface.surfaceId),
+      this.runtime.frameDocumentTokens?.(surface.surfaceId, {
+        maxFrames: MAX_FRAME_DOCUMENT_TOKENS,
+        maxTextBytes: MAX_FRAME_DOCUMENT_TOKEN_BYTES,
+      }),
     ]);
     if (!state) return undefined;
     const topToken = documentToken(state.timeOrigin);
     if (!topToken) return undefined;
     const frameTokens: Record<string, string> = {};
-    for (const [frameId, token] of Object.entries(suppliedFrameTokens ?? {})) {
-      if (frameId && boundedDocumentToken(frameId) && boundedDocumentToken(token)) frameTokens[frameId] = token;
+    let complete = suppliedFrameTokens?.[FRAME_DOCUMENT_TOKENS_INCOMPLETE] !== '1';
+    let count = 0;
+    let bytes = 0;
+    if (suppliedFrameTokens) {
+      for (const frameId in suppliedFrameTokens) {
+        if (!Object.prototype.hasOwnProperty.call(suppliedFrameTokens, frameId)) continue;
+        if (frameId === FRAME_DOCUMENT_TOKENS_INCOMPLETE) { complete = false; continue; }
+        count += 1;
+        if (count > MAX_FRAME_DOCUMENT_TOKENS) { complete = false; break; }
+        const descriptor = Object.getOwnPropertyDescriptor(suppliedFrameTokens, frameId);
+        if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string') { complete = false; break; }
+        const token = descriptor.value;
+        const entryBytes = utf8Bytes(frameId) + utf8Bytes(token);
+        if (bytes + entryBytes > MAX_FRAME_DOCUMENT_TOKEN_BYTES) { complete = false; break; }
+        bytes += entryBytes;
+        if (frameId && boundedDocumentToken(frameId) && boundedDocumentToken(token)) frameTokens[frameId] = token;
+        else complete = false;
+      }
+    } else {
+      complete = false;
     }
     frameTokens.main = topToken;
-    const identity = { topToken, frameTokens };
+    const identity = { topToken, frameTokens, complete };
     this.activeDocumentIdentities.set(surface.surfaceId, identity);
     return identity;
   }
@@ -380,7 +409,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     identity = surface ? this.activeDocumentIdentities.get(surface.surfaceId) : undefined,
   ): ComputerEntityRef {
     const stableId = node.backendNodeId !== undefined ? `backend:${node.backendNodeId}` : `node:${encodeURIComponent(node.id)}`;
-    const frameToken = identity?.frameTokens[node.frameId];
+    const frameToken = identity && (node.frameId === 'main' || identity.complete) ? identity.frameTokens[node.frameId] : undefined;
     const boundId = identity && frameToken
       ? node.frameId === 'main'
         ? `doc:${identity.topToken}:frame:${encodeURIComponent(node.frameId)}:${stableId}`
@@ -410,10 +439,10 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     if (frameId === 'main' && explicitFrameToken !== undefined) return undefined;
     const expectedFrameToken = explicitFrameToken ?? match[1];
     const before = await this.activeDocumentIdentity(surface);
-    if (!before || before.topToken !== match[1] || before.frameTokens[frameId] !== expectedFrameToken) return undefined;
+    if (!before || (frameId !== 'main' && !before.complete) || before.topToken !== match[1] || before.frameTokens[frameId] !== expectedFrameToken) return undefined;
     const nodes = await this.runtime.refresh();
     const after = await this.activeDocumentIdentity(surface);
-    if (!after || !sameDocumentIdentity(before, after) || after.topToken !== match[1] || after.frameTokens[frameId] !== expectedFrameToken) return undefined;
+    if (!after || (frameId !== 'main' && !after.complete) || !sameDocumentIdentity(before, after) || after.topToken !== match[1] || after.frameTokens[frameId] !== expectedFrameToken) return undefined;
     const backendNodeId = match[5] !== undefined ? Number(match[5]) : undefined;
     let nodeId: string | undefined;
     if (match[6] !== undefined) { try { nodeId = decodeURIComponent(match[6]); } catch { return undefined; } }
@@ -424,7 +453,10 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   }
   private async entityIdentityCurrent(resolved: ResolvedEntity): Promise<boolean> {
     const current = await this.activeDocumentIdentity(resolved.surface);
-    return current !== undefined && current.topToken === resolved.identity.topToken && current.frameTokens[resolved.node.frameId] === resolved.frameToken;
+    return current !== undefined &&
+      (resolved.node.frameId === 'main' || current.complete) &&
+      current.topToken === resolved.identity.topToken &&
+      current.frameTokens[resolved.node.frameId] === resolved.frameToken;
   }
   private boundSemantic(nodes: readonly InteractionNode[], surface: ComputerSurfaceRef, identity: BrowserDocumentIdentity, request: ComputerObservationRequest): { data: BoundedSemanticNode[]; truncated: boolean } {
     const maxItems = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
@@ -432,7 +464,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const data: BoundedSemanticNode[] = [];
     let textBytes = 0, truncated = nodes.length > maxItems;
     for (const node of nodes.slice(0, maxItems)) {
-      if (!identity.frameTokens[node.frameId]) throw new Error('browser.frame.identity-unavailable');
+      if ((node.frameId !== 'main' && !identity.complete) || !identity.frameTokens[node.frameId]) throw new Error('browser.frame.identity-unavailable');
       const bounded: BoundedSemanticNode = {
         entity: this.entityForNode(node, surface, identity), focused: node.focused, disabled: node.disabled,
         visible: node.mainViewportVisible !== false && node.viewportVisible !== false,
