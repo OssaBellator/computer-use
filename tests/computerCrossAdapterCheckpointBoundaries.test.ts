@@ -11,6 +11,11 @@ import type {
 } from '../src/computer/environmentAdapter.js';
 import { ComputerEnvironmentRegistry } from '../src/computer/environmentRegistry.js';
 import type { ComputerTaskProgram } from '../src/computer/computerTask.js';
+import {
+  decodeComputerTaskCheckpoint,
+  encodeComputerTaskCheckpoint,
+  type ComputerTaskCheckpoint,
+} from '../src/computer/computerTaskCheckpoint.js';
 import { ComputerTaskRuntime } from '../src/computer/computerTaskRuntime.js';
 
 const EXECUTION_ID = '22222222222222222222222222222222';
@@ -76,11 +81,15 @@ function action(id: string, adapterId: string, capability: string, onSuccess?: s
   };
 }
 
-test('checkpoint JSON round-trip resumes at a later adapter without replaying completed work', async () => {
+function portableCheckpoint(checkpoint: ComputerTaskCheckpoint): ComputerTaskCheckpoint {
+  return decodeComputerTaskCheckpoint(encodeComputerTaskCheckpoint(checkpoint));
+}
+
+test('portable checkpoint round-trip resumes at a later adapter without replaying completed work', async () => {
   const compute = new Adapter('compute:checkpoint', 'local-compute', ['compute.run']);
   const filesystem = new Adapter('fs:checkpoint', 'filesystem', ['filesystem.read']);
   const program: ComputerTaskProgram = {
-    id: 'checkpoint-cross-adapter-json-roundtrip',
+    id: 'checkpoint-cross-adapter-portable-roundtrip',
     entry: 'compute',
     steps: [
       action('compute', compute.descriptor.id, 'compute.run', 'read'),
@@ -90,12 +99,13 @@ test('checkpoint JSON round-trip resumes at a later adapter without replaying co
 
   const first = new ComputerTaskRuntime(program, registry(compute), { executionId: EXECUTION_ID });
   const stopped = await first.run();
-  assert.equal(stopped.status, 'adapter-not-found');
+  assert.equal(stopped.status, 'unsupported');
+  assert.ok(stopped.evidence?.includes('adapter-not-found'));
   assert.equal(compute.actions.length, 1);
 
-  const serialized = JSON.stringify(first.checkpoint());
-  assert.equal(serialized.includes('never-retain-raw-observation'), false);
-  const checkpoint = JSON.parse(serialized);
+  const encoded = encodeComputerTaskCheckpoint(first.checkpoint());
+  assert.equal(encoded.includes('never-retain-raw-observation'), false);
+  const checkpoint = decodeComputerTaskCheckpoint(encoded);
 
   const resumedCompute = new Adapter('compute:checkpoint', 'local-compute', ['compute.run']);
   const resumedFilesystem = new Adapter('fs:checkpoint', 'filesystem', ['filesystem.read']);
@@ -109,7 +119,7 @@ test('checkpoint JSON round-trip resumes at a later adapter without replaying co
   assert.equal(resumedFilesystem.observations.length, 1);
 });
 
-test('unsupported action preflight checkpoint resumes onto the newly capable adapter exactly once', async () => {
+test('unsupported action preflight portable checkpoint resumes onto the newly capable adapter exactly once', async () => {
   const browser = new Adapter('browser:checkpoint', 'browser', ['browser.observe']);
   const terminalWithoutCapability = new Adapter('terminal:checkpoint', 'terminal', []);
   const program: ComputerTaskProgram = {
@@ -130,14 +140,14 @@ test('unsupported action preflight checkpoint resumes onto the newly capable ada
   const capableTerminal = new Adapter('terminal:checkpoint', 'terminal', ['terminal.execute.argv']);
   const resumed = await new ComputerTaskRuntime(program, registry(new Adapter('browser:checkpoint', 'browser', ['browser.observe']), capableTerminal), {
     executionId: EXECUTION_ID,
-    checkpoint: JSON.parse(JSON.stringify(first.checkpoint())),
+    checkpoint: portableCheckpoint(first.checkpoint()),
   }).run();
 
   assert.equal(resumed.status, 'completed');
   assert.equal(capableTerminal.actions.length, 1);
 });
 
-test('unknown dispatch remains reconciliation-required after checkpoint serialization and adapter replacement', async () => {
+test('unknown dispatch remains reconciliation-required after portable checkpoint serialization and adapter replacement', async () => {
   const remote = new Adapter('remote:checkpoint', 'remote-session', ['remote.control'], {
     status: 'unknown',
     dispatch: 'unknown',
@@ -145,7 +155,7 @@ test('unknown dispatch remains reconciliation-required after checkpoint serializ
     evidence: ['transport-ambiguous'],
   });
   const program: ComputerTaskProgram = {
-    id: 'checkpoint-unknown-json-roundtrip',
+    id: 'checkpoint-unknown-portable-roundtrip',
     entry: 'remote',
     steps: [{
       kind: 'action',
@@ -168,7 +178,7 @@ test('unknown dispatch remains reconciliation-required after checkpoint serializ
   const replacement = new Adapter('remote:checkpoint', 'remote-session', ['remote.control']);
   const resumed = await new ComputerTaskRuntime(program, registry(replacement), {
     executionId: EXECUTION_ID,
-    checkpoint: JSON.parse(JSON.stringify(first.checkpoint())),
+    checkpoint: portableCheckpoint(first.checkpoint()),
   }).run();
 
   assert.equal(resumed.status, 'reconciliation-required');
