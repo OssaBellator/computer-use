@@ -83,7 +83,7 @@ test('checkpoint refresh failure does not downgrade an existing reconciliation-r
   assert.equal(env.adapter.actCount, 0);
 });
 
-test('overlapping reconciliation assessments keep dispatch blocked until all assessments exit', async () => {
+test('concurrent reconciliation assessments serialize and each keeps supplied-registry dispatch blocked', async () => {
   const persistence = await localPersistence();
   await persistence.save(createComputerTaskCheckpoint({
     program: PROGRAM,
@@ -96,27 +96,19 @@ test('overlapping reconciliation assessments keep dispatch blocked until all ass
   const env = environment();
   let calls = 0;
   let releaseFirst!: () => void;
-  let releaseSecond!: () => void;
   let firstStarted!: () => void;
-  let secondStarted!: () => void;
   const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
-  const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve; });
   const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
-  const secondRelease = new Promise<void>((resolve) => { releaseSecond = resolve; });
 
   const runtime = await DurableComputerTaskRuntime.create(PROGRAM, env.registry, persistence, {
     executionId: EXECUTION_ID,
     hooks: {
       reconcile: async ({ step, registry }) => {
         calls += 1;
-        const call = calls;
-        if (call === 1) {
+        if (calls === 1) {
           firstStarted();
           await firstRelease;
-          return { outcome: 'uncertain' };
         }
-        secondStarted();
-        await secondRelease;
         const attempted = await registry.act(step.request);
         assert.equal(attempted.status, 'rejected');
         assert.ok(attempted.evidence?.includes('reconciliation-dispatch-blocked'));
@@ -128,11 +120,12 @@ test('overlapping reconciliation assessments keep dispatch blocked until all ass
   const first = runtime.assessReconciliation('write');
   await firstStartedPromise;
   const second = runtime.assessReconciliation('write');
-  await secondStartedPromise;
+  await Promise.resolve();
+  assert.equal(calls, 1, 'second assessment must remain queued');
   releaseFirst();
   await first;
-  releaseSecond();
   await second;
 
+  assert.equal(calls, 2);
   assert.equal(env.adapter.actCount, 0);
 });
