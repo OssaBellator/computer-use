@@ -20,6 +20,33 @@ test('CDP mouse adapter tracks pointer, button bitfield, and wheel origin', asyn
   assert.deepEqual([calls[3].params?.x, calls[3].params?.y], [10, 20]);
 });
 
+test('CDP relative pointer movement accumulates from the last successful absolute point', async () => {
+  const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const session: CdpSessionLike = { async send(method, params) { calls.push({ method, params }); return {}; } };
+  const input = new CdpInputAdapter(session);
+  await input.movePointer({ x: 100, y: 80 });
+  await input.movePointerBy({ x: 12, y: -5 });
+  await input.pointerDown('left');
+
+  assert.deepEqual(
+    calls.map((call) => [call.params?.type, call.params?.x, call.params?.y, call.params?.buttons]),
+    [
+      ['mouseMoved', 100, 80, 0],
+      ['mouseMoved', 112, 75, 0],
+      ['mousePressed', 112, 75, 1],
+    ],
+  );
+});
+
+test('CDP pointer movement rejects non-finite coordinates before dispatch', async () => {
+  const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const session: CdpSessionLike = { async send(method, params) { calls.push({ method, params }); return {}; } };
+  const input = new CdpInputAdapter(session);
+
+  await assert.rejects(input.movePointerBy({ x: Number.NaN, y: 1 }), /must be finite/);
+  assert.deepEqual(calls, []);
+});
+
 test('CDP key chord maintains modifier state through Tab and releases it', async () => {
   const events: Record<string, unknown>[] = [];
   const session: CdpSessionLike = { async send(method, params) {
