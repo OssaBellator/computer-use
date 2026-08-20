@@ -2,7 +2,7 @@
 
 The integrated computer-use runtime is broader than the standalone Chromium runtime, so capability reporting is intentionally split into historical browser profiles and a separate environment-neutral computer-use composition.
 
-`standalone-chromium-0.43` remains the historical browser profile. Its meaning is not widened to include desktop UI, filesystem, process, terminal, remote-session, system/device, local-compute, document-model, or other non-browser environments. The current integrated source profile is `computer-use-integrated-0.43`, defined in `src/computer/computerUseCapabilityProfiles.ts` as a composition of independently scoped component profiles.
+`standalone-chromium-0.43` remains the historical browser profile. Its meaning is not widened to include desktop UI, filesystem, process, terminal, remote-session, system/device, local-compute, document-model, or other non-browser environments. The current integrated source profile is `computer-use-integrated-1.0`, defined in `src/computer/computerUseCapabilityProfiles.ts` as a composition of independently scoped component profiles. Its `1.0` version belongs to the computer-use profile model and is intentionally independent from the historical browser `0.43` version.
 
 ## Implementation status vocabulary
 
@@ -33,6 +33,6 @@ The profiles intentionally preserve boundaries that are easy to overclaim:
 
 ## High-risk explicitness
 
-`HIGH_RISK_COMPUTER_CAPABILITIES` identifies capability classes that must remain explicit in complete profiles. `validateComputerUseCapabilityProfile(..., { requireComplete: true, requireExplicitHighRisk: true })` mechanically rejects an integrated profile that omits those states, preventing omission from being mistaken for support.
+`HIGH_RISK_COMPUTER_CAPABILITIES` identifies capability classes that must remain explicit in complete profiles. `validateComputerUseCapabilityProfile(..., { requireComplete: true, requireExplicitHighRisk: true })` mechanically rejects an integrated profile that omits those states, preventing omission from being mistaken for support. Dedicated validation tests also assert that omitted high-risk entries are rejected rather than silently defaulted.
 
 This profile layer describes current source behavior only. It is not a roadmap and should not be advanced when only an interface, test double, or planned backend exists.
