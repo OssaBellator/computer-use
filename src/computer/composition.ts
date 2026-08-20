@@ -17,12 +17,10 @@ function snapshotAdapter(
   adapter: ComputerEnvironmentAdapter,
   descriptor: ComputerEnvironmentAdapterDescriptor,
 ): ComputerEnvironmentAdapter {
-  const observe = adapter.observe.bind(adapter);
-  const act = adapter.act.bind(adapter);
   return Object.freeze({
     descriptor,
-    observe,
-    act,
+    observe: adapter.observe.bind(adapter),
+    act: adapter.act.bind(adapter),
   });
 }
 
@@ -51,7 +49,7 @@ export class ComputerRuntimeComposition {
 
   register(adapter: ComputerEnvironmentAdapter): this {
     this.registry.register(adapter);
-    const descriptor = this.registry.descriptor(adapter.descriptor.id);
+    const descriptor = this.registry.descriptors().find(({ id }) => !this.runtimeAdapters.has(id));
     if (!descriptor) throw new Error('registered adapter descriptor unavailable');
     this.runtimeAdapters.set(descriptor.id, snapshotAdapter(adapter, descriptor));
     return this;
