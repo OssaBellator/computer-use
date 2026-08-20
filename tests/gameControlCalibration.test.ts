@@ -90,6 +90,7 @@ test('calibration attributes a measurable synthetic motion effect to one bounded
     candidates: [{ kind: 'key', key: 'ArrowRight', holdMs: 40 }],
     observe: queueObserver([observation(0, 0), ...passiveWindow(), ...effectWindow()]),
     isRealtimeContextActive: () => true,
+    isKeyProbeSafe: () => true,
     now: clock.now,
     sleep: clock.sleep,
   }).run();
@@ -162,6 +163,50 @@ test('action budget is reserved before a key probe so partial destructive input 
   assert.deepEqual(input.events, []);
 });
 
+test('key probes fail closed when explicit key safety approval is absent', async () => {
+  const input = new Input();
+  const clock = deterministicClock();
+  const result = await new GameControlCalibrator(input, {
+    candidates: [{ kind: 'key', key: 'Enter' }],
+    observe: queueObserver([observation(0, 0), ...passiveWindow()]),
+    isRealtimeContextActive: () => true,
+    now: clock.now,
+    sleep: clock.sleep,
+  }).run();
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.relationships[0].outcome, 'inconclusive');
+  assert.equal(result.relationships[0].reason, 'key-probe-not-safe');
+  assert.equal(result.relationships[0].baselineSamples, 3);
+  assert.equal(result.actionsDispatched, 1);
+  assert.deepEqual(input.events, ['move:200,100']);
+});
+
+test('key safety gate checks the latest baseline observation and can veto native dispatch', async () => {
+  const input = new Input();
+  const clock = deterministicClock();
+  const baseline = passiveWindow();
+  let checkedObservation: GameControlObservation | undefined;
+  const result = await new GameControlCalibrator(input, {
+    candidates: [{ kind: 'key', key: ' ' }],
+    observe: queueObserver([observation(0, 0), ...baseline]),
+    isRealtimeContextActive: () => true,
+    isKeyProbeSafe: (control, latest) => {
+      assert.equal(control.key, ' ');
+      checkedObservation = latest;
+      return false;
+    },
+    now: clock.now,
+    sleep: clock.sleep,
+  }).run();
+
+  assert.strictEqual(checkedObservation, baseline[2]);
+  assert.equal(result.status, 'complete');
+  assert.equal(result.relationships[0].reason, 'key-probe-not-safe');
+  assert.equal(result.actionsDispatched, 1);
+  assert.deepEqual(input.events, ['move:200,100']);
+});
+
 test('reset hook runs once between probes and every probe gets a fresh baseline', async () => {
   const input = new Input();
   const clock = deterministicClock();
@@ -172,6 +217,7 @@ test('reset hook runs once between probes and every probe gets a fresh baseline'
     candidates: [{ kind: 'key', key: 'a', holdMs: 10 }, { kind: 'key', key: 'd', holdMs: 10 }],
     observe: queueObserver([...first, ...second]),
     isRealtimeContextActive: () => true,
+    isKeyProbeSafe: () => true,
     resetBetweenProbes: async () => { resets += 1; },
     now: clock.now,
     sleep: clock.sleep,
