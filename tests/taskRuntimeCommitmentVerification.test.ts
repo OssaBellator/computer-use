@@ -94,3 +94,67 @@ test('synthetic missing result evidence terminates unverified without retry', as
   assert.equal(activations, 1);
   assert.equal(result.trace[0]?.outcome, 'commitment-unverified');
 });
+
+test('synthetic material mismatch exposes field name but not values in trace', async () => {
+  let phase: 'review' | 'confirmed' = 'review';
+  let observedAmount;
+  const state = [node()];
+  const engine: TaskRuntimeEngine = {
+    async refresh() { return state; },
+    async documentContent() { return phase === 'review' ? reviewDocument() : documentWith(['Order confirmed', 'Order total AUD 59.95', 'Merchant: Synthetic Shop']); },
+    async activate() { phase = 'confirmed'; return { status: 'verified', target: state[0]! }; },
+    async typeInto() { throw new Error('not used'); },
+  };
+  const result = await new TaskRuntime(engine).run(program('retry'), {}, {
+    approve: async () => true,
+    commitmentVerificationMaxPolls: 1,
+    onCommitmentVerification: async ({ verification }) => { observedAmount = verification.observed.amount?.value; },
+  });
+  assert.equal(result.status, 'side-effect-mismatch');
+  assert.equal(observedAmount, '59.95');
+  assert.deepEqual(result.trace[0]?.commitmentMismatchedFields, ['amount']);
+  const trace = JSON.stringify(result.trace);
+  assert.equal(trace.includes('49.95'), false);
+  assert.equal(trace.includes('59.95'), false);
+  assert.equal(trace.includes('synthetic shop'), false);
+});
+
+test('synthetic declined and canceled results terminate distinctly', async () => {
+  for (const [text, expectedStatus, expectedOutcome] of [
+    ['Payment declined', 'side-effect-declined', 'commitment-declined'],
+    ['Order canceled', 'side-effect-canceled', 'commitment-canceled'],
+  ] as const) {
+    let phase: 'review' | 'result' = 'review';
+    let activations = 0;
+    const state = [node()];
+    const engine: TaskRuntimeEngine = {
+      async refresh() { return state; },
+      async documentContent() { return phase === 'review' ? reviewDocument() : documentWith([text]); },
+      async activate() { activations += 1; phase = 'result'; return { status: 'verified', target: state[0]! }; },
+      async typeInto() { throw new Error('not used'); },
+    };
+    const result = await new TaskRuntime(engine).run(program('retry'), {}, {
+      approve: async () => true,
+      commitmentVerificationMaxPolls: 1,
+    });
+    assert.equal(result.status, expectedStatus);
+    assert.equal(result.trace[0]?.outcome, expectedOutcome);
+    assert.equal(activations, 1);
+  }
+});
+
+test('post-commit verification can be explicitly disabled for compatibility', async () => {
+  let activations = 0;
+  const state = [node()];
+  const engine: TaskRuntimeEngine = {
+    async refresh() { return state; },
+    async activate() { activations += 1; return { status: 'verified', target: state[0]! }; },
+    async typeInto() { throw new Error('not used'); },
+  };
+  const result = await new TaskRuntime(engine).run(program(), {}, {
+    approve: async () => true,
+    commitmentVerification: 'off',
+  });
+  assert.equal(result.status, 'completed');
+  assert.equal(activations, 1);
+});
