@@ -1,0 +1,293 @@
+import {
+  computerActionMayAutoRetry,
+  computerEffectRequiresApproval,
+  sameComputerEntity,
+  sameComputerSurface,
+  type ComputerActionResult,
+  type ComputerEntityRef,
+  type ComputerObservationEnvelope,
+  type ComputerSurfaceRef,
+  type ComputerVerificationState,
+} from './environmentAdapter.js';
+import { ComputerEnvironmentRegistry } from './environmentRegistry.js';
+import {
+  normalizeComputerTaskObservationRequest,
+  validateComputerTaskProgram,
+  type ComputerTaskActionStep,
+  type ComputerTaskProgram,
+  type ComputerTaskStep,
+} from './computerTask.js';
+import {
+  computerTaskProgramHash,
+  createComputerTaskCheckpoint,
+  type ComputerTaskActionCheckpointState,
+  type ComputerTaskCheckpoint,
+} from './computerTaskCheckpoint.js';
+
+export type ComputerTaskTerminalStatus =
+  | 'completed'
+  | 'rejected'
+  | 'unsupported'
+  | 'failed'
+  | 'stale-target'
+  | 'verification-pending'
+  | 'verification-mismatch'
+  | 'unverified'
+  | 'unknown-dispatch'
+  | 'reconciliation-required';
+
+export interface ComputerTaskTargetRevalidation {
+  state: 'fresh' | 'stale' | 'missing';
+  surface?: ComputerSurfaceRef;
+  entity?: ComputerEntityRef;
+  evidence?: readonly string[];
+}
+
+export interface ComputerTaskVerificationDecision {
+  state: ComputerVerificationState;
+  evidence?: readonly string[];
+}
+
+export interface ComputerTaskApprovalContext {
+  step: ComputerTaskActionStep;
+}
+
+export interface ComputerTaskVerificationContext {
+  step: ComputerTaskActionStep;
+  adapterResult: ComputerActionResult;
+  registry: ComputerEnvironmentRegistry;
+}
+
+export interface ComputerTaskRuntimeHooks {
+  /** Must use bounded adapter/domain observations; raw observations are not retained in checkpoints. */
+  revalidateTarget?: (
+    registry: ComputerEnvironmentRegistry,
+    step: ComputerTaskActionStep,
+  ) => Promise<ComputerTaskTargetRevalidation>;
+  approve?: (context: ComputerTaskApprovalContext) => Promise<boolean>;
+  verifiers?: Readonly<Record<string, (context: ComputerTaskVerificationContext) => Promise<ComputerTaskVerificationDecision>>>;
+}
+
+export interface ComputerTaskRuntimeOptions {
+  executionId: string;
+  checkpoint?: ComputerTaskCheckpoint;
+  hooks?: ComputerTaskRuntimeHooks;
+}
+
+export interface ComputerTaskRunResult {
+  status: ComputerTaskTerminalStatus;
+  stepsExecuted: number;
+  nextStepId?: string;
+  evidence?: readonly string[];
+  observations: readonly ComputerObservationEnvelope[];
+}
+
+function evidence(...groups: Array<readonly string[] | undefined>): string[] | undefined {
+  const merged = groups.flatMap((group) => group ?? []);
+  return merged.length > 0 ? [...new Set(merged)].slice(0, 32) : undefined;
+}
+
+function terminalFromVerification(state: ComputerVerificationState): ComputerTaskTerminalStatus | undefined {
+  if (state === 'verified' || state === 'not-applicable') return undefined;
+  if (state === 'pending') return 'verification-pending';
+  if (state === 'mismatch' || state === 'rejected') return 'verification-mismatch';
+  return 'unverified';
+}
+
+export class ComputerTaskRuntime {
+  private readonly stepById: Map<string, ComputerTaskStep>;
+  private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
+  private currentStepId: string | undefined;
+  private stepsExecuted = 0;
+
+  constructor(
+    private readonly program: ComputerTaskProgram,
+    private readonly registry: ComputerEnvironmentRegistry,
+    private readonly options: ComputerTaskRuntimeOptions,
+  ) {
+    const errors = validateComputerTaskProgram(program);
+    if (errors.length > 0) throw new Error(`invalid computer task program: ${errors.join('; ')}`);
+    if (!/^[0-9a-f]{32,64}$/.test(options.executionId)) {
+      throw new Error('computer task execution id must be 32 to 64 lowercase hexadecimal characters');
+    }
+    this.stepById = new Map(program.steps.map((step) => [step.id, step]));
+    this.currentStepId = program.entry;
+
+    if (options.checkpoint) {
+      if (options.checkpoint.program.id !== program.id || options.checkpoint.program.hash !== computerTaskProgramHash(program)) {
+        throw new Error('computer task checkpoint does not match program');
+      }
+      if (options.checkpoint.execution.id !== options.executionId) throw new Error('computer task checkpoint belongs to another execution');
+      this.currentStepId = options.checkpoint.cursor.nextStepId;
+      this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
+      for (const action of options.checkpoint.actions) this.actionStates.set(action.stepId, action.state);
+    }
+  }
+
+  checkpoint(): ComputerTaskCheckpoint {
+    return createComputerTaskCheckpoint({
+      program: this.program,
+      executionId: this.options.executionId,
+      nextStepId: this.currentStepId,
+      stepsExecuted: this.stepsExecuted,
+      actions: this.actionStates,
+    });
+  }
+
+  private preflight(step: ComputerTaskStep): ComputerTaskRunResult | undefined {
+    const descriptor = this.registry.descriptor(step.request.adapterId);
+    if (!descriptor) return this.result('unsupported', [], ['adapter-not-found']);
+    if (step.requirements?.environment && step.requirements.environment !== descriptor.kind) {
+      return this.result('unsupported', [], ['environment-mismatch']);
+    }
+    const required = new Set(step.requirements?.capabilities ?? []);
+    if (step.kind === 'action') required.add(step.request.capability);
+    for (const capability of required) {
+      if (!descriptor.capabilities.includes(capability)) return this.result('unsupported', [], ['capability-not-advertised']);
+    }
+    return undefined;
+  }
+
+  private async targetFresh(step: ComputerTaskActionStep): Promise<ComputerTaskTargetRevalidation> {
+    if (!step.target) return { state: 'fresh' };
+    const revalidate = this.options.hooks?.revalidateTarget;
+    if (!revalidate) return { state: 'missing', evidence: ['target-revalidator-required'] };
+    const fresh = await revalidate(this.registry, step);
+    if (fresh.state !== 'fresh') return fresh;
+    if (step.target.surface && (!fresh.surface || !sameComputerSurface(step.target.surface, fresh.surface))) {
+      return { state: 'stale', surface: fresh.surface, entity: fresh.entity, evidence: ['surface-generation-stale'] };
+    }
+    if (step.target.entity && (!fresh.entity || !sameComputerEntity(step.target.entity, fresh.entity))) {
+      return { state: 'stale', surface: fresh.surface, entity: fresh.entity, evidence: ['entity-generation-stale'] };
+    }
+    return fresh;
+  }
+
+  private async verify(step: ComputerTaskActionStep, adapterResult: ComputerActionResult): Promise<ComputerTaskVerificationDecision> {
+    if (step.verification) {
+      const verifier = this.options.hooks?.verifiers?.[step.verification];
+      if (!verifier) return { state: 'unverified', evidence: ['verifier-not-found'] };
+      return verifier({ step, adapterResult, registry: this.registry });
+    }
+    return { state: adapterResult.verification, evidence: adapterResult.evidence };
+  }
+
+  private async executeAction(step: ComputerTaskActionStep): Promise<{ result: ComputerTaskRunResult; next?: string }> {
+    const prior = this.actionStates.get(step.id);
+    if (prior === 'completed') return { result: this.result('completed', []), next: step.onSuccess };
+    if (prior === 'unknown-dispatch') {
+      return { result: this.result('reconciliation-required', [], ['checkpoint-unknown-dispatch']) };
+    }
+    this.actionStates.set(step.id, 'not-started');
+
+    const firstFresh = await this.targetFresh(step);
+    if (firstFresh.state !== 'fresh') {
+      return { result: this.result('stale-target', [], evidence(firstFresh.evidence, ['target-not-fresh'])) };
+    }
+
+    if (computerEffectRequiresApproval(step.request.effect)) {
+      const approved = this.options.hooks?.approve ? await this.options.hooks.approve({ step }) : false;
+      if (!approved) return { result: this.result('rejected', [], ['approval-denied']) };
+    }
+
+    let retries = 0;
+    while (true) {
+      const predispatch = await this.targetFresh(step);
+      if (predispatch.state !== 'fresh') {
+        return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
+      }
+      const adapterResult = await this.registry.act(step.request);
+      const verification = await this.verify(step, adapterResult);
+      const verificationStatus = terminalFromVerification(verification.state);
+      const effectfulDispatchedWithoutVerification =
+        step.request.effect !== 'observe-only' && adapterResult.dispatch === 'dispatched-once' && verification.state === 'not-applicable';
+
+      if (adapterResult.status === 'completed') {
+        if (effectfulDispatchedWithoutVerification) {
+          return { result: this.result('unverified', [], evidence(adapterResult.evidence, ['post-dispatch-verification-required'])) };
+        }
+        if (verificationStatus) {
+          return { result: this.result(verificationStatus, [], evidence(adapterResult.evidence, verification.evidence)) };
+        }
+        this.actionStates.set(step.id, 'completed');
+        return { result: this.result('completed', [], evidence(adapterResult.evidence, verification.evidence)), next: step.onSuccess };
+      }
+
+      const mayRetry = retries < (step.maxRetries ?? 0) && computerActionMayAutoRetry(step.request, adapterResult);
+      if (mayRetry) {
+        retries += 1;
+        continue;
+      }
+
+      if (adapterResult.dispatch === 'unknown') {
+        this.actionStates.set(step.id, 'unknown-dispatch');
+        return { result: this.result('unknown-dispatch', [], evidence(adapterResult.evidence, verification.evidence)) };
+      }
+      if (adapterResult.status === 'unsupported') return { result: this.result('unsupported', [], adapterResult.evidence) };
+      if (adapterResult.status === 'rejected') return { result: this.result('rejected', [], adapterResult.evidence) };
+      if (adapterResult.status === 'failed' && adapterResult.dispatch === 'not-dispatched') {
+        return { result: this.result('failed', [], adapterResult.evidence), next: step.onFailure };
+      }
+      if (verificationStatus) {
+        return { result: this.result(verificationStatus, [], evidence(adapterResult.evidence, verification.evidence)) };
+      }
+      if (adapterResult.status === 'failed') {
+        return { result: this.result('failed', [], adapterResult.evidence), next: step.onFailure };
+      }
+      return { result: this.result('failed', [], adapterResult.evidence) };
+    }
+  }
+
+  async run(): Promise<ComputerTaskRunResult> {
+    const observations: ComputerObservationEnvelope[] = [];
+    const maxSteps = Math.max(1, this.program.steps.length * (4 + 3));
+    let loopSteps = 0;
+
+    while (this.currentStepId !== undefined) {
+      if (++loopSteps > maxSteps) return this.result('failed', observations, ['task-step-budget-exhausted']);
+      const step = this.stepById.get(this.currentStepId);
+      if (!step) return this.result('failed', observations, ['task-step-missing']);
+
+      const preflight = this.preflight(step);
+      if (preflight) return { ...preflight, observations: Object.freeze([...observations]) };
+
+      if (step.kind === 'observe') {
+        const observation = await this.registry.observe(normalizeComputerTaskObservationRequest(step.request));
+        observations.push(observation);
+        this.stepsExecuted += 1;
+        this.currentStepId = step.next;
+        continue;
+      }
+
+      const before = this.actionStates.get(step.id);
+      const execution = await this.executeAction(step);
+      const skippedKnownCompleted = before === 'completed';
+      if (!skippedKnownCompleted) this.stepsExecuted += 1;
+      if (execution.result.status === 'completed') {
+        this.currentStepId = execution.next;
+        continue;
+      }
+      if (execution.result.status === 'failed' && execution.next !== undefined) {
+        this.currentStepId = execution.next;
+        continue;
+      }
+      return { ...execution.result, stepsExecuted: this.stepsExecuted, nextStepId: this.currentStepId, observations: Object.freeze([...observations]) };
+    }
+
+    return this.result('completed', observations);
+  }
+
+  private result(
+    status: ComputerTaskTerminalStatus,
+    observations: readonly ComputerObservationEnvelope[],
+    resultEvidence?: readonly string[],
+  ): ComputerTaskRunResult {
+    return {
+      status,
+      stepsExecuted: this.stepsExecuted,
+      nextStepId: this.currentStepId,
+      evidence: resultEvidence,
+      observations: Object.freeze([...observations]),
+    };
+  }
+}
