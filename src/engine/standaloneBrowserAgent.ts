@@ -49,14 +49,21 @@ export class StandaloneBrowserAgent {
     await this.pages.start();
     if (!selectInitialPage || this.pages.activeEngine) return undefined;
 
-    let result = await this.pages.switchToLatestPage();
-    if (result.status === 'target-not-found') {
-      result = await this.pages.createAndSwitch('about:blank');
+    const existing = await this.pages.switchToLatestPage();
+    if (existing.status === 'switched') return existing;
+    if (existing.status !== 'target-not-found') {
+      throw new Error(`Failed to select initial Chromium page: ${existing.status}`);
     }
-    if (result.status !== 'switched') {
-      throw new Error(`Failed to select initial Chromium page: ${result.status}`);
+
+    const created = await this.pages.createAndSwitch('about:blank');
+    if (created.status !== 'switched') {
+      throw new Error(`Failed to create initial Chromium page: ${created.status}`);
     }
-    return result;
+    return {
+      status: 'switched',
+      ...(created.targetId ? { targetId: created.targetId } : {}),
+      ...(created.reused !== undefined ? { reused: created.reused } : {}),
+    };
   }
 
   shutdown(): Promise<void> {
