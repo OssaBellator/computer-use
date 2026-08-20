@@ -49,6 +49,7 @@ function canonicalize(value: unknown, maxBytes: number, maxDepth: number, maxIte
       return;
     }
     if (Array.isArray(current)) {
+      if (Reflect.ownKeys(current).some((key) => typeof key !== 'string')) throw new Error('symbol-property');
       const descriptors = Object.getOwnPropertyDescriptors(current);
       for (const [key, descriptor] of Object.entries(descriptors)) {
         if (key === 'length') continue;
@@ -66,6 +67,7 @@ function canonicalize(value: unknown, maxBytes: number, maxDepth: number, maxIte
       return;
     }
     if (typeof current === 'object') {
+      if (Reflect.ownKeys(current).some((key) => typeof key !== 'string')) throw new Error('symbol-property');
       const prototype = Object.getPrototypeOf(current);
       if (prototype !== Object.prototype && prototype !== null) throw new Error('non-plain-object');
       const descriptors = Object.getOwnPropertyDescriptors(current);
