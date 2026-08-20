@@ -15,83 +15,132 @@ const MAX_ENV_TOTAL_BYTES = 65_536;
 const MAX_STDERR_BYTES = 4_096;
 const TERMINATION_ACK_TIMEOUT_MS = 500;
 
-export interface NativeDesktopStdioCommand extends NativeDesktopBridgeCommand {
-  /** Hard cap applied before spawning a helper. */
-  maxRequestBytes?: number;
-  /**
-   * Environment entries to overlay on the inherited process environment.
-   * The configured entries are snapshotted at executor construction.
-   */
-  env?: Readonly<Record<string, string>>;
+export interface NativeDesktopEnvironmentEntry {
+  name:string;
+  value:string;
 }
 
-interface FrozenCommand {
-  executable: string;
-  args: readonly string[];
-  env?: Readonly<Record<string, string>>;
-  maxRequestBytes: number;
-  maxResponseBytes: number;
-  timeoutMs: number;
+/**
+ * Production stdin-helper configuration. Environment overrides use an explicit
+ * bounded entry array rather than a string-keyed object so acquisition never
+ * needs whole-object key enumeration.
+ */
+export type NativeDesktopStdioCommand = Omit<NativeDesktopBridgeCommand,'env'> & {
+  maxRequestBytes?:number;
+  envEntries?:readonly NativeDesktopEnvironmentEntry[];
+  /** Object-shaped environment overrides belong to the legacy JSON executor. */
+  env?:never;
+};
+
+export interface NativeDesktopStdioCommandSnapshot {
+  executable:string;
+  args:readonly string[];
+  environment?:Readonly<Record<string,string>>;
+  maxRequestBytes:number;
+  maxResponseBytes:number;
+  timeoutMs:number;
+  supportsRelativePointer:boolean;
 }
 
-function utf8Bytes(value: string): number {
-  return Buffer.byteLength(value, 'utf8');
+function utf8Bytes(value:string):number {
+  return Buffer.byteLength(value,'utf8');
 }
-
-function boundedString(value: unknown, maxBytes: number): value is string {
+function boundedString(value:unknown,maxBytes:number):value is string {
   return typeof value === 'string' && value.length > 0 && utf8Bytes(value) <= maxBytes && !value.includes('\0');
 }
-
-function positiveBounded(value: number | undefined, fallback: number, hardMax: number): number {
+function positiveBounded(value:unknown,fallback:number,hardMax:number):number {
   if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || value < 1) throw new Error('native desktop helper limit invalid');
-  return Math.min(value, hardMax);
+  if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error('native desktop helper limit invalid');
+  return Math.min(value as number,hardMax);
+}
+function ownData(value:object,key:string):{present:boolean;value:unknown} {
+  let property:PropertyDescriptor|undefined;
+  try { property = Object.getOwnPropertyDescriptor(value,key); }
+  catch { throw new Error('native desktop helper command malformed'); }
+  if (!property) return {present:false,value:undefined};
+  if (!('value' in property) || property.get !== undefined || property.set !== undefined) throw new Error('native desktop helper command accessor rejected');
+  return {present:true,value:property.value};
+}
+function boundedArray(value:unknown,maxItems:number,message:string):readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error(message);
+  let lengthProperty:PropertyDescriptor|undefined;
+  try { lengthProperty = Object.getOwnPropertyDescriptor(value,'length'); }
+  catch { throw new Error(message); }
+  if (!lengthProperty || !('value' in lengthProperty) || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0 || lengthProperty.value > maxItems) throw new Error(message);
+  const result:unknown[] = [];
+  for (let index=0;index<(lengthProperty.value as number);index+=1) {
+    let property:PropertyDescriptor|undefined;
+    try { property = Object.getOwnPropertyDescriptor(value,String(index)); }
+    catch { throw new Error(message); }
+    if (!property || !('value' in property) || property.get !== undefined || property.set !== undefined) throw new Error(message);
+    result.push(property.value);
+  }
+  return Object.freeze(result);
 }
 
-function snapshotCommand(command: NativeDesktopStdioCommand): FrozenCommand {
-  if (!boundedString(command.executable, MAX_EXECUTABLE_BYTES)) throw new Error('native desktop helper executable invalid');
-  const args = command.args ?? [];
-  if (!Array.isArray(args) || args.length > MAX_ARG_ITEMS) throw new Error('native desktop helper arguments invalid');
+export function snapshotNativeDesktopStdioCommand(command:NativeDesktopStdioCommand):NativeDesktopStdioCommandSnapshot {
+  if (!command || typeof command !== 'object' || Array.isArray(command)) throw new Error('native desktop helper command malformed');
+  const executableField = ownData(command,'executable');
+  if (!executableField.present || !boundedString(executableField.value,MAX_EXECUTABLE_BYTES)) throw new Error('native desktop helper executable invalid');
+  const argsField = ownData(command,'args');
+  const rawArgs = argsField.present && argsField.value !== undefined ? boundedArray(argsField.value,MAX_ARG_ITEMS,'native desktop helper arguments invalid') : Object.freeze([]);
   let argBytes = 0;
-  const frozenArgs = args.map((arg) => {
-    if (!boundedString(arg, MAX_ARG_BYTES)) throw new Error('native desktop helper argument invalid');
-    argBytes += utf8Bytes(arg);
+  const args:string[] = [];
+  for (const rawArg of rawArgs) {
+    if (!boundedString(rawArg,MAX_ARG_BYTES)) throw new Error('native desktop helper argument invalid');
+    argBytes += utf8Bytes(rawArg);
     if (argBytes > MAX_ARG_TOTAL_BYTES) throw new Error('native desktop helper arguments too large');
-    return arg;
-  });
-
-  let frozenEnv: Readonly<Record<string, string>> | undefined;
-  if (command.env !== undefined) {
-    const entries = Object.entries(command.env);
-    if (entries.length > MAX_ENV_ITEMS) throw new Error('native desktop helper environment too large');
-    let envBytes = 0;
-    const copy: Record<string, string> = Object.create(null);
-    for (const [key, value] of entries) {
-      if (!boundedString(key, MAX_ENV_KEY_BYTES) || !boundedString(value, MAX_ENV_VALUE_BYTES)) {
-        throw new Error('native desktop helper environment invalid');
-      }
-      envBytes += utf8Bytes(key) + utf8Bytes(value);
-      if (envBytes > MAX_ENV_TOTAL_BYTES) throw new Error('native desktop helper environment too large');
-      copy[key] = value;
-    }
-    frozenEnv = Object.freeze(copy);
+    args.push(rawArg);
   }
 
+  const envField = ownData(command,'env');
+  if (envField.present && envField.value !== undefined) throw new Error('native desktop helper object environment unsupported');
+  const envEntriesField = ownData(command,'envEntries');
+  const rawEntries = envEntriesField.present && envEntriesField.value !== undefined
+    ? boundedArray(envEntriesField.value,MAX_ENV_ITEMS,'native desktop helper environment too large')
+    : Object.freeze([]);
+  let envBytes = 0;
+  let environment:Readonly<Record<string,string>>|undefined;
+  if (rawEntries.length > 0) {
+    const copy:Record<string,string> = Object.create(null);
+    const seen = new Set<string>();
+    for (const rawEntry of rawEntries) {
+      if (!rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) throw new Error('native desktop helper environment invalid');
+      const nameField = ownData(rawEntry,'name');
+      const valueField = ownData(rawEntry,'value');
+      if (!nameField.present || !valueField.present || !boundedString(nameField.value,MAX_ENV_KEY_BYTES) || !boundedString(valueField.value,MAX_ENV_VALUE_BYTES)) {
+        throw new Error('native desktop helper environment invalid');
+      }
+      if (seen.has(nameField.value)) throw new Error('native desktop helper environment duplicate');
+      seen.add(nameField.value);
+      envBytes += utf8Bytes(nameField.value) + utf8Bytes(valueField.value);
+      if (envBytes > MAX_ENV_TOTAL_BYTES) throw new Error('native desktop helper environment too large');
+      copy[nameField.value] = valueField.value;
+    }
+    environment = Object.freeze(copy);
+  }
+
+  const requestLimit = ownData(command,'maxRequestBytes');
+  const responseLimit = ownData(command,'maxResponseBytes');
+  const timeout = ownData(command,'timeoutMs');
+  const relative = ownData(command,'supportsRelativePointer');
+  if (relative.present && relative.value !== undefined && typeof relative.value !== 'boolean') throw new Error('native desktop helper capability invalid');
   return Object.freeze({
-    executable: command.executable,
-    args: Object.freeze([...frozenArgs]),
-    ...(frozenEnv ? { env: frozenEnv } : {}),
-    maxRequestBytes: positiveBounded(command.maxRequestBytes, DEFAULT_MAX_REQUEST_BYTES, 1_000_000),
-    maxResponseBytes: positiveBounded(command.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, 16_000_000),
-    timeoutMs: positiveBounded(command.timeoutMs, DEFAULT_TIMEOUT_MS, 30_000),
+    executable:executableField.value,
+    args:Object.freeze(args),
+    ...(environment ? {environment} : {}),
+    maxRequestBytes:positiveBounded(requestLimit.present ? requestLimit.value : undefined,DEFAULT_MAX_REQUEST_BYTES,1_000_000),
+    maxResponseBytes:positiveBounded(responseLimit.present ? responseLimit.value : undefined,DEFAULT_MAX_RESPONSE_BYTES,16_000_000),
+    timeoutMs:positiveBounded(timeout.present ? timeout.value : undefined,DEFAULT_TIMEOUT_MS,30_000),
+    supportsRelativePointer:relative.present && relative.value === true,
   });
 }
 
 /**
  * Process transport that keeps desktop action payloads out of argv/process-list
- * surfaces. One versioned JSON request is written to stdin; stdout is acquired
- * under a byte ceiling before parsing. Stderr is consumed only under a small
- * bound and is never copied into thrown errors, neutral evidence, or results.
+ * surfaces. Command authority is fixed-field snapshotted without invoking
+ * caller-owned getters or enumerating caller-owned object keys. One versioned
+ * JSON request is written to stdin; stdout is acquired under a byte ceiling.
  *
  * A dispatch-side transport error is deliberately not classified here. The
  * caller must conservatively assume native input may have been emitted once the
@@ -99,45 +148,41 @@ function snapshotCommand(command: NativeDesktopStdioCommand): FrozenCommand {
  * acknowledged or a separate finite termination deadline expires.
  */
 export class StdioDesktopBridgeExecutor implements DesktopBridgeExecutor {
-  private readonly command: FrozenCommand;
+  private readonly command:NativeDesktopStdioCommandSnapshot;
 
-  constructor(command: NativeDesktopStdioCommand) {
-    this.command = snapshotCommand(command);
+  constructor(command:NativeDesktopStdioCommand) {
+    this.command = snapshotNativeDesktopStdioCommand(command);
   }
 
-  invoke(operation: string, payload: unknown, limits: { maxResponseBytes: number; timeoutMs: number }): Promise<unknown> {
-    if (!boundedString(operation, 128)) return Promise.reject(new Error('native desktop helper operation invalid'));
-    let request: string;
-    try {
-      request = JSON.stringify({ version: 1, operation, payload });
-    } catch {
-      return Promise.reject(new Error('native desktop helper request not serializable'));
-    }
-    const requestBytes = utf8Bytes(request);
-    if (requestBytes > this.command.maxRequestBytes) return Promise.reject(new Error('native desktop helper request too large'));
+  invoke(operation:string,payload:unknown,limits:{maxResponseBytes:number;timeoutMs:number}):Promise<unknown> {
+    if (!boundedString(operation,128)) return Promise.reject(new Error('native desktop helper operation invalid'));
+    let request:string;
+    try { request = JSON.stringify({version:1,operation,payload}); }
+    catch { return Promise.reject(new Error('native desktop helper request not serializable')); }
+    if (utf8Bytes(request) > this.command.maxRequestBytes) return Promise.reject(new Error('native desktop helper request too large'));
 
-    const maxResponseBytes = Math.min(this.command.maxResponseBytes, Math.max(1, limits.maxResponseBytes));
-    const timeoutMs = Math.min(this.command.timeoutMs, Math.max(1, limits.timeoutMs));
+    const maxResponseBytes = Math.min(this.command.maxResponseBytes,Math.max(1,limits.maxResponseBytes));
+    const timeoutMs = Math.min(this.command.timeoutMs,Math.max(1,limits.timeoutMs));
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve,reject)=>{
       let settled = false;
       let terminating = false;
       let terminationReason = 'native desktop helper process failed';
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let terminationTimer:ReturnType<typeof setTimeout>|undefined;
-      const stdout: Buffer[] = [];
-      const child = spawn(this.command.executable, [...this.command.args], {
-        shell: false,
-        windowsHide: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: this.command.env ? { ...process.env, ...this.command.env } : process.env,
+      const stdout:Buffer[] = [];
+      const child = spawn(this.command.executable,[...this.command.args],{
+        shell:false,
+        windowsHide:true,
+        stdio:['pipe','pipe','pipe'],
+        env:this.command.environment ? {...process.env,...this.command.environment} : process.env,
       });
       const clearTimers = () => {
         clearTimeout(timer);
         if (terminationTimer) clearTimeout(terminationTimer);
       };
-      const finishReject = (message: string) => {
+      const finishReject = (message:string) => {
         if (settled) return;
         settled = true;
         clearTimers();
@@ -167,64 +212,41 @@ export class StdioDesktopBridgeExecutor implements DesktopBridgeExecutor {
           finishReject(`${message}; native desktop helper termination unconfirmed`);
           return;
         }
-        terminationTimer = setTimeout(() => {
-          finishReject(`${message}; native desktop helper termination unconfirmed`);
-        }, TERMINATION_ACK_TIMEOUT_MS);
+        terminationTimer = setTimeout(()=>finishReject(`${message}; native desktop helper termination unconfirmed`),TERMINATION_ACK_TIMEOUT_MS);
         terminationTimer.unref?.();
       };
-      const timer = setTimeout(() => {
-        terminateThenReject('native desktop helper timed out');
-      }, timeoutMs);
+      const timer = setTimeout(()=>terminateThenReject('native desktop helper timed out'),timeoutMs);
       timer.unref?.();
 
-      child.once('error', () => {
+      child.once('error',()=>{
         if (settled) return;
-        if (child.pid === undefined) {
-          finishReject('native desktop helper process failed');
-          return;
-        }
+        if (child.pid === undefined) { finishReject('native desktop helper process failed'); return; }
         terminateThenReject('native desktop helper process failed');
       });
-      child.stdout.on('data', (chunk: Buffer | string) => {
+      child.stdout.on('data',(chunk:Buffer|string)=>{
         if (settled || terminating) return;
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         stdoutBytes += buffer.byteLength;
-        if (stdoutBytes > maxResponseBytes) {
-          terminateThenReject('native desktop helper response too large');
-          return;
-        }
+        if (stdoutBytes > maxResponseBytes) { terminateThenReject('native desktop helper response too large'); return; }
         stdout.push(Buffer.from(buffer));
       });
-      child.stderr.on('data', (chunk: Buffer | string) => {
+      child.stderr.on('data',(chunk:Buffer|string)=>{
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        stderrBytes = Math.min(MAX_STDERR_BYTES + 1, stderrBytes + buffer.byteLength);
+        stderrBytes = Math.min(MAX_STDERR_BYTES + 1,stderrBytes + buffer.byteLength);
         if (stderrBytes > MAX_STDERR_BYTES && !settled) child.stderr.pause();
       });
-      child.once('close', (code, signal) => {
+      child.once('close',(code,signal)=>{
         if (settled) return;
-        if (terminating) {
-          finishReject(terminationReason);
-          return;
-        }
+        if (terminating) { finishReject(terminationReason); return; }
         clearTimeout(timer);
-        if (code !== 0 || signal !== null) {
-          finishReject('native desktop helper exited unsuccessfully');
-          return;
-        }
-        let value: unknown;
-        try {
-          value = JSON.parse(Buffer.concat(stdout, stdoutBytes).toString('utf8'));
-        } catch {
-          finishReject('native desktop helper response malformed');
-          return;
-        }
+        if (code !== 0 || signal !== null) { finishReject('native desktop helper exited unsuccessfully'); return; }
+        let value:unknown;
+        try { value = JSON.parse(Buffer.concat(stdout,stdoutBytes).toString('utf8')); }
+        catch { finishReject('native desktop helper response malformed'); return; }
         finishResolve(value);
       });
-
-      child.stdin.once('error', () => {
-        terminateThenReject('native desktop helper request failed');
-      });
-      child.stdin.end(request, 'utf8');
+      child.stdin.once('error',()=>terminateThenReject('native desktop helper request failed'));
+      child.stdin.end(request,'utf8');
     });
   }
 }
