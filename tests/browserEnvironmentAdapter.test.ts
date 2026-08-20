@@ -53,10 +53,27 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
     const nodes = this.nodes.slice(0, limits.maxItems).map((item) => ({ ...item, backendNodeId: undefined }));
     return { nodes, complete: this.nodes.length <= limits.maxItems, truncated: this.nodes.length > limits.maxItems };
   }
+  async resolveBoundedSemanticTarget(_targetId: string | undefined, entityId: string, limits: BoundedSemanticSnapshotLimits) {
+    this.semanticOptions = limits;
+    return this.nodes.find((item) => item.id === entityId || item.structuralId === entityId);
+  }
+  async activateBoundedSemantic(_targetId: string | undefined, entityId: string): Promise<{ status: string; target: InteractionNode | null }> {
+    this.activateCalls += 1;
+    return { status: this.activationResult, target: this.nodes.find((item) => item.id === entityId || item.structuralId === entityId) ?? null };
+  }
+  async hoverBoundedSemantic(_targetId: string | undefined, entityId: string): Promise<{ status: string; target: InteractionNode | null }> {
+    this.hoverCalls += 1;
+    return { status: 'verified', target: this.nodes.find((item) => item.id === entityId || item.structuralId === entityId) ?? null };
+  }
+  async typeBoundedSemantic(_targetId: string | undefined, entityId: string): Promise<{ status: string; target: InteractionNode | null }> {
+    this.typeCalls += 1;
+    if (this.throwOnType) throw new Error('transport failed after invocation');
+    return { status: 'verified', target: this.nodes.find((item) => item.id === entityId || item.structuralId === entityId) ?? null };
+  }
   async refresh(): Promise<InteractionNode[]> { this.refreshCalls += 1; return this.nodes.map((item) => ({ ...item })); }
-  async activate(): Promise<{ status: string; target: InteractionNode | null }> { this.activateCalls += 1; return { status: this.activationResult, target: this.nodes[0] ?? null }; }
-  async hover(): Promise<{ status: string; target: InteractionNode | null }> { this.hoverCalls += 1; return { status: 'verified', target: this.nodes[0] ?? null }; }
-  async typeInto(): Promise<{ status: string; target: InteractionNode | null }> { this.typeCalls += 1; if (this.throwOnType) throw new Error('transport failed after invocation'); return { status: 'verified', target: this.nodes[0] ?? null }; }
+  async activate(): Promise<{ status: string; target: InteractionNode | null }> { throw new Error('legacy activation path must not run'); }
+  async hover(): Promise<{ status: string; target: InteractionNode | null }> { throw new Error('legacy hover path must not run'); }
+  async typeInto(): Promise<{ status: string; target: InteractionNode | null }> { throw new Error('legacy type path must not run'); }
   async pressKey(): Promise<{ status: string }> { this.pressKeyCalls += 1; return { status: 'verified' }; }
   async scrollViewport(): Promise<{ status: string }> { this.scrollCalls += 1; return { status: 'verified' }; }
   async browserState() { return { url: 'https://example.test/', origin: 'https://example.test', title: 'fixture', readyState: 'complete' as const, historyLength: 1, timeOrigin: this.timeOrigin }; }
@@ -185,10 +202,11 @@ test('browser computer adapter rejects targets on targetless key and viewport ac
   assert.equal(runtime.pressKeyCalls, 0); assert.equal(runtime.scrollCalls, 0);
 });
 
-test('browser computer adapter reports definite pre-dispatch failure for disappeared target', async () => {
+test('browser computer adapter reports definite pre-dispatch failure for disappeared target without full refresh', async () => {
   const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), target = await observedTarget(adapter); runtime.nodes = [];
   const result = await adapter.act(localAction(adapter, 'browser.hover', target));
   assert.equal(result.status, 'rejected'); assert.equal(result.dispatch, 'not-dispatched'); assert.equal(result.verification, 'not-applicable');
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('browser computer adapter rejects malformed and oversized action payloads before dispatch', async () => {
@@ -225,10 +243,12 @@ test('browser computer adapter converts adapter exception after invocation into 
   assert.equal(adapter.mayAutoRetry(request, result), false); assert.equal(computerActionMayAutoRetry(request, result), false);
 });
 
-test('browser computer adapter delegates ordinary activation through TaskRuntime', async () => {
+test('browser computer adapter delegates ordinary activation through TaskRuntime without full refresh', async () => {
   const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime, { runtimeOptions: { maxRisk: 'interaction' } }), target = await observedTarget(adapter);
   const result = await adapter.act({ ...localAction(adapter, 'browser.activate', target), payload: { method: 'pointer' } });
   assert.equal(runtime.activateCalls, 1); assert.equal(result.dispatch, 'dispatched-once'); assert.equal(result.verification, 'verified');
+  assert.equal(runtime.refreshCalls, 0);
+  assert.deepEqual(runtime.semanticOptions, { maxItems: 256, maxTextBytes: 64 * 1024, maxDepth: 32 });
 });
 
 test('browser computer adapter cannot bypass commitment neutral-baseline verification', async () => {
@@ -237,6 +257,7 @@ test('browser computer adapter cannot bypass commitment neutral-baseline verific
   const target = await observedTarget(adapter);
   const result = await adapter.act({ adapterId: adapter.descriptor.id, actionId: 'synthetic-purchase', capability: 'browser.activate', effect: 'external-transaction', idempotency: 'non-idempotent', target });
   assert.equal(runtime.activateCalls, 0); assert.equal(result.dispatch, 'not-dispatched'); assert.notEqual(result.status, 'completed');
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('computer environment registry integrates browser routing and response coherence', async () => {
@@ -252,6 +273,7 @@ test('computer environment registry integrates browser routing and response cohe
   const fresh = (freshObservation.data as Array<{ entity: ComputerEntityRef }>)[0].entity;
   const result = await registry.act({ ...localAction(adapter, 'browser.type', fresh), payload: { text: 'x' } });
   assert.deepEqual({ status: result.status, dispatch: result.dispatch, verification: result.verification }, { status: 'completed', dispatch: 'dispatched-once', verification: 'verified' });
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('unknown dispatch is never retry eligible for side-effecting browser request', () => {
