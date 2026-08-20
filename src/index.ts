@@ -25,6 +25,7 @@ export * from './browser/visualObserver.js';
 export * from './browser/gameRegionLocator.js';
 export * from './browser/gameRegionLease.js';
 export * from './browser/visualDiff.js';
+export * from './browser/visualMotionTracker.js';
 export * from './focus/focusTopology.js';
 export * from './focus/directionalTopology.js';
 export * from './focus/compositeState.js';
