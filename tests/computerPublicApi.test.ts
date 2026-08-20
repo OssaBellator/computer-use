@@ -174,3 +174,71 @@ test('composition requires callers to retain runtime checkpoint state after unce
   assert.equal(second.status, 'reconciliation-required');
   assert.equal(actCount, 1, 'resuming from the retained checkpoint must not redispatch');
 });
+
+test('task runtime keeps the adapter binding captured at construction', async () => {
+  let originalObservations = 0;
+  let replacementObservations = 0;
+
+  function trackedAdapter(onObserve: () => void): ComputerEnvironmentAdapter {
+    return {
+      descriptor: {
+        id: 'filesystem:stable',
+        kind: 'filesystem',
+        version: '1.0.0',
+        capabilities: [],
+      },
+      async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
+        onObserve();
+        return {
+          adapterId: 'filesystem:stable',
+          environment: 'filesystem',
+          channel: request.channel,
+          sequence: 1,
+          complete: true,
+          truncated: false,
+          data: {},
+        };
+      },
+      async act(_request: ComputerActionRequest): Promise<ComputerActionResult> {
+        return {
+          status: 'unsupported',
+          dispatch: 'not-dispatched',
+          verification: 'unverified',
+        };
+      },
+    };
+  }
+
+  const composition = createComputerRuntimeComposition([
+    trackedAdapter(() => { originalObservations += 1; }),
+  ]);
+  const program: ComputerTaskProgram = {
+    id: 'public-runtime-adapter-snapshot',
+    entry: 'read',
+    steps: [
+      {
+        kind: 'observe',
+        id: 'read',
+        request: { adapterId: 'filesystem:stable', channel: 'filesystem' },
+      },
+    ],
+  };
+
+  const originalRuntime = composition.createTaskRuntime(program, {
+    executionId: '11111111111111111111111111111111',
+  });
+
+  assert.equal(composition.unregister('filesystem:stable'), true);
+  composition.register(trackedAdapter(() => { replacementObservations += 1; }));
+
+  assert.equal((await originalRuntime.run()).status, 'completed');
+  assert.equal(originalObservations, 1);
+  assert.equal(replacementObservations, 0, 'existing runtime must not rebind after composition mutation');
+
+  const replacementRuntime = composition.createTaskRuntime(program, {
+    executionId: '22222222222222222222222222222222',
+  });
+  assert.equal((await replacementRuntime.run()).status, 'completed');
+  assert.equal(originalObservations, 1);
+  assert.equal(replacementObservations, 1, 'new runtime should use the current composition binding');
+});
