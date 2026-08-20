@@ -5,6 +5,7 @@ import {
   BrowserComputerEnvironmentAdapter,
   type BrowserComputerEnvironmentAdapterOptions,
   type BrowserComputerRuntime,
+  type BrowserFrameDocumentTokenLimits,
 } from '../src/computer/browserEnvironmentAdapter.js';
 import type { ComputerActionRequest, ComputerEntityRef } from '../src/computer/environmentAdapter.js';
 import { CdpBrowserAgentEngine } from '../src/engine/cdpBrowserAgentEngine.js';
@@ -41,6 +42,7 @@ class GenerationRuntime implements BrowserComputerRuntime {
   nodes: InteractionNode[] = [node()];
   timeOrigin = 1;
   frameTokens: Record<string, string> = { main: '1' };
+  frameTokenLimits: BrowserFrameDocumentTokenLimits | undefined;
   refreshMutation: (() => void) | undefined;
   frameTokenReads = 0;
   frameTokenMutationRead: number | undefined;
@@ -70,7 +72,11 @@ class GenerationRuntime implements BrowserComputerRuntime {
       timeOrigin: this.timeOrigin,
     };
   }
-  async frameDocumentTokens(): Promise<Readonly<Record<string, string>>> {
+  async frameDocumentTokens(
+    _targetId?: string,
+    limits?: BrowserFrameDocumentTokenLimits,
+  ): Promise<Readonly<Record<string, string>>> {
+    this.frameTokenLimits = limits;
     this.frameTokenReads += 1;
     if (this.frameTokenReads === this.frameTokenMutationRead) {
       const mutate = this.frameTokenMutation;
@@ -442,15 +448,28 @@ test('ordinary bounded runtime polling policy remains accepted', () => {
   });
 });
 
-test('wide frame identity acquisition evaluates only the main frame and retains no child authority', async () => {
+test('bounded frame identity source never materializes the unbounded frame list', async () => {
   let evaluations = 0;
-  const frames = Array.from({ length: 100 }, (_, index) => ({
+  let boundedCalls = 0;
+  let fullFramesCalls = 0;
+  let requestedMaxFrames = 0;
+  const mainFrame = {
     evaluate: async () => {
       evaluations += 1;
-      return index + 1;
+      return 1;
     },
-  }));
-  const page = { frames: () => frames };
+  };
+  const page = {
+    frames: () => {
+      fullFramesCalls += 1;
+      throw new Error('unbounded frame materialization must not be used for identity');
+    },
+    boundedFrames: (maxFrames: number) => {
+      boundedCalls += 1;
+      requestedMaxFrames = maxFrames;
+      return { frames: [mainFrame], complete: false };
+    },
+  };
   const engine = new CdpBrowserAgentEngine(
     {} as any,
     {} as any,
@@ -467,12 +486,34 @@ test('wide frame identity acquisition evaluates only the main frame and retains 
     page as any,
   );
 
-  const tokens = await engine.frameDocumentTokens();
+  const tokens = await engine.frameDocumentTokens({ maxFrames: 32, maxTextBytes: 4 * 1024 });
+  assert.equal(fullFramesCalls, 0);
+  assert.equal(boundedCalls, 1);
+  assert.equal(requestedMaxFrames, 32);
   assert.equal(evaluations, 1);
   assert.equal(tokens?.main, '1');
   assert.equal(tokens?.['frame-1'], undefined);
   assert.equal(tokens?.['__browser_identity_incomplete__'], '1');
   assert.deepEqual(Object.keys(tokens ?? {}).sort(), ['__browser_identity_incomplete__', 'main']);
+});
+
+test('adapter pushes frame identity limits to custom runtimes and rejects incomplete child authority', async () => {
+  const runtime = new GenerationRuntime();
+  runtime.nodes = [node('frame-1')];
+  runtime.frameTokens = {
+    main: '1',
+    'frame-1': 'child-a',
+    __browser_identity_incomplete__: '1',
+  };
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+
+  await assert.rejects(
+    adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface: adapter.currentSurface() }),
+    /identity-unavailable/,
+  );
+  assert.deepEqual(runtime.frameTokenLimits, { maxFrames: 32, maxTextBytes: 4 * 1024 });
+  assert.equal(runtime.activateCalls, 0);
+  assert.equal(runtime.hoverCalls, 0);
 });
 
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
