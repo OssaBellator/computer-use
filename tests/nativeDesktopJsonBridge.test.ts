@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   NativeJsonDesktopPlatformBridge,
+  linuxAtSpiBridge,
   type DesktopBridgeExecutor,
 } from '../src/computer/nativeDesktopJsonBridge.js';
 
@@ -23,6 +24,12 @@ const window = {
   foreground:true,
   focused:true,
 };
+
+test('platform helper does not advertise relative pointer unless explicitly configured',()=>{
+  const executor = new RecordingExecutor();
+  assert.equal(linuxAtSpiBridge({executable:'unused'},executor).supportsRelativePointer,false);
+  assert.equal(linuxAtSpiBridge({executable:'unused',supportsRelativePointer:true},executor).supportsRelativePointer,true);
+});
 
 test('native bridge passes hard window acquisition limits to helper and validates returned bound',async()=>{
   const executor = new RecordingExecutor();
