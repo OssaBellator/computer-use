@@ -86,6 +86,10 @@ const MEDIA_CONTROL_FUNCTION = `async function(action, value) {
       promise.catch((error) => { rejected = String(error && (error.name || error.message || error)).slice(0, 256); });
     }
   };
+  const fullscreenOwner = () => {
+    const root = this.getRootNode && this.getRootNode();
+    return root && 'fullscreenElement' in root ? root.fullscreenElement : document.fullscreenElement;
+  };
   if (action === 'play') rememberRejection(this.play());
   else if (action === 'pause') this.pause();
   else if (action === 'set-muted') this.muted = Boolean(value);
@@ -98,7 +102,7 @@ const MEDIA_CONTROL_FUNCTION = `async function(action, value) {
     for (let i = 0; i < 40; i += 1) {
       if (rejected) break;
       if (action === 'play' && !this.paused && !this.ended) break;
-      if (action === 'request-fullscreen' && document.fullscreenElement === this) break;
+      if (action === 'request-fullscreen' && fullscreenOwner() === this) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
@@ -109,7 +113,7 @@ const MEDIA_CONTROL_FUNCTION = `async function(action, value) {
     volume: this.volume,
     currentTime: this.currentTime,
     playbackRate: this.playbackRate,
-    fullscreen: document.fullscreenElement === this,
+    fullscreen: fullscreenOwner() === this,
     rejected,
   };
 }`;
@@ -144,12 +148,7 @@ async function controlMedia(
     if (!objectId) {
       return { status: 'target-missing', action, frameId: target.frameId, backendNodeId: target.backendNodeId };
     }
-    const state = await callOnNode(
-      session,
-      objectId,
-      MEDIA_CONTROL_FUNCTION,
-      [action, expected],
-    ) as ControlState;
+    const state = await callOnNode(session, objectId, MEDIA_CONTROL_FUNCTION, [action, expected]) as ControlState;
     const verified = verify(action, state ?? {}, expected);
     return {
       status: verified ? 'verified' : (typeof state?.rejected === 'string' ? 'rejected' : 'verification-failed'),
@@ -173,45 +172,31 @@ async function controlMedia(
   }
 }
 
-/** Browser-native HTMLMediaElement/fullscreen controls invoked through CDP, never synthetic DOM events. */
+/** Browser-native HTMLMediaElement/fullscreen controls invoked through CDP without synthetic events or user-activation elevation. */
 export class CdpMediaController {
   constructor(private readonly session: CdpSessionLike) {}
 
-  play(target: MediaElementIdentity): Promise<MediaControlResult> {
-    return controlMedia(this.session, target, 'play');
-  }
-
-  pause(target: MediaElementIdentity): Promise<MediaControlResult> {
-    return controlMedia(this.session, target, 'pause');
-  }
-
-  setMuted(target: MediaElementIdentity, muted: boolean): Promise<MediaControlResult> {
-    return controlMedia(this.session, target, 'set-muted', muted);
-  }
+  play(target: MediaElementIdentity): Promise<MediaControlResult> { return controlMedia(this.session, target, 'play'); }
+  pause(target: MediaElementIdentity): Promise<MediaControlResult> { return controlMedia(this.session, target, 'pause'); }
+  setMuted(target: MediaElementIdentity, muted: boolean): Promise<MediaControlResult> { return controlMedia(this.session, target, 'set-muted', muted); }
 
   setVolume(target: MediaElementIdentity, volume: number): Promise<MediaControlResult> {
     if (!Number.isFinite(volume) || volume < 0 || volume > 1) {
-      return Promise.resolve({
-        status: 'invalid-argument', action: 'set-volume', frameId: target.frameId, backendNodeId: target.backendNodeId,
-      });
+      return Promise.resolve({ status: 'invalid-argument', action: 'set-volume', frameId: target.frameId, backendNodeId: target.backendNodeId });
     }
     return controlMedia(this.session, target, 'set-volume', volume);
   }
 
   seek(target: MediaElementIdentity, currentTimeSeconds: number): Promise<MediaControlResult> {
     if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0 || currentTimeSeconds > MAX_SEEK_SECONDS) {
-      return Promise.resolve({
-        status: 'invalid-argument', action: 'seek', frameId: target.frameId, backendNodeId: target.backendNodeId,
-      });
+      return Promise.resolve({ status: 'invalid-argument', action: 'seek', frameId: target.frameId, backendNodeId: target.backendNodeId });
     }
     return controlMedia(this.session, target, 'seek', currentTimeSeconds);
   }
 
   setPlaybackRate(target: MediaElementIdentity, playbackRate: number): Promise<MediaControlResult> {
     if (!Number.isFinite(playbackRate) || playbackRate < 0.0625 || playbackRate > 16) {
-      return Promise.resolve({
-        status: 'invalid-argument', action: 'set-playback-rate', frameId: target.frameId, backendNodeId: target.backendNodeId,
-      });
+      return Promise.resolve({ status: 'invalid-argument', action: 'set-playback-rate', frameId: target.frameId, backendNodeId: target.backendNodeId });
     }
     return controlMedia(this.session, target, 'set-playback-rate', playbackRate);
   }

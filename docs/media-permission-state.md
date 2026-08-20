@@ -1,33 +1,31 @@
 # Media, fullscreen, and permission state
 
-This branch adds standalone raw-CDP observation for HTML media playback, document fullscreen, browser-window fullscreen, and effective page permission state. The primitives are framework-independent and do not require Playwright, Puppeteer, Selenium/WebDriver, or a page-side event-synthesis layer.
+This branch adds standalone raw-CDP observation for HTML media playback, document fullscreen, browser-window fullscreen, and effective page permission state. The primitives remain framework-independent and do not require Playwright, Puppeteer, Selenium/WebDriver, synthetic DOM event dispatch, or permission mutation.
 
 ## Media observation
 
-`observeMediaState(session, options)` walks a bounded current frame tree and inspects `audio` / `video` elements in isolated worlds. Each observed element includes a CDP `backendNodeId` and frame id so later operations can resolve the same browser node without relying on page-authored selectors.
+`observeMediaState(session, options)` walks a bounded current frame tree and inspects `audio` / `video` elements in each frame's isolated world, including elements inside open shadow roots. Each retained identity contains the owning frame and CDP `backendNodeId`; media source URLs are deliberately not retained because signed URLs can contain credentials or bearer-like query material.
 
 The bounded state includes:
 
 - playback classification: `playing`, `paused`, `ended`, or `unknown`;
 - muted state and volume in the browser's `0..1` range when observable;
-- finite current time and duration up to the configured observation bound (infinite live-stream duration is intentionally omitted);
+- finite current time and duration up to the configured observation bound;
 - bounded playback rate;
 - visibility;
 - bounded identity fields: frame id, `backendNodeId`, ordinal, tag name, id, and aria label;
 - a preferred `activeMedia` identity selected only from currently playing elements, preferring audible/visible video when several elements play simultaneously.
 
-Media source URLs are deliberately excluded from the returned identity/snapshot. Signed streaming URLs can carry bearer-like query credentials, while frame/backend-node identity is sufficient for later browser-native control.
-
-Frame count, media count, retained text, time values, and error retention are all bounded. Protocol or frame failures are recorded rather than silently converted into known state.
+Frame count, media count, retained text, time values, permission names, and retained errors are bounded. If a configured bound causes observations or errors to be dropped, `truncated` is set. Closed shadow-root internals are not claimed as complete by the DOM-based snapshot.
 
 ## Fullscreen observation
 
 The same snapshot observes two distinct fullscreen concepts:
 
-1. **Document fullscreen** from each frame's `document.fullscreenElement`. When nested frames expose fullscreen elements, the deepest owning frame is preferred so the result points to the actual element rather than only an ancestor iframe container.
+1. **Document fullscreen** from each frame. For open shadow trees, the observer follows `ShadowRoot.fullscreenElement` to the deepest JS-observable owner; across nested frames, the deepest observed owning frame is preferred.
 2. **Browser-window fullscreen** from `Browser.getWindowForTarget`, reported separately as `fullscreen`, `not-fullscreen`, or `unknown`.
 
-`pageState: unknown` is used when enough frame-level observation failed that an inactive document-fullscreen state cannot be established safely.
+`pageState: unknown` is used when frame-level observation is incomplete enough that an inactive document-fullscreen result cannot be established safely.
 
 ## Media/fullscreen controller
 
@@ -39,7 +37,9 @@ The same snapshot observes two distinct fullscreen concepts:
 - playback rate;
 - request / exit document fullscreen.
 
-The controller resolves the observed `backendNodeId` in the owning frame and calls the browser's native `HTMLMediaElement` / Fullscreen APIs through CDP. It does **not** synthesize `dispatchEvent()` media or fullscreen events and does not set CDP's `userGesture` execution flag. Normal browser autoplay/fullscreen user-activation policy therefore remains in force. Bounded polling returns only after the requested state is verified or a bounded rejection/verification failure is available. Fullscreen and unmuted playback can legitimately be rejected by browser/headless policy.
+The controller resolves the observed `backendNodeId` in the owning frame and calls native `HTMLMediaElement` / Fullscreen APIs through CDP. It does **not** synthesize `dispatchEvent()` behavior and does **not** set CDP `userGesture`; autoplay/fullscreen user-activation policy therefore remains the browser's decision. Operations return only after the requested state is verified or a bounded rejection/verification failure is available. A real browser input can supply activation when a caller intentionally performs one through the normal input layer.
+
+Fullscreen verification is shadow-root aware for observed media elements. Fullscreen or playback can legitimately return `rejected` when browser policy requires activation or otherwise disallows the operation.
 
 These controls do not grant permissions and do not automate credentials, passkeys, MFA, CAPTCHA, or other authentication ceremonies.
 
@@ -50,7 +50,7 @@ These controls do not grant permissions and do not automate credentials, passkey
 - `Page.getPermissionsPolicyState` for frame-level Permissions Policy allowance/blocking where Chromium exposes it;
 - `navigator.permissions.query()` evaluated through CDP for the effective permission state visible to that frame.
 
-The default requested set is camera, microphone, notifications, geolocation, clipboard-read, and clipboard-write. Additional permission names can be requested; unsupported descriptors become `unknown` rather than being coerced into a grant or denial.
+The default requested set is camera, microphone, notifications, geolocation, clipboard-read, and clipboard-write. Additional bounded permission names can be requested. When a custom name matches a feature returned by Chromium's Permissions Policy state (for example `midi` or a policy-only feature such as `fullscreen`), that policy state is retained even if the Permissions API query itself is unsupported.
 
 Each permission record separates:
 
@@ -59,7 +59,7 @@ Each permission record separates:
 - `policy`: `allowed`, `blocked`, `not-applicable`, or `unknown`, including bounded block reason/frame metadata when available;
 - `browserState`: always `unknown` for passive observation.
 
-The `browserState` distinction is deliberate. Chromium CDP exposes permission mutation commands such as `Browser.setPermission` / reset operations, but not a general readback command for the underlying browser/profile permission decision. A page result therefore must not be promoted into a claim that the browser-level setting is known independently of page policy/context.
+The `browserState` distinction is deliberate. Current CDP exposes permission mutation commands such as `Browser.setPermission` and reset operations, but no general passive readback of the underlying browser/profile permission decision. A page result therefore is not promoted into an independent browser-level claim.
 
 The observer is read-only: it never calls permission grant, deny, or reset commands.
 
@@ -67,8 +67,9 @@ The observer is read-only: it never calls permission grant, deny, or reset comma
 
 Coverage is deterministic and synthetic/local:
 
-- unit fixtures exercise media bounds, active media selection, nested fullscreen ownership, activation-policy preservation, source-URL omission, native controller verification, Permissions Policy blocking, and browser-level uncertainty;
-- a local raw-CDP Chromium smoke test uses an in-memory WAV data URI and an `iframe allow` policy fixture. It verifies real media playback/control and permission-policy observation without external sites or side effects;
-- document fullscreen is attempted through the real Fullscreen API. Current headless Chromium may decline it; the smoke test verifies that the operation returns boundedly and observes active ownership when the browser accepts it. Active nested ownership is also covered deterministically by unit fixtures.
+- unit fixtures exercise media bounds/privacy, active media selection, nested fullscreen ownership, no synthetic user-activation elevation, native rejection propagation, custom Permissions Policy matching, and browser-level uncertainty;
+- a local raw-CDP Chromium smoke test uses an in-memory WAV inside an open shadow root and a local `srcdoc` iframe policy fixture;
+- the Chromium smoke proves playback/fullscreen are rejected without user activation in the fixture, then uses ordinary CDP mouse input to create real activation before verifying playback succeeds;
+- no external sites or transaction-like effects are used.
 
 No real purchase, payment, booking, transfer, publication, account/security change, deletion, deployment, or external process trigger is used by these tests.
