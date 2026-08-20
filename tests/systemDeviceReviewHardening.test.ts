@@ -144,6 +144,10 @@ test('caller mutation during approval cannot change approved or dispatched mater
     capability: 'device.peripheral.configure',
     effect: 'hardware-affecting',
     idempotency: 'non-idempotent',
+    target: {
+      adapterId: 'system-device-review', environment: 'device', kind: 'peripheral',
+      entityId: target.id, generation: target.generation,
+    },
     payload,
   };
 
