@@ -4,6 +4,8 @@ export type MouseButton = 'left' | 'middle' | 'right';
 
 export interface BrowserInput {
   movePointer(point: Point): Promise<void>;
+  /** Optional relative mouse movement capability, expressed in viewport CSS pixels. */
+  movePointerBy?(delta: Point): Promise<void>;
   pointerDown(button?: MouseButton): Promise<void>;
   pointerUp(button?: MouseButton): Promise<void>;
   pressKey(key: string): Promise<void>;
