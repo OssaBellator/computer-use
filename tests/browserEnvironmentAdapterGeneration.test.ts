@@ -293,6 +293,40 @@ test('adapter rejects accessor-backed policy objects without invoking accessors'
   assert.equal(getterCalls, 0);
 });
 
+test('malformed maxRisk is rejected before high-risk browser dispatch can be configured', () => {
+  const runtime = new GenerationRuntime();
+  const options = {
+    runtimeOptions: { maxRisk: 'bogus' },
+  } as unknown as BrowserComputerEnvironmentAdapterOptions;
+
+  assert.throws(
+    () => new BrowserComputerEnvironmentAdapter(runtime, options),
+    /browser runtime options\.maxRisk is invalid/,
+  );
+  assert.equal(runtime.activateCalls, 0);
+});
+
+test('malformed runtime policy shapes fail closed at construction', () => {
+  const malformed: Array<Record<string, unknown>> = [
+    { requireUnambiguousTargets: 'yes' },
+    { maxConsecutiveNoProgress: 0 },
+    { commitmentVerificationMaxPolls: Number.NaN },
+    { commitmentVerificationPollIntervalMs: -1 },
+    { approve: true },
+    { onCommitmentVerification: {} },
+    { onTrace: 'trace' },
+    { waitPollIntervalMs: 1.5 },
+    { waitMaxPolls: 0 },
+  ];
+
+  for (const runtimeOptions of malformed) {
+    const runtime = new GenerationRuntime();
+    const options = { runtimeOptions } as unknown as BrowserComputerEnvironmentAdapterOptions;
+    assert.throws(() => new BrowserComputerEnvironmentAdapter(runtime, options), /browser runtime options\./);
+    assert.equal(runtime.activateCalls, 0);
+  }
+});
+
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
   const runtime = new GenerationRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
