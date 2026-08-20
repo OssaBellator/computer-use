@@ -75,13 +75,6 @@ function exactOwnKeys(record: Record<string, unknown>, allowed: readonly string[
   const keys = Reflect.ownKeys(record);
   return keys.every((key) => typeof key === 'string' && allowed.includes(key)) && required.every((key) => Object.prototype.hasOwnProperty.call(record, key));
 }
-function snapshotKnownRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
-  const record = plainRecord(value);
-  if (!record || !exactOwnKeys(record, allowed, required)) return undefined;
-  const out: Record<string, unknown> = {};
-  for (const key of allowed) if (Object.prototype.hasOwnProperty.call(record, key)) out[key] = ownData(record, key);
-  return Object.freeze(out);
-}
 function snapshotWhitelistedRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   let proto: object | null;
@@ -97,26 +90,20 @@ function snapshotWhitelistedRecord(value: unknown, allowed: readonly string[], r
   }
   return Object.freeze(out);
 }
-function snapshotOpenRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  const record = plainRecord(value); if (!record) return undefined;
-  const out: Record<string, unknown> = {};
-  for (const key of Reflect.ownKeys(record)) { if (typeof key !== 'string') return undefined; out[key] = ownData(record, key); }
-  return Object.freeze(out);
-}
 function snapshotObservationRequest(value: unknown): Readonly<ComputerObservationRequest> | undefined {
-  const record = snapshotKnownRecord(value, ['adapterId','channel','surface','target','limits'], ['adapterId','channel']); if (!record) return undefined;
+  const record = snapshotWhitelistedRecord(value, ['adapterId','channel','surface','target','limits'], ['adapterId','channel']); if (!record) return undefined;
   const rawSurface = record.surface, rawTarget = record.target, rawLimits = record.limits;
-  const surface = rawSurface === undefined ? undefined : snapshotKnownRecord(rawSurface, ['adapterId','environment','surfaceId','generation','parentSurfaceId'], ['adapterId','environment','surfaceId']);
-  const target = rawTarget === undefined ? undefined : snapshotKnownRecord(rawTarget, ['adapterId','environment','kind','entityId','surfaceId','generation'], ['adapterId','environment','kind','entityId']);
-  const limits = rawLimits === undefined ? undefined : snapshotKnownRecord(rawLimits, ['maxItems','maxTextBytes','maxDepth']);
+  const surface = rawSurface === undefined ? undefined : snapshotWhitelistedRecord(rawSurface, ['adapterId','environment','surfaceId','generation','parentSurfaceId'], ['adapterId','environment','surfaceId']);
+  const target = rawTarget === undefined ? undefined : snapshotWhitelistedRecord(rawTarget, ['adapterId','environment','kind','entityId','surfaceId','generation'], ['adapterId','environment','kind','entityId']);
+  const limits = rawLimits === undefined ? undefined : snapshotWhitelistedRecord(rawLimits, ['maxItems','maxTextBytes','maxDepth']);
   if ((rawSurface !== undefined && !surface) || (rawTarget !== undefined && !target) || (rawLimits !== undefined && !limits)) return undefined;
   return Object.freeze({adapterId:record.adapterId,channel:record.channel,...(surface?{surface}:{}),...(target?{target}:{}),...(limits?{limits}:{})}) as unknown as Readonly<ComputerObservationRequest>;
 }
 function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> | undefined {
-  const record = snapshotKnownRecord(value, ['adapterId','actionId','capability','effect','idempotency','target','payload'], ['adapterId','actionId','capability','effect','idempotency']); if (!record) return undefined;
+  const record = snapshotWhitelistedRecord(value, ['adapterId','actionId','capability','effect','idempotency','target','payload'], ['adapterId','actionId','capability','effect','idempotency']); if (!record) return undefined;
   const rawTarget = record.target, rawPayload = record.payload;
-  const target = rawTarget === undefined ? undefined : snapshotKnownRecord(rawTarget, ['adapterId','environment','kind','entityId','surfaceId','generation'], ['adapterId','environment','kind','entityId']);
-  const payload = rawPayload === undefined ? undefined : snapshotOpenRecord(rawPayload);
+  const target = rawTarget === undefined ? undefined : snapshotWhitelistedRecord(rawTarget, ['adapterId','environment','kind','entityId','surfaceId','generation'], ['adapterId','environment','kind','entityId']);
+  const payload = rawPayload === undefined ? undefined : snapshotWhitelistedRecord(rawPayload,['authority','invocation','input']);
   if ((rawTarget !== undefined && !target) || (rawPayload !== undefined && !payload)) return undefined;
   return Object.freeze({adapterId:record.adapterId,actionId:record.actionId,capability:record.capability,effect:record.effect,idempotency:record.idempotency,...(target?{target}:{}),...(payload?{payload}:{})}) as unknown as Readonly<ComputerActionRequest>;
 }
