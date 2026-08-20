@@ -172,6 +172,11 @@ function safeIdentifier(value: string, maxBytes: number, explicitSeparator: bool
   // Whitespace-only labels are common ("Order ID ABC-42"), but ordinary prose
   // such as "Order number will be assigned" must not turn the next word into an ID.
   if (!explicitSeparator && !/[0-9._:/-]/.test(trimmed)) return undefined;
+  // Never retain values that are visibly URL- or credential-shaped even when a
+  // page places them next to an unsafe generic reference label.
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) return undefined;
+  if (/^(?:sk[-_]|gh[pousr]_|github_pat_|xox[baprs]-|AIza|AKIA|ASIA)/i.test(trimmed)) return undefined;
+  if (/^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(trimmed)) return undefined;
   // Avoid retaining values shaped like payment-card or long account numbers even
   // when a page applies an unsafe generic label to them.
   if (/^\d{12,19}$/.test(trimmed.replace(/[- ]/g, ''))) return undefined;
@@ -194,7 +199,11 @@ function extractFromText(
     const pattern = new RegExp(`(?:^|\\b)${label}\\s*([:#=]|[-–—])?\\s*#?([A-Za-z0-9][A-Za-z0-9._:/-]{1,63})`, 'ig');
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      const value = safeIdentifier(match[2]!, maxBytes, match[1] !== undefined);
+      const candidate = match[2]!;
+      // A spaced numeric credential would otherwise be truncated to its first
+      // group (for example, 4111 from a longer card-like value).
+      if (/^\d+$/.test(candidate) && /^\s+\d/.test(text.slice(pattern.lastIndex))) continue;
+      const value = safeIdentifier(candidate, maxBytes, match[1] !== undefined);
       if (value) found.push({ type: descriptor.type, value });
       if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
     }
