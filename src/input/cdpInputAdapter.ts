@@ -127,6 +127,12 @@ function descriptorFor(key: string, shiftActive = false): KeyDescriptor {
   return printableDescriptor(resolved);
 }
 
+function finitePoint(name: string, point: Point): void {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    throw new Error(`${name} coordinates must be finite`);
+  }
+}
+
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -142,10 +148,19 @@ export class CdpInputAdapter implements BrowserInput {
   constructor(private readonly session: CdpSessionLike) {}
 
   async movePointer(point: Point): Promise<void> {
-    this.pointer = { x: point.x, y: point.y };
+    finitePoint('pointer', point);
     await this.session.send('Input.dispatchMouseEvent', {
       type: 'mouseMoved', x: point.x, y: point.y,
       modifiers: this.modifiers, buttons: this.buttons,
+    });
+    this.pointer = { x: point.x, y: point.y };
+  }
+
+  async movePointerBy(delta: Point): Promise<void> {
+    finitePoint('pointer delta', delta);
+    await this.movePointer({
+      x: this.pointer.x + delta.x,
+      y: this.pointer.y + delta.y,
     });
   }
 
