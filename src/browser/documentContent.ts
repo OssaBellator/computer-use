@@ -18,7 +18,6 @@ export type DocumentContentBlockKind =
   | 'landmark';
 
 export interface DocumentContentBlock {
-  /** Stable structural identity within the owning frame, including open-shadow boundaries. */
   id: string;
   frameId: string;
   kind: DocumentContentBlockKind;
@@ -32,11 +31,10 @@ export interface DocumentContentBlock {
   name?: string;
   /** Frame-local document coordinates in CSS pixels. */
   rect?: Rect;
-  /** Participates in rendered layout; off-screen rendered content remains readable by default. */
+  /** Participates in rendered layout; off-screen rendered content stays readable by default. */
   rendered: boolean;
   /** Intersects the current viewport of the owning frame. */
   inViewport: boolean;
-  /** Text was shortened by either browser-side hard bounds or caller bounds. */
   truncated: boolean;
 }
 
@@ -58,24 +56,20 @@ export interface DocumentContentFrameError {
 export interface DocumentContentSnapshot {
   frames: DocumentFrameContent[];
   blocks: DocumentContentBlock[];
+  /** UTF-8 bytes retained across textual block fields. */
   totalTextBytes: number;
-  /** True when any browser/caller bound omitted or shortened content. */
   truncated: boolean;
   frameErrors: DocumentContentFrameError[];
 }
 
 export interface DocumentContentOptions {
-  /** Maximum returned blocks across all frames. Defaults to 500. */
   maxBlocks?: number;
-  /** Maximum UTF-8 bytes across block text/alt/name fields. Defaults to 262,144. */
+  /** Maximum UTF-8 bytes across block text/href/alt/role/name fields. */
   maxTextBytes?: number;
-  /** Maximum UTF-8 bytes retained per textual field. Defaults to 8,192. */
+  /** Maximum UTF-8 bytes retained per textual block field. */
   maxTextBytesPerBlock?: number;
-  /** Maximum DOM/composed-tree depth returned. Defaults to 64. */
   maxDepth?: number;
-  /** Include elements that do not participate in rendered layout. Defaults to false. */
   includeHidden?: boolean;
-  /** Restrict to blocks intersecting each frame's current viewport. Defaults to false. */
   viewportOnly?: boolean;
 }
 
@@ -106,9 +100,7 @@ interface RawDocumentFrame {
 }
 
 function positiveInteger(name: string, value: number): number {
-  if (!Number.isInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive integer`);
-  }
+  if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
   return value;
 }
 
@@ -126,25 +118,21 @@ function truncateUtf8(value: string, maxBytes: number): { value: string; truncat
   return { value: output, truncated: true, bytes };
 }
 
-function copyBoundedField(
+function boundedField(
   value: string | undefined,
   remainingBytes: number,
   perFieldBytes: number,
 ): { value?: string; bytes: number; truncated: boolean } {
-  if (value === undefined || value.length === 0 || remainingBytes <= 0) {
-    return { bytes: 0, truncated: value !== undefined && value.length > 0 };
-  }
+  if (value === undefined || value.length === 0) return { bytes: 0, truncated: false };
+  if (remainingBytes <= 0) return { bytes: 0, truncated: true };
   const bounded = truncateUtf8(value, Math.min(remainingBytes, perFieldBytes));
   return { value: bounded.value, bytes: bounded.bytes, truncated: bounded.truncated };
 }
 
 /**
  * Bounded structured reading model over the repo's own frame abstraction.
- *
- * Browser-side extraction has independent hard safety caps so even callers that
- * request very large host-side limits cannot cause an unbounded frame payload.
- * Caller limits are then applied exactly in UTF-8 bytes across the combined
- * multi-frame result.
+ * Browser-side extraction has independent element/block/string budgets; host
+ * limits then apply exact UTF-8 bounds across the combined multi-frame result.
  */
 export async function snapshotDocumentContent(
   page: SnapshotPageLike,
@@ -172,16 +160,12 @@ export async function snapshotDocumentContent(
       truncated = true;
       break;
     }
-    const frame = sourceFrames[frameIndex];
     const frameId = frameIndex === 0 ? 'main' : `frame-${frameIndex}`;
     let raw: RawDocumentFrame;
     try {
-      raw = await extractDocumentFrame(frame);
+      raw = await extractDocumentFrame(sourceFrames[frameIndex]);
     } catch (error) {
-      frameErrors.push({
-        frameId,
-        message: error instanceof Error ? error.message : String(error),
-      });
+      frameErrors.push({ frameId, message: error instanceof Error ? error.message : String(error) });
       continue;
     }
 
@@ -203,17 +187,18 @@ export async function snapshotDocumentContent(
         tagName: candidate.tagName,
         depth: candidate.depth,
         ...(candidate.level !== undefined ? { level: candidate.level } : {}),
-        ...(candidate.href !== undefined ? { href: candidate.href } : {}),
-        ...(candidate.role !== undefined ? { role: candidate.role } : {}),
-        ...(candidate.rect !== undefined ? { rect: { ...candidate.rect } } : {}),
+        ...(candidate.rect ? { rect: { ...candidate.rect } } : {}),
         rendered: candidate.rendered,
         inViewport: candidate.inViewport,
         truncated: false,
       };
 
-      for (const field of ['text', 'alt', 'name'] as const) {
-        const remaining = maxTextBytes - totalTextBytes;
-        const copied = copyBoundedField(candidate[field], remaining, maxTextBytesPerBlock);
+      for (const field of ['text', 'href', 'alt', 'role', 'name'] as const) {
+        const copied = boundedField(
+          candidate[field],
+          maxTextBytes - totalTextBytes,
+          maxTextBytesPerBlock,
+        );
         if (copied.value !== undefined) next[field] = copied.value;
         totalTextBytes += copied.bytes;
         fieldTruncated ||= copied.truncated;
@@ -241,48 +226,103 @@ export async function snapshotDocumentContent(
 
 async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocumentFrame> {
   return frame.evaluate((): RawDocumentFrame => {
-    // Independent browser-side hard bounds. Host-side options can only make the
-    // returned snapshot smaller than these limits.
+    const MAX_VISITED_ELEMENTS = 20_000;
     const MAX_BLOCKS = 2_000;
     const MAX_TOTAL_TEXT_CHARS = 250_000;
-    const MAX_TEXT_CHARS_PER_BLOCK = 12_000;
+    const MAX_FIELD_CHARS = 12_000;
+    const MAX_URL_CHARS = 4_096;
+    const MAX_ROLE_CHARS = 256;
+    const MAX_METADATA_CHARS = 8_192;
     const MAX_DEPTH = 128;
 
     const blocks: RawDocumentBlock[] = [];
     const visited = new Set<Element>();
+    let visitedElements = 0;
     let textChars = 0;
     let truncated = false;
 
-    function normalizeText(value: string | null | undefined, preserveWhitespace = false): string {
-      if (!value) return '';
-      if (preserveWhitespace) {
-        return value.replace(/\r\n?/g, '\n').trim();
-      }
-      return value.replace(/\s+/g, ' ').trim();
+    function clipScalar(value: string | null | undefined, maxChars: number): { value?: string; truncated: boolean } {
+      if (!value) return { truncated: false };
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      if (!normalized) return { truncated: false };
+      if (normalized.length <= maxChars) return { value: normalized, truncated: false };
+      truncated = true;
+      return { value: normalized.slice(0, maxChars), truncated: true };
     }
 
-    function boundedText(value: string, preserveWhitespace = false): { text?: string; truncated: boolean } {
-      const normalized = normalizeText(value, preserveWhitespace);
+    function takeString(
+      value: string | null | undefined,
+      preserveWhitespace = false,
+      maxChars = MAX_FIELD_CHARS,
+    ): { value?: string; truncated: boolean } {
+      if (!value) return { truncated: false };
+      const normalized = preserveWhitespace
+        ? value.replace(/\r\n?/g, '\n').trim()
+        : value.replace(/\s+/g, ' ').trim();
       if (!normalized) return { truncated: false };
       const available = Math.max(0, MAX_TOTAL_TEXT_CHARS - textChars);
-      const limit = Math.min(MAX_TEXT_CHARS_PER_BLOCK, available);
+      const limit = Math.min(maxChars, available);
       if (limit <= 0) {
         truncated = true;
         return { truncated: true };
       }
       const shortened = normalized.length > limit;
-      const text = shortened ? normalized.slice(0, limit) : normalized;
-      textChars += text.length;
+      const output = shortened ? normalized.slice(0, limit) : normalized;
+      textChars += output.length;
       if (shortened) truncated = true;
-      return { text, truncated: shortened };
+      return { value: output, truncated: shortened };
+    }
+
+    function elementText(element: Element, preserveWhitespace = false): { value?: string; truncated: boolean } {
+      const available = Math.min(MAX_FIELD_CHARS, Math.max(0, MAX_TOTAL_TEXT_CHARS - textChars));
+      if (available <= 0) {
+        truncated = true;
+        return { truncated: true };
+      }
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let raw = '';
+      let shortened = false;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const data = (node as Text).data;
+        if (!data) continue;
+        const piece = preserveWhitespace
+          ? data.replace(/\r\n?/g, '\n')
+          : data.replace(/\s+/g, ' ');
+        if (!piece) continue;
+        const remaining = available - raw.length;
+        if (remaining <= 0) {
+          shortened = true;
+          break;
+        }
+        if (piece.length > remaining) {
+          raw += piece.slice(0, remaining);
+          shortened = true;
+          break;
+        }
+        raw += piece;
+      }
+      const normalized = preserveWhitespace ? raw.trim() : raw.replace(/\s+/g, ' ').trim();
+      if (!normalized) return { truncated: shortened };
+      textChars += normalized.length;
+      if (shortened) truncated = true;
+      return { value: normalized, truncated: shortened };
+    }
+
+    function fixedElementText(element: Element, limit = 1_024): string | undefined {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let raw = '';
+      for (let node = walker.nextNode(); node && raw.length < limit; node = walker.nextNode()) {
+        const piece = (node as Text).data.replace(/\s+/g, ' ');
+        raw += piece.slice(0, limit - raw.length);
+      }
+      const normalized = raw.replace(/\s+/g, ' ').trim();
+      return normalized || undefined;
     }
 
     function elementSegment(element: Element): string {
       let index = 1;
-      let sibling = element.previousElementSibling;
-      while (sibling) {
+      for (let sibling = element.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
         if (sibling.tagName === element.tagName) index += 1;
-        sibling = sibling.previousElementSibling;
       }
       return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
     }
@@ -290,7 +330,7 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
     function domPath(element: Element): string {
       const parts: string[] = [];
       let current: Element | null = element;
-      while (current && current !== document.documentElement) {
+      while (current && current !== document.documentElement && parts.length < MAX_DEPTH * 2 + 2) {
         parts.push(elementSegment(current));
         const root = current.getRootNode();
         if (root instanceof ShadowRoot) {
@@ -303,12 +343,13 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
       return parts.reverse().join(' > ') || element.tagName.toLowerCase();
     }
 
-    function resolvedUrl(value: string | null): string | undefined {
-      if (!value) return undefined;
+    function resolvedUrl(value: string | null): { value?: string; truncated: boolean } {
+      const clipped = clipScalar(value, MAX_URL_CHARS);
+      if (!clipped.value) return clipped;
       try {
-        return new URL(value, document.baseURI).href;
+        return { value: new URL(clipped.value, document.baseURI).href, truncated: clipped.truncated };
       } catch {
-        return value;
+        return clipped;
       }
     }
 
@@ -317,36 +358,33 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
       if (direct) return direct;
       const labelledBy = element.getAttribute('aria-labelledby')?.trim();
       if (labelledBy) {
-        const label = labelledBy
-          .split(/\s+/)
-          .map((id) => document.getElementById(id)?.textContent ?? '')
-          .join(' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        if (label) return label;
+        let output = '';
+        for (const id of labelledBy.split(/\s+/).slice(0, 16)) {
+          const label = document.getElementById(id);
+          const text = label ? fixedElementText(label) : undefined;
+          if (!text) continue;
+          output += `${output ? ' ' : ''}${text}`;
+          if (output.length >= 1_024) return output.slice(0, 1_024);
+        }
+        if (output) return output;
       }
-      const title = element.getAttribute('title')?.trim();
-      return title || undefined;
+      return element.getAttribute('title')?.trim() || undefined;
     }
 
     function geometry(element: Element): { rect?: Rect; rendered: boolean; inViewport: boolean } {
       const style = getComputedStyle(element);
-      const clientRects = element.getClientRects();
+      const rects = element.getClientRects();
       const rendered = style.display !== 'none' &&
         style.visibility !== 'hidden' &&
         style.visibility !== 'collapse' &&
-        clientRects.length > 0;
-      if (!clientRects.length) return { rendered, inViewport: false };
+        rects.length > 0;
+      if (!rects.length) return { rendered, inViewport: false };
       const rect = element.getBoundingClientRect();
-      const resultRect = {
-        x: rect.x + scrollX,
-        y: rect.y + scrollY,
-        width: rect.width,
-        height: rect.height,
+      return {
+        rect: { x: rect.x + scrollX, y: rect.y + scrollY, width: rect.width, height: rect.height },
+        rendered,
+        inViewport: rendered && rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight,
       };
-      const inViewport = rendered &&
-        rect.right > 0 && rect.bottom > 0 && rect.left < innerWidth && rect.top < innerHeight;
-      return { rect: resultRect, rendered, inViewport };
     }
 
     function emit(
@@ -354,10 +392,11 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
       depth: number,
       kind: DocumentContentBlockKind,
       details: {
-        text?: string;
+        elementText?: boolean;
         preserveWhitespace?: boolean;
         level?: number;
         href?: string;
+        hrefTruncated?: boolean;
         alt?: string;
         role?: string;
         name?: string;
@@ -367,76 +406,64 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
         truncated = true;
         return;
       }
-      const text = details.text === undefined
-        ? { truncated: false }
-        : boundedText(details.text, details.preserveWhitespace);
-      const alt = details.alt === undefined ? { truncated: false } : boundedText(details.alt);
-      const name = details.name === undefined ? { truncated: false } : boundedText(details.name);
+      const text = details.elementText ? elementText(element, details.preserveWhitespace) : { truncated: false };
+      const href = details.href === undefined ? { truncated: false } : takeString(details.href, false, MAX_URL_CHARS);
+      const alt = details.alt === undefined ? { truncated: false } : takeString(details.alt);
+      const role = details.role === undefined ? { truncated: false } : takeString(details.role, false, MAX_ROLE_CHARS);
+      const name = details.name === undefined ? { truncated: false } : takeString(details.name);
       const box = geometry(element);
       blocks.push({
         path: domPath(element),
         kind,
         tagName: element.tagName.toLowerCase(),
         depth,
-        ...(text.text ? { text: text.text } : {}),
+        ...(text.value ? { text: text.value } : {}),
         ...(details.level !== undefined ? { level: details.level } : {}),
-        ...(details.href ? { href: details.href } : {}),
-        ...(alt.text ? { alt: alt.text } : {}),
-        ...(details.role ? { role: details.role } : {}),
-        ...(name.text ? { name: name.text } : {}),
+        ...(href.value ? { href: href.value } : {}),
+        ...(alt.value ? { alt: alt.value } : {}),
+        ...(role.value ? { role: role.value } : {}),
+        ...(name.value ? { name: name.value } : {}),
         ...(box.rect ? { rect: box.rect } : {}),
         rendered: box.rendered,
         inViewport: box.inViewport,
-        truncated: text.truncated || alt.truncated || name.truncated,
+        truncated: text.truncated || href.truncated || alt.truncated || role.truncated || name.truncated || details.hrefTruncated === true,
       });
     }
 
     function visit(element: Element, depth: number): void {
-      if (visited.has(element) || depth > MAX_DEPTH || blocks.length >= MAX_BLOCKS) {
-        if (depth > MAX_DEPTH || blocks.length >= MAX_BLOCKS) truncated = true;
+      if (visited.has(element)) return;
+      visitedElements += 1;
+      if (visitedElements > MAX_VISITED_ELEMENTS || depth > MAX_DEPTH || blocks.length >= MAX_BLOCKS) {
+        truncated = true;
         return;
       }
       visited.add(element);
-
       const tag = element.tagName.toLowerCase();
-      const text = element.textContent ?? '';
       const role = element.getAttribute('role')?.trim().toLowerCase() || undefined;
 
-      if (/^h[1-6]$/.test(tag)) {
-        emit(element, depth, 'heading', { text, level: Number(tag.slice(1)) });
-      } else if (tag === 'p') {
-        emit(element, depth, 'paragraph', { text });
-      } else if (tag === 'li') {
-        emit(element, depth, 'list-item', { text });
-      } else if (tag === 'dt') {
-        emit(element, depth, 'definition-term', { text });
-      } else if (tag === 'dd') {
-        emit(element, depth, 'definition-description', { text });
-      } else if (tag === 'caption') {
-        emit(element, depth, 'table-caption', { text });
-      } else if (tag === 'th' || tag === 'td') {
-        emit(element, depth, 'table-cell', { text, role });
-      } else if (tag === 'pre') {
-        emit(element, depth, 'code', { text, preserveWhitespace: true });
-      } else if (tag === 'code' && element.closest('pre') === null) {
-        emit(element, depth, 'code', { text, preserveWhitespace: true });
-      } else if (tag === 'blockquote' || tag === 'q') {
-        emit(element, depth, 'quote', { text });
-      } else if (tag === 'figcaption') {
-        emit(element, depth, 'figcaption', { text });
-      }
+      if (/^h[1-6]$/.test(tag)) emit(element, depth, 'heading', { elementText: true, level: Number(tag.slice(1)) });
+      else if (tag === 'p') emit(element, depth, 'paragraph', { elementText: true });
+      else if (tag === 'li') emit(element, depth, 'list-item', { elementText: true });
+      else if (tag === 'dt') emit(element, depth, 'definition-term', { elementText: true });
+      else if (tag === 'dd') emit(element, depth, 'definition-description', { elementText: true });
+      else if (tag === 'caption') emit(element, depth, 'table-caption', { elementText: true });
+      else if (tag === 'th' || tag === 'td') emit(element, depth, 'table-cell', { elementText: true, role });
+      else if (tag === 'pre') emit(element, depth, 'code', { elementText: true, preserveWhitespace: true });
+      else if (tag === 'code' && element.closest('pre') === null) emit(element, depth, 'code', { elementText: true, preserveWhitespace: true });
+      else if (tag === 'blockquote' || tag === 'q') emit(element, depth, 'quote', { elementText: true });
+      else if (tag === 'figcaption') emit(element, depth, 'figcaption', { elementText: true });
 
       if (tag === 'a') {
-        const anchor = element as HTMLAnchorElement;
+        const url = resolvedUrl(element.getAttribute('href'));
         emit(element, depth, 'link', {
-          text,
-          href: resolvedUrl(anchor.getAttribute('href')),
+          elementText: true,
+          href: url.value,
+          hrefTruncated: url.truncated,
           name: accessibleName(element),
         });
       } else if (tag === 'img') {
-        const image = element as HTMLImageElement;
         emit(element, depth, 'image', {
-          alt: image.getAttribute('alt') ?? undefined,
+          alt: element.getAttribute('alt') ?? undefined,
           name: accessibleName(element),
         });
       }
@@ -446,53 +473,57 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
         role === 'main' || role === 'article' || role === 'navigation' ||
         role === 'complementary' || role === 'banner' || role === 'contentinfo' ||
         role === 'search' || role === 'region';
-      if (landmark) {
-        emit(element, depth, 'landmark', {
-          role: role ?? tag,
-          name: accessibleName(element),
-        });
-      }
+      if (landmark) emit(element, depth, 'landmark', { role: role ?? tag, name: accessibleName(element) });
 
-      if (blocks.length >= MAX_BLOCKS || textChars >= MAX_TOTAL_TEXT_CHARS) {
+      if (blocks.length >= MAX_BLOCKS || textChars >= MAX_TOTAL_TEXT_CHARS || visitedElements >= MAX_VISITED_ELEMENTS) {
         truncated = true;
         return;
       }
 
       const shadow = (element as HTMLElement).shadowRoot;
       if (shadow) {
-        for (const child of Array.from(shadow.children)) {
+        for (let child = shadow.firstElementChild; child; child = child.nextElementSibling) {
           if (child.tagName.toLowerCase() === 'slot') {
-            const slot = child as HTMLSlotElement;
-            const assigned = slot.assignedElements({ flatten: true });
+            const assigned = (child as HTMLSlotElement).assignedElements({ flatten: true });
             if (assigned.length) {
-              for (const assignedElement of assigned) visit(assignedElement, depth + 1);
+              for (let index = 0; index < assigned.length && index < MAX_VISITED_ELEMENTS; index += 1) {
+                visit(assigned[index], depth + 1);
+                if (visitedElements >= MAX_VISITED_ELEMENTS) break;
+              }
               continue;
             }
           }
           visit(child, depth + 1);
+          if (visitedElements >= MAX_VISITED_ELEMENTS) break;
         }
         return;
       }
 
-      for (const child of Array.from(element.children)) visit(child, depth + 1);
+      for (let child = element.firstElementChild; child; child = child.nextElementSibling) {
+        visit(child, depth + 1);
+        if (visitedElements >= MAX_VISITED_ELEMENTS) break;
+      }
     }
 
     if (document.documentElement) visit(document.documentElement, 0);
 
-    const description = document.querySelector('meta[name="description" i]')
-      ?.getAttribute('content')?.trim() || undefined;
-    const canonicalUrl = resolvedUrl(
+    const title = clipScalar(document.title, MAX_METADATA_CHARS).value ?? '';
+    const language = clipScalar(document.documentElement?.lang, 128).value;
+    const description = clipScalar(
+      document.querySelector('meta[name="description" i]')?.getAttribute('content'),
+      MAX_METADATA_CHARS,
+    ).value;
+    const canonical = resolvedUrl(
       document.querySelector('link[rel~="canonical" i]')?.getAttribute('href') ?? null,
     );
-    const language = document.documentElement?.lang?.trim() || undefined;
 
     return {
-      title: document.title ?? '',
+      title,
       ...(language ? { language } : {}),
       ...(description ? { description } : {}),
-      ...(canonicalUrl ? { canonicalUrl } : {}),
+      ...(canonical.value ? { canonicalUrl: canonical.value } : {}),
       blocks,
-      truncated,
+      truncated: truncated || canonical.truncated,
     };
   });
 }
