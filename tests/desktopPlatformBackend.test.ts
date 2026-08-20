@@ -101,6 +101,40 @@ test('native acquisition receives caller bounds before enumeration/tree material
   assert.equal(bridge.lastAccessibilityLimits?.maxDepth,1);
 });
 
+test('platform system result rejects over-budget window array before element getters',async()=>{
+  const bridge = new ContractBridge();
+  let getterCalls = 0;
+  bridge.enumerateWindows = async ()=>{
+    const windows = new Array(2);
+    Object.defineProperty(windows,'0',{enumerable:true,get(){ getterCalls += 1; return bridge.windows[0]!; }});
+    Object.defineProperty(windows,'1',{enumerable:true,get(){ getterCalls += 1; return bridge.windows[0]!; }});
+    return {windows,truncated:true} as never;
+  };
+  const backend = new PlatformDesktopUiBackend(bridge);
+  await assert.rejects(()=>backend.observeSystem({maxItems:1,maxTextBytes:256,maxDepth:1}),/window acquisition budget/);
+  assert.equal(getterCalls,0);
+});
+
+test('platform system result rejects accessors without invoking them',async()=>{
+  const bridge = new ContractBridge();
+  let getterCalls = 0;
+  bridge.enumerateWindows = async ()=>{
+    const result:Record<string,unknown> = {truncated:false};
+    Object.defineProperty(result,'windows',{enumerable:true,get(){ getterCalls += 1; return bridge.windows; }});
+    return result as never;
+  };
+  const backend = new PlatformDesktopUiBackend(bridge);
+  await assert.rejects(()=>backend.observeSystem({maxItems:1,maxTextBytes:256,maxDepth:1}),/accessor field rejected/);
+  assert.equal(getterCalls,0);
+});
+
+test('platform system result enforces aggregate text acquisition budget',async()=>{
+  const bridge = new ContractBridge();
+  bridge.windows = [{nativeId:'window',instanceToken:'instance',title:'this-title-is-too-large-for-the-request',foreground:true,focused:true}];
+  const backend = new PlatformDesktopUiBackend(bridge);
+  await assert.rejects(()=>backend.observeSystem({maxItems:1,maxTextBytes:16,maxDepth:1}),/window text acquisition budget/);
+});
+
 test('platform backend rejects over-budget accessibility children before traversing them',async()=>{
   const bridge = new ContractBridge();
   let childGetterCalls = 0;
@@ -131,6 +165,20 @@ test('platform backend rejects accessibility accessors without invoking them',as
   assert.equal(getterCalls,0);
 });
 
+test('platform backend rejects accessibility top-level accessors without invocation',async()=>{
+  const bridge = new ContractBridge();
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  let getterCalls = 0;
+  bridge.accessibility = async ()=>{
+    const result:Record<string,unknown> = {status:'available',windowInstanceToken:'window-instance-a'};
+    Object.defineProperty(result,'root',{enumerable:true,get(){ getterCalls += 1; return {nativeId:'root',instanceToken:'root'}; }});
+    return result as never;
+  };
+  await assert.rejects(()=>backend.observeAccessibility(ref,{maxItems:2,maxTextBytes:256,maxDepth:2}),/accessor field rejected/);
+  assert.equal(getterCalls,0);
+});
+
 test('platform backend rejects cyclic accessibility material before leasing controls',async()=>{
   const bridge = new ContractBridge();
   bridge.accessibility = async (window)=>{
@@ -141,6 +189,40 @@ test('platform backend rejects cyclic accessibility material before leasing cont
   const backend = new PlatformDesktopUiBackend(bridge);
   const ref = await backendRef(backend);
   await assert.rejects(()=>backend.observeAccessibility(ref,{maxItems:3,maxTextBytes:256,maxDepth:3}),/cycle invalid/);
+});
+
+test('platform visual result rejects pixel overrun before artifact fields are touched',async()=>{
+  const bridge = new ContractBridge();
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  let artifactGetterCalls = 0;
+  const artifact:Record<string,unknown> = {byteLength:4};
+  Object.defineProperty(artifact,'token',{enumerable:true,get(){ artifactGetterCalls += 1; return 'capture'; }});
+  bridge.visual = async (window)=>({status:'available' as const,windowInstanceToken:window.instanceToken,width:100,height:100,artifact:artifact as never});
+  await assert.rejects(()=>backend.observeVisual(ref,{maxPixels:100,maxBytes:1_024}),/visual acquisition budget/);
+  assert.equal(artifactGetterCalls,0);
+});
+
+test('platform visual result rejects accessors without invoking them',async()=>{
+  const bridge = new ContractBridge();
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  let getterCalls = 0;
+  bridge.visual = async (window)=>{
+    const result:Record<string,unknown> = {status:'available',windowInstanceToken:window.instanceToken,height:10,artifact:{token:'capture',byteLength:4}};
+    Object.defineProperty(result,'width',{enumerable:true,get(){ getterCalls += 1; return 10; }});
+    return result as never;
+  };
+  await assert.rejects(()=>backend.observeVisual(ref,{maxPixels:100,maxBytes:1_024}),/accessor field rejected/);
+  assert.equal(getterCalls,0);
+});
+
+test('platform visual result enforces encoded byte acquisition budget',async()=>{
+  const bridge = new ContractBridge();
+  const backend = new PlatformDesktopUiBackend(bridge);
+  const ref = await backendRef(backend);
+  bridge.visual = async (window)=>({status:'available' as const,windowInstanceToken:window.instanceToken,width:2,height:2,artifact:{token:'capture',byteLength:2_048}});
+  await assert.rejects(()=>backend.observeVisual(ref,{maxPixels:100,maxBytes:1_024}),/visual acquisition budget/);
 });
 
 test('malformed native dispatch result maps conservatively to unknown',async()=>{
