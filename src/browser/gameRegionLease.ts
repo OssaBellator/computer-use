@@ -61,6 +61,15 @@ function sameOptionalRect(a: Rect | undefined, b: Rect | undefined): boolean {
   return (!a && !b) || (!!a && !!b && sameRect(a, b));
 }
 
+function regionChanged(
+  previous: GameRegionCandidate | undefined,
+  next: GameRegionCandidate | undefined,
+): boolean {
+  return previous?.backendNodeId !== next?.backendNodeId ||
+    !sameOptionalRect(previous?.rect, next?.rect) ||
+    !sameOptionalRect(previous?.clip, next?.clip);
+}
+
 function cloneRegion(region: GameRegionCandidate | undefined): GameRegionCandidate | undefined {
   if (!region) return undefined;
   return {
@@ -101,10 +110,7 @@ export class CdpGameRegionLease {
     const previous = this.region;
     const located = await this.locator.locate(options);
     const next = located.primary;
-    const geometryChanged =
-      previous?.backendNodeId !== next?.backendNodeId ||
-      !sameOptionalRect(previous?.rect, next?.rect) ||
-      !sameOptionalRect(previous?.clip, next?.clip);
+    const geometryChanged = regionChanged(previous, next);
 
     if (next && previous?.backendNodeId !== next.backendNodeId) this.generation += 1;
     if (next && this.generation === 0) this.generation = 1;
@@ -144,8 +150,7 @@ export class CdpGameRegionLease {
                 visibleFraction,
                 viewportCoverage: area(clip) / Math.max(1, area(viewportRect)),
               };
-              const geometryChanged =
-                !sameRect(previous.rect, next.rect) || !sameRect(previous.clip, next.clip);
+              const geometryChanged = regionChanged(previous, next);
               this.region = next;
               return {
                 status: 'refreshed',
@@ -163,11 +168,11 @@ export class CdpGameRegionLease {
 
     const located = await this.locator.locate(options);
     const next = located.primary;
+    const geometryChanged = regionChanged(previous, next);
     if (next && previous?.backendNodeId !== next.backendNodeId) this.generation += 1;
     if (next && this.generation === 0) this.generation = 1;
     this.region = next;
 
-    const geometryChanged = previous !== undefined || next !== undefined;
     return {
       status: next ? 'reacquired' : 'missing',
       generation: this.generation,
