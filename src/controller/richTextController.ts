@@ -108,6 +108,34 @@ function matchingFormatting(
     : undefined;
 }
 
+function isNativeInlineFormat(value: unknown): value is RichTextNativeInlineFormat {
+  return value === 'bold' || value === 'italic' || value === 'underline';
+}
+
+function resolvePrimaryModifier(value: unknown): 'Control' | 'Meta' {
+  if (value === undefined) return process.platform === 'darwin' ? 'Meta' : 'Control';
+  if (value !== 'Control' && value !== 'Meta') {
+    throw new Error('primaryModifier must be Control or Meta');
+  }
+  return value;
+}
+
+function sameFormattingSelection(
+  before: DocumentSelectionState,
+  after: DocumentSelectionState,
+): boolean {
+  if (before.collapsed !== after.collapsed) return false;
+  if (
+    !before.collapsed &&
+    !before.selectedTextTruncated &&
+    !after.selectedTextTruncated &&
+    (before.selectedText ?? '') !== (after.selectedText ?? '')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function resultWithoutDispatch(
   status: RichTextEditStatus,
   snapshot: DocumentSelectionSnapshot,
@@ -206,13 +234,12 @@ export class RichTextController {
   async selectAll(
     options: RichTextSelectAllOptions = {},
   ): Promise<RichTextEditResult> {
+    const primaryModifier = resolvePrimaryModifier(options.primaryModifier);
     const before = await this.observe(options.selection);
     const candidate = uniqueEditableSelection(before);
     if (candidate.status === 'none') return resultWithoutDispatch('no-editable-selection', before);
     if (candidate.status === 'ambiguous') return resultWithoutDispatch('selection-ambiguous', before);
 
-    const primaryModifier = options.primaryModifier ??
-      (process.platform === 'darwin' ? 'Meta' : 'Control');
     await this.input.pressKey(`${primaryModifier}+a`);
     const after = await this.observe(options.selection);
     const current = matchingAfter(candidate.selection, after);
@@ -251,6 +278,14 @@ export class RichTextController {
     enabled: boolean,
     options: RichTextFormatOptions = {},
   ): Promise<RichTextFormatResult> {
+    if (!isNativeInlineFormat(format)) {
+      throw new Error('format must be bold, italic, or underline');
+    }
+    if (typeof enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean');
+    }
+    const primaryModifier = resolvePrimaryModifier(options.primaryModifier);
+
     const selectionBefore = await this.observe(options.selection);
     const candidate = uniqueEditableSelection(selectionBefore);
     if (selectionBefore.frameErrors.length > 0) {
@@ -263,6 +298,9 @@ export class RichTextController {
       return formatResult('selection-ambiguous', format, enabled);
     }
     if (candidate.selection.kind !== 'dom') {
+      return formatResult('unsupported-editor', format, enabled);
+    }
+    if (candidate.selection.editingHost?.contentEditable?.trim().toLowerCase() === 'plaintext-only') {
       return formatResult('unsupported-editor', format, enabled);
     }
     if (candidate.selection.rangeCount !== 1) {
@@ -292,8 +330,6 @@ export class RichTextController {
       return formatResult('unchanged', format, enabled, before, before);
     }
 
-    const primaryModifier = options.primaryModifier ??
-      (process.platform === 'darwin' ? 'Meta' : 'Control');
     const key = format === 'bold' ? 'b' : format === 'italic' ? 'i' : 'u';
     await this.input.pressKey(`${primaryModifier}+${key}`);
 
@@ -303,7 +339,12 @@ export class RichTextController {
       return formatResult('unverified', format, enabled, before, after);
     }
     const afterSelection = matchingAfter(candidate.selection, selectionAfter);
-    if (!afterSelection || afterSelection.kind !== 'dom' || afterSelection.rangeCount !== 1) {
+    if (
+      !afterSelection ||
+      afterSelection.kind !== 'dom' ||
+      afterSelection.rangeCount !== 1 ||
+      !sameFormattingSelection(candidate.selection, afterSelection)
+    ) {
       const after = await this.formatting.snapshot(options.formatting);
       return formatResult('unverified', format, enabled, before, after);
     }

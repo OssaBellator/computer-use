@@ -201,14 +201,15 @@ async function extractSelectionFrame(
     }
 
     function nearestEditingHost(node: Node | null): Element | undefined {
+      if (document.designMode?.toLowerCase() === 'on') return document.body ?? undefined;
       let element = node instanceof Element ? node : node?.parentElement ?? undefined;
-      let host: Element | undefined;
-      while (element) {
-        if ((element as HTMLElement).isContentEditable) host = element;
-        else if (host) break;
-        element = composedParent(element) ?? undefined;
+      if (!element || !(element as HTMLElement).isContentEditable) return undefined;
+      let host = element;
+      for (let depth = 0; depth < 260; depth += 1) {
+        const parent = composedParent(host);
+        if (!parent || !(parent as HTMLElement).isContentEditable) break;
+        host = parent;
       }
-      if (!host && document.designMode?.toLowerCase() === 'on') host = document.body ?? undefined;
       return host;
     }
 

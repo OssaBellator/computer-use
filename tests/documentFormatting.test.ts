@@ -14,6 +14,7 @@ function raw(overrides: Record<string, unknown> = {}) {
     collapsed: false,
     editingHost: { path: 'body:nth-of-type(1) > div:nth-of-type(1)', tagName: 'div', contentEditable: 'true' },
     summary: { bold: 'mixed', italic: 'off', underline: 'off', strike: 'off', code: 'off', link: 'mixed' },
+    linkTarget: { state: 'mixed' as const },
     runs: [
       { bold: true, italic: false, underline: false, strike: false, code: false, link: { url: 'https://x/éé', urlTruncated: false }, block, textNodes: 1 },
       { bold: false, italic: false, underline: false, strike: false, code: false, block: { kind: 'heading', headingLevel: 2 }, textNodes: 1 },
@@ -42,6 +43,18 @@ test('formatting snapshot preserves explicit mixed state while bounding runs, bl
   assert.equal(snapshot.truncated, true);
 });
 
+test('uniform link-target summaries keep URL identity while applying the URL byte budget', async () => {
+  const snapshot = await snapshotDocumentFormatting(page([raw({
+    linkTarget: { state: 'uniform', link: { url: 'https://x/éé', urlTruncated: false } },
+  })]), { maxLinkUrlBytes: 12 });
+  const target = snapshot.states[0].linkTarget;
+  assert.equal(target.state, 'uniform');
+  assert.equal(target.link?.url, 'https://x/é');
+  assert.equal(target.link?.urlTruncated, true);
+  assert.ok(Buffer.byteLength(target.link?.url ?? '', 'utf8') <= 12);
+  assert.equal(snapshot.truncated, true);
+});
+
 test('formatting observation is frame-scoped and records fail-closed frame errors', async () => {
   const snapshot = await snapshotDocumentFormatting(page([raw(), { error: 'selection-crosses-editing-hosts' }]));
   assert.equal(snapshot.states[0].frameId, 'main');
@@ -59,8 +72,10 @@ test('incomplete uniform observation is explicitly unknown while certain mixed s
     summary: {
       bold: 'unknown', italic: 'unknown', underline: 'unknown', strike: 'unknown', code: 'unknown', link: 'mixed',
     },
+    linkTarget: { state: 'mixed' },
   })]));
   assert.equal(snapshot.states[0].complete, false);
   assert.equal(snapshot.states[0].summary.bold, 'unknown');
   assert.equal(snapshot.states[0].summary.link, 'mixed');
+  assert.equal(snapshot.states[0].linkTarget.state, 'mixed');
 });
