@@ -1,0 +1,273 @@
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import type { ComputerTaskProgram } from './computerTask.js';
+import {
+  computerTaskProgramHash,
+  decodeComputerTaskCheckpoint,
+  encodeComputerTaskCheckpoint,
+  validateComputerTaskCheckpoint,
+  type ComputerTaskCheckpoint,
+} from './computerTaskCheckpoint.js';
+
+export const COMPUTER_TASK_PERSISTED_CHECKPOINT_FORMAT = 'browser-automation/computer-task-persisted-checkpoint' as const;
+export const COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION = 1 as const;
+export const COMPUTER_TASK_PERSISTED_CHECKPOINT_MAX_BYTES = 96 * 1024;
+
+interface PersistedCheckpointUnsignedEnvelope {
+  format: typeof COMPUTER_TASK_PERSISTED_CHECKPOINT_FORMAT;
+  version: typeof COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION;
+  generation: number;
+  binding: { programId: string; programHash: string; executionId: string };
+  checkpoint: string;
+}
+
+interface PersistedCheckpointEnvelope extends PersistedCheckpointUnsignedEnvelope {
+  authentication: { algorithm: 'hmac-sha256'; tag: string };
+}
+
+interface PersistedCheckpointAnchorUnsignedEnvelope {
+  format: 'browser-automation/computer-task-checkpoint-anchor';
+  version: 1;
+  generation: number;
+  envelopeDigest: string;
+  binding: { programId: string; programHash: string; executionId: string };
+}
+
+interface PersistedCheckpointAnchorEnvelope extends PersistedCheckpointAnchorUnsignedEnvelope {
+  authentication: { algorithm: 'hmac-sha256'; tag: string };
+}
+
+export interface ComputerTaskCheckpointPersistenceBinding {
+  program: ComputerTaskProgram;
+  executionId: string;
+}
+
+/** Storage-neutral durable checkpoint contract. Implementations must preserve atomic replacement semantics. */
+export interface ComputerTaskCheckpointPersistence {
+  load(binding: ComputerTaskCheckpointPersistenceBinding): Promise<ComputerTaskCheckpoint | undefined>;
+  save(checkpoint: ComputerTaskCheckpoint, binding: ComputerTaskCheckpointPersistenceBinding): Promise<void>;
+}
+
+export interface LocalFileComputerTaskCheckpointPersistenceOptions {
+  filePath: string;
+  authenticationKey: string | Uint8Array;
+  maxBytes?: number;
+}
+
+const SHA256 = /^[0-9a-f]{64}$/;
+const EXECUTION_ID = /^[0-9a-f]{32,64}$/;
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('persisted computer task checkpoint contains a non-finite number');
+    return JSON.stringify(Object.is(value, -0) ? 0 : value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value !== 'object') throw new Error('persisted computer task checkpoint contains a non-JSON value');
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().filter((key) => object[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(',')}}`;
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function hmac(key: Uint8Array, value: string): string {
+  return createHmac('sha256', key).update(value, 'utf8').digest('hex');
+}
+
+function authenticated<T extends object>(key: Uint8Array, unsigned: T): T & { authentication: { algorithm: 'hmac-sha256'; tag: string } } {
+  return {
+    ...unsigned,
+    authentication: { algorithm: 'hmac-sha256', tag: hmac(key, canonicalJson(unsigned)) },
+  };
+}
+
+function verifyAuthentication(key: Uint8Array, value: unknown, kind: string): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`invalid ${kind} envelope`);
+  const envelope = value as Record<string, unknown>;
+  const authentication = envelope.authentication as { algorithm?: unknown; tag?: unknown } | undefined;
+  if (authentication?.algorithm !== 'hmac-sha256' || typeof authentication.tag !== 'string' || !SHA256.test(authentication.tag)) {
+    throw new Error(`invalid ${kind} authentication`);
+  }
+  const { authentication: _authentication, ...unsigned } = envelope;
+  const expected = Buffer.from(hmac(key, canonicalJson(unsigned)), 'hex');
+  const actual = Buffer.from(authentication.tag, 'hex');
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) throw new Error(`${kind} authentication mismatch`);
+}
+
+function bindingIdentity(binding: ComputerTaskCheckpointPersistenceBinding): PersistedCheckpointUnsignedEnvelope['binding'] {
+  if (!EXECUTION_ID.test(binding.executionId)) throw new Error('computer task execution id is invalid');
+  return {
+    programId: binding.program.id,
+    programHash: computerTaskProgramHash(binding.program),
+    executionId: binding.executionId,
+  };
+}
+
+function sameBinding(
+  actual: PersistedCheckpointUnsignedEnvelope['binding'],
+  expected: PersistedCheckpointUnsignedEnvelope['binding'],
+): boolean {
+  return actual.programId === expected.programId && actual.programHash === expected.programHash && actual.executionId === expected.executionId;
+}
+
+async function readBounded(path: string, maxBytes: number): Promise<string | undefined> {
+  try {
+    const bytes = await readFile(path);
+    if (bytes.byteLength > maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
+    return bytes.toString('utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+async function fsyncDirectory(path: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(path, 'r');
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EISDIR' && code !== 'EPERM') throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+/** Same-directory temp + fsync + rename gives deterministic atomic replacement for local test storage. */
+async function atomicReplace(path: string, contents: string): Promise<void> {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true });
+  const tempPath = `${path}.tmp`;
+  await rm(tempPath, { force: true });
+  const handle = await open(tempPath, 'wx', 0o600);
+  try {
+    await handle.writeFile(contents, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(tempPath, path);
+  await fsyncDirectory(directory);
+}
+
+export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskCheckpointPersistence {
+  readonly filePath: string;
+  readonly tempPath: string;
+  readonly anchorPath: string;
+  private readonly key: Uint8Array;
+  private readonly maxBytes: number;
+
+  constructor(options: LocalFileComputerTaskCheckpointPersistenceOptions) {
+    if (!options.filePath) throw new Error('checkpoint file path is required');
+    const key = typeof options.authenticationKey === 'string'
+      ? Buffer.from(options.authenticationKey, 'utf8')
+      : Buffer.from(options.authenticationKey);
+    if (key.byteLength < 32) throw new Error('checkpoint authentication key must contain at least 32 bytes');
+    this.filePath = options.filePath;
+    this.tempPath = `${options.filePath}.tmp`;
+    this.anchorPath = `${options.filePath}.anchor`;
+    this.key = key;
+    this.maxBytes = options.maxBytes ?? COMPUTER_TASK_PERSISTED_CHECKPOINT_MAX_BYTES;
+    if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes < 1024 || this.maxBytes > 1024 * 1024) {
+      throw new Error('invalid persisted checkpoint size limit');
+    }
+  }
+
+  private parseCheckpoint(encoded: string, expectedBinding: PersistedCheckpointUnsignedEnvelope['binding']): PersistedCheckpointEnvelope {
+    let value: unknown;
+    try { value = JSON.parse(encoded); } catch { throw new Error('invalid persisted computer task checkpoint JSON'); }
+    verifyAuthentication(this.key, value, 'persisted computer task checkpoint');
+    const envelope = value as PersistedCheckpointEnvelope;
+    if (
+      envelope.format !== COMPUTER_TASK_PERSISTED_CHECKPOINT_FORMAT ||
+      envelope.version !== COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION ||
+      !Number.isSafeInteger(envelope.generation) || envelope.generation < 1 ||
+      !envelope.binding || !sameBinding(envelope.binding, expectedBinding) ||
+      typeof envelope.checkpoint !== 'string'
+    ) {
+      throw new Error('invalid persisted computer task checkpoint envelope or binding');
+    }
+    return envelope;
+  }
+
+  private parseAnchor(encoded: string, expectedBinding: PersistedCheckpointUnsignedEnvelope['binding']): PersistedCheckpointAnchorEnvelope {
+    let value: unknown;
+    try { value = JSON.parse(encoded); } catch { throw new Error('invalid persisted computer task checkpoint anchor JSON'); }
+    verifyAuthentication(this.key, value, 'persisted computer task checkpoint anchor');
+    const anchor = value as PersistedCheckpointAnchorEnvelope;
+    if (
+      anchor.format !== 'browser-automation/computer-task-checkpoint-anchor' || anchor.version !== 1 ||
+      !Number.isSafeInteger(anchor.generation) || anchor.generation < 1 || !SHA256.test(anchor.envelopeDigest) ||
+      !anchor.binding || !sameBinding(anchor.binding, expectedBinding)
+    ) {
+      throw new Error('invalid persisted computer task checkpoint anchor or binding');
+    }
+    return anchor;
+  }
+
+  private async writeAnchor(generation: number, envelopeDigest: string, binding: PersistedCheckpointUnsignedEnvelope['binding']): Promise<void> {
+    const unsigned: PersistedCheckpointAnchorUnsignedEnvelope = {
+      format: 'browser-automation/computer-task-checkpoint-anchor', version: 1, generation, envelopeDigest, binding,
+    };
+    const encoded = canonicalJson(authenticated(this.key, unsigned));
+    if (Buffer.byteLength(encoded, 'utf8') > this.maxBytes) throw new Error('persisted computer task checkpoint anchor exceeds size limit');
+    await atomicReplace(this.anchorPath, encoded);
+  }
+
+  async load(binding: ComputerTaskCheckpointPersistenceBinding): Promise<ComputerTaskCheckpoint | undefined> {
+    const expectedBinding = bindingIdentity(binding);
+    const encoded = await readBounded(this.filePath, this.maxBytes);
+    if (encoded === undefined) return undefined;
+    const envelope = this.parseCheckpoint(encoded, expectedBinding);
+    const envelopeDigest = sha256(encoded);
+    const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
+    if (anchorEncoded !== undefined) {
+      const anchor = this.parseAnchor(anchorEncoded, expectedBinding);
+      if (anchor.generation > envelope.generation) throw new Error('persisted computer task checkpoint rollback detected');
+      if (anchor.generation === envelope.generation && anchor.envelopeDigest !== envelopeDigest) {
+        throw new Error('persisted computer task checkpoint stale replacement detected');
+      }
+      if (anchor.generation < envelope.generation) {
+        await this.writeAnchor(envelope.generation, envelopeDigest, expectedBinding);
+      }
+    } else {
+      await this.writeAnchor(envelope.generation, envelopeDigest, expectedBinding);
+    }
+    const checkpoint = decodeComputerTaskCheckpoint(envelope.checkpoint);
+    validateComputerTaskCheckpoint(checkpoint, { program: binding.program, executionId: binding.executionId, requireRuntimeProvenance: true });
+    return checkpoint;
+  }
+
+  async save(checkpoint: ComputerTaskCheckpoint, binding: ComputerTaskCheckpointPersistenceBinding): Promise<void> {
+    const expectedBinding = bindingIdentity(binding);
+    validateComputerTaskCheckpoint(checkpoint, { program: binding.program, executionId: binding.executionId, requireRuntimeProvenance: true });
+    const existing = await readBounded(this.filePath, this.maxBytes);
+    const existingEnvelope = existing === undefined ? undefined : this.parseCheckpoint(existing, expectedBinding);
+    const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
+    const anchor = anchorEncoded === undefined ? undefined : this.parseAnchor(anchorEncoded, expectedBinding);
+    if (existingEnvelope && anchor && anchor.generation > existingEnvelope.generation) {
+      throw new Error('persisted computer task checkpoint rollback detected');
+    }
+    if (existingEnvelope && anchor && anchor.generation === existingEnvelope.generation && anchor.envelopeDigest !== sha256(existing!)) {
+      throw new Error('persisted computer task checkpoint stale replacement detected');
+    }
+    const generation = Math.max(existingEnvelope?.generation ?? 0, anchor?.generation ?? 0) + 1;
+    const unsigned: PersistedCheckpointUnsignedEnvelope = {
+      format: COMPUTER_TASK_PERSISTED_CHECKPOINT_FORMAT,
+      version: COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION,
+      generation,
+      binding: expectedBinding,
+      checkpoint: encodeComputerTaskCheckpoint(checkpoint),
+    };
+    const encoded = canonicalJson(authenticated(this.key, unsigned));
+    if (Buffer.byteLength(encoded, 'utf8') > this.maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
+    await atomicReplace(this.filePath, encoded);
+    await this.writeAnchor(generation, sha256(encoded), expectedBinding);
+  }
+}
