@@ -105,16 +105,16 @@ function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> 
   return Object.freeze({adapterId:record.adapterId,actionId:record.actionId,capability:record.capability,effect:record.effect,idempotency:record.idempotency,...(target?{target}:{}),...(payload?{payload}:{})}) as unknown as Readonly<ComputerActionRequest>;
 }
 function snapshotEndpoint(value: unknown): Readonly<RemoteEndpointIdentity> | undefined {
-  const record = plainRecord(value);
-  if (!record || !exactOwnKeys(record, ['endpointId','protocol','host','port'], ['endpointId','protocol','host','port'])) return undefined;
-  const endpointId = ownData(record,'endpointId'), protocol = ownData(record,'protocol'), host = ownData(record,'host'), port = ownData(record,'port');
+  const record = snapshotWhitelistedRecord(value, ['endpointId','protocol','host','port'], ['endpointId','protocol','host','port']);
+  if (!record) return undefined;
+  const endpointId = record.endpointId, protocol = record.protocol, host = record.host, port = record.port;
   if (typeof endpointId !== 'string' || typeof protocol !== 'string' || typeof host !== 'string' || typeof port !== 'number' || !bounded(endpointId) || !REMOTE_PROTOCOL_KINDS.includes(protocol as RemoteProtocolKind) || !bounded(host,MAX_HOST_BYTES) || !Number.isSafeInteger(port) || port < 1 || port > 65535) return undefined;
   return Object.freeze({ endpointId, protocol: protocol as RemoteProtocolKind, host, port });
 }
 function snapshotSecretHandle(value: unknown): Readonly<RemoteSecretHandle> | undefined {
-  const record = plainRecord(value);
-  if (!record || !exactOwnKeys(record, ['kind','handleId'], ['kind','handleId'])) return undefined;
-  const kind = ownData(record,'kind'), handleId = ownData(record,'handleId');
+  const record = snapshotWhitelistedRecord(value, ['kind','handleId'], ['kind','handleId']);
+  if (!record) return undefined;
+  const kind = record.kind, handleId = record.handleId;
   if (kind !== 'secret-handle' || typeof handleId !== 'string' || !bounded(handleId)) return undefined;
   return Object.freeze({ kind, handleId });
 }
@@ -126,16 +126,23 @@ function snapshotAuthority(value: unknown): Readonly<RemoteSessionAuthority> | u
   return Object.freeze({ endpointId, remoteHostId, sessionId, generation });
 }
 function snapshotConnectionCapabilities(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > MAX_CAPABILITIES) return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value), allowed = new Set(['length', ...Array.from({length:value.length}, (_,i)=>String(i))]);
-  for (const [key, descriptor] of Object.entries(descriptors)) if (!allowed.has(key) || !('value' in descriptor)) return undefined;
-  const out:string[]=[];
-  for(let i=0;i<value.length;i++){const descriptor=Object.getOwnPropertyDescriptor(value,String(i));if(!descriptor||!('value' in descriptor)||typeof descriptor.value!=='string')return undefined;out.push(descriptor.value);}
+  if (!Array.isArray(value)) return undefined;
+  let proto: object | null, lengthDescriptor: PropertyDescriptor | undefined;
+  try { proto = Object.getPrototypeOf(value); lengthDescriptor = Object.getOwnPropertyDescriptor(value,'length'); } catch { return undefined; }
+  if (proto !== Array.prototype || !lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_CAPABILITIES) return undefined;
+  const length = lengthDescriptor.value as number, out:string[]=[];
+  for(let i=0;i<length;i++){
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(value,String(i)); } catch { return undefined; }
+    if(!descriptor||!('value' in descriptor)||typeof descriptor.value!=='string')return undefined;
+    out.push(descriptor.value);
+  }
   return Object.freeze(out);
 }
 function snapshotConnectionCandidate(value: unknown): Readonly<RemoteSessionConnection> | undefined {
-  const record=plainRecord(value);if(!record||!exactOwnKeys(record,['sessionId','remoteHostId','capabilities'],['sessionId','remoteHostId','capabilities']))return undefined;
-  const sessionId=ownData(record,'sessionId'),remoteHostId=ownData(record,'remoteHostId'),capabilities=snapshotConnectionCapabilities(ownData(record,'capabilities'));
+  const record=snapshotWhitelistedRecord(value,['sessionId','remoteHostId','capabilities'],['sessionId','remoteHostId','capabilities']);
+  if(!record)return undefined;
+  const sessionId=record.sessionId,remoteHostId=record.remoteHostId,capabilities=snapshotConnectionCapabilities(record.capabilities);
   if(typeof sessionId!=='string'||typeof remoteHostId!=='string'||!capabilities)return undefined;
   return Object.freeze({sessionId,remoteHostId,capabilities});
 }
