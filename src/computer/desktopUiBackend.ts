@@ -43,6 +43,12 @@ export interface DesktopAccessibilityObservation {
 
 export type DesktopVisualStatus = 'available' | 'unavailable' | 'unsupported';
 
+/** Adapter-owned hard bounds that a backend must honor before capture materialization. */
+export interface DesktopVisualAcquisitionLimits {
+  maxPixels: number;
+  maxBytes: number;
+}
+
 /**
  * Bounded reference to a backend-owned visual capture. Raw pixel/image payloads
  * do not cross the neutral computer-use contract in phase 1.
@@ -113,7 +119,8 @@ export interface NativeDesktopUiBackend {
    */
   observeSystem(limits: Required<ComputerObservationLimits>): Promise<DesktopSystemObservation>;
   observeAccessibility(window: DesktopNativeWindowRef, limits: Required<ComputerObservationLimits>): Promise<DesktopAccessibilityObservation>;
-  observeVisual(window: DesktopNativeWindowRef): Promise<DesktopVisualObservation>;
+  /** Backends must honor these frozen limits before allocating/capturing pixels or encoded bytes. */
+  observeVisual(window: DesktopNativeWindowRef, limits: DesktopVisualAcquisitionLimits): Promise<DesktopVisualObservation>;
   focus(target: DesktopFocusTarget, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
   keyboard(window: DesktopNativeWindowRef, input: DesktopKeyboardInput, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
   pointerAbsolute(window: DesktopNativeWindowRef, input: DesktopAbsolutePointerInput, effect: ComputerEffectClass): Promise<DesktopBackendActionResult>;
