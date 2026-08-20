@@ -415,6 +415,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   }
 
   mayAutoRetry(request: ComputerActionRequest, result: ComputerActionResult): boolean {
+    if (!request.capability.endsWith('.observe') && (request.effect === 'observe-only' || request.idempotency === 'read-only')) return false;
     return computerActionMayAutoRetry(request, result);
   }
 }
