@@ -36,6 +36,9 @@ const MAX_TYPE_DELAY_BUDGET_MS = 30_000;
 const MAX_SCROLL_DELTA = 100_000;
 const MAX_EVIDENCE = 12;
 const MAX_EVIDENCE_BYTES = 63;
+const MAX_RUNTIME_NO_PROGRESS = 16;
+const MAX_RUNTIME_POLL_COUNT = 32;
+const MAX_RUNTIME_POLL_INTERVAL_MS = 5_000;
 
 type BrowserRuntimePolicy = Omit<TaskRuntimeOptions, 'maxSteps' | 'maxVisitsPerStep' | 'commitmentDetection' | 'commitmentVerification'>;
 const RUNTIME_POLICY_KEYS = [
@@ -172,13 +175,21 @@ function validateRuntimePolicyValue(key: keyof BrowserRuntimePolicy, value: unkn
       if (typeof value !== 'boolean') throw new TypeError('browser runtime options.requireUnambiguousTargets must be a boolean');
       return;
     case 'maxConsecutiveNoProgress':
+      if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > MAX_RUNTIME_NO_PROGRESS) {
+        throw new TypeError(`browser runtime options.${key} must be an integer between 1 and ${MAX_RUNTIME_NO_PROGRESS}`);
+      }
+      return;
     case 'commitmentVerificationMaxPolls':
     case 'waitMaxPolls':
-      if (!Number.isSafeInteger(value) || (value as number) < 1) throw new TypeError(`browser runtime options.${key} must be a positive safe integer`);
+      if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > MAX_RUNTIME_POLL_COUNT) {
+        throw new TypeError(`browser runtime options.${key} must be an integer between 1 and ${MAX_RUNTIME_POLL_COUNT}`);
+      }
       return;
     case 'commitmentVerificationPollIntervalMs':
     case 'waitPollIntervalMs':
-      if (!Number.isSafeInteger(value) || (value as number) < 0) throw new TypeError(`browser runtime options.${key} must be a non-negative safe integer`);
+      if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_RUNTIME_POLL_INTERVAL_MS) {
+        throw new TypeError(`browser runtime options.${key} must be an integer between 0 and ${MAX_RUNTIME_POLL_INTERVAL_MS}`);
+      }
       return;
     case 'approve':
     case 'onCommitmentVerification':
