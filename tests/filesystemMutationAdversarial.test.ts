@@ -280,24 +280,27 @@ test('hardlinked overwrite targets are rejected before approval or dispatch', as
   }
 });
 
-test('a stale prepared create plan cannot be reused after the raced destination is removed', async () => {
+test('a proven pre-dispatch rejection may retry the same immutable plan after state is restored', async () => {
   const f = await fixture();
   try {
     const prepared = await f.adapter.prepareMutation({ operation: 'create-file', path: 'new.txt', content: 'intended' });
     await writeFile(join(f.root, 'new.txt'), 'racer');
 
     const rejected = await f.adapter.act(action(prepared, 'stale-create-first-attempt'));
+    assert.equal(rejected.status, 'rejected');
     assert.equal(rejected.dispatch, 'not-dispatched');
+    assert.equal(await readFile(join(f.root, 'new.txt'), 'utf8'), 'racer');
+
     await unlink(join(f.root, 'new.txt'));
-
-    const retried = await f.adapter.act(action(prepared, 'stale-create-second-attempt'));
-    assert.equal(retried.dispatch, 'not-dispatched');
-    assert.equal(retried.status, 'rejected');
-
-    const fresh = await f.adapter.prepareMutation({ operation: 'create-file', path: 'new.txt', content: 'intended' });
-    const completed = await f.adapter.act(action(fresh, 'fresh-create-after-race'));
-    assert.equal(completed.verification, 'verified');
+    const retried = await f.adapter.act(action(prepared, 'stale-create-restored-retry'));
+    assert.equal(retried.status, 'completed');
+    assert.equal(retried.dispatch, 'dispatched-once');
+    assert.equal(retried.verification, 'verified');
     assert.equal(await readFile(join(f.root, 'new.txt'), 'utf8'), 'intended');
+
+    const afterSuccess = await f.adapter.act(action(prepared, 'stale-create-after-success'));
+    assert.equal(afterSuccess.dispatch, 'not-dispatched');
+    assert.deepEqual(afterSuccess.evidence, ['filesystem-plan-consumed']);
   } finally {
     await f.cleanup();
   }
