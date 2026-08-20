@@ -345,7 +345,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   }
   private async runCommitmentAwareAction(request: ComputerActionRequest, payload: BrowserActivatePayload | BrowserPressKeyPayload, node?: InteractionNode): Promise<ComputerActionResult> {
     const runtime = new TaskRuntime(this.runtime);
-    const risk = request.effect === 'observe-only' || request.effect === 'local-reversible' ? 'interaction' : 'external-side-effect';
+    const risk = request.effect === 'local-reversible' ? 'interaction' : 'external-side-effect';
     const action = request.capability === 'browser.activate'
       ? { id: 'act' as const, kind: 'activate' as const, target: { backendNodeId: node!.backendNodeId, frameId: node!.frameId }, method: (payload as BrowserActivatePayload).method, key: (payload as BrowserActivatePayload).key, risk, next: 'done' as const }
       : { id: 'act' as const, kind: 'press-key' as const, key: (payload as BrowserPressKeyPayload).key, risk, next: 'done' as const };
@@ -362,6 +362,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     if (request.capability.endsWith('.observe')) return request.effect === 'observe-only' && request.idempotency === 'read-only'
       ? { status: 'completed', dispatch: 'not-dispatched', verification: 'verified', evidence: ['browser.verified-noop'] }
       : failedPreDispatch('browser.effect.invalid');
+    if (request.effect === 'observe-only' || request.idempotency === 'read-only') return failedPreDispatch('browser.effect.invalid');
 
     if (request.capability === 'browser.activate') {
       const payload = validateActivatePayload(request.payload);
@@ -372,6 +373,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
       try { return await this.runCommitmentAwareAction(request, payload, resolved.node); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
     if (request.capability === 'browser.press-key') {
+      if (request.target) return failedPreDispatch('browser.target.unexpected');
       const payload = validatePressKeyPayload(request.payload);
       if (!payload) return failedPreDispatch('browser.payload.invalid');
       try { return await this.runCommitmentAwareAction(request, payload); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
@@ -398,6 +400,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
         return result.status === 'verified' ? { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['browser.native-input'] } : { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: boundedEvidence([`browser.action.${result.status}`]) };
       }
       if (request.capability === 'browser.scroll-viewport') {
+        if (request.target) return failedPreDispatch('browser.target.unexpected');
         const payload = validateScrollPayload(request.payload);
         if (!payload) return failedPreDispatch('browser.payload.invalid');
         invoked = true;
