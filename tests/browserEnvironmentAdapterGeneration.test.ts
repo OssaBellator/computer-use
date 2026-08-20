@@ -40,6 +40,9 @@ class GenerationRuntime implements BrowserComputerRuntime {
   timeOrigin = 1;
   frameTokens: Record<string, string> = { main: '1' };
   refreshMutation: (() => void) | undefined;
+  frameTokenReads = 0;
+  frameTokenMutationRead: number | undefined;
+  frameTokenMutation: (() => void) | undefined;
   activateCalls = 0;
   hoverCalls = 0;
   typeCalls = 0;
@@ -66,6 +69,12 @@ class GenerationRuntime implements BrowserComputerRuntime {
     };
   }
   async frameDocumentTokens(): Promise<Readonly<Record<string, string>>> {
+    this.frameTokenReads += 1;
+    if (this.frameTokenReads === this.frameTokenMutationRead) {
+      const mutate = this.frameTokenMutation;
+      this.frameTokenMutation = undefined;
+      mutate?.();
+    }
     return { ...this.frameTokens };
   }
   async refresh(): Promise<InteractionNode[]> {
@@ -159,6 +168,24 @@ test('action does not dispatch when refresh returns same backend id from a repla
   assert.equal(result.status, 'rejected');
   assert.equal(result.dispatch, 'not-dispatched');
   assert.equal(runtime.hoverCalls, 0);
+});
+
+test('activation remains definitely not-dispatched when child-frame identity changes at the TaskRuntime dispatch boundary', async () => {
+  const runtime = new GenerationRuntime();
+  runtime.nodes = [node('frame-1')];
+  runtime.frameTokens = { main: '1', 'frame-1': 'child-a' };
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime, { runtimeOptions: { maxRisk: 'interaction' } });
+  const target = await observedTarget(adapter);
+
+  runtime.frameTokenReads = 0;
+  runtime.frameTokenMutationRead = 3;
+  runtime.frameTokenMutation = () => { runtime.frameTokens['frame-1'] = 'child-b'; };
+
+  const result = await adapter.act(action(adapter, 'browser.activate', target, { method: 'pointer' }));
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.equal(result.verification, 'not-applicable');
+  assert.equal(runtime.activateCalls, 0);
 });
 
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
