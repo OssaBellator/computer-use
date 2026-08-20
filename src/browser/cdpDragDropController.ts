@@ -146,19 +146,29 @@ export class CdpDragDropController {
     let listener: ((params: RawDragInterceptedEvent) => void) | undefined;
     let pointerDown = false;
     let intercepted = false;
+    let activeDragData: RawDragData | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let resolveDrag: ((value: RawDragData | undefined) => void) | undefined;
     const dragData = new Promise<RawDragData | undefined>((resolve) => {
-      resolveDrag = resolve;
       listener = (params) => {
         if (intercepted) return;
         intercepted = true;
+        activeDragData = params?.data;
         if (timer) clearTimeout(timer);
-        resolve(params?.data);
+        resolve(activeDragData);
       };
       this.session.on('Input.dragIntercepted', listener);
       timer = setTimeout(() => resolve(undefined), interceptTimeoutMs);
     });
+
+    const cancelDrag = async (data: RawDragData | undefined = activeDragData) => {
+      if (!data) return;
+      activeDragData = undefined;
+      try {
+        await this.session.send('Input.dispatchDragEvent', {
+          type: 'dragCancel', x: target.x, y: target.y, data,
+        });
+      } catch {}
+    };
 
     const releasePointer = async () => {
       if (!pointerDown) return;
@@ -204,10 +214,12 @@ export class CdpDragDropController {
       }
       const summary = dragPayloadSummary(data);
       if (summary.itemCount > maxItems || summary.fileCount > maxFiles || summary.totalPayloadBytes > maxPayloadBytes) {
+        await cancelDrag(data);
         await releasePointer();
         return { status: 'payload-blocked', ...summary };
       }
       if (summary.fileCount > 0 && options.allowFiles !== true) {
+        await cancelDrag(data);
         await releasePointer();
         return { status: 'file-payload-blocked', ...summary };
       }
@@ -221,16 +233,17 @@ export class CdpDragDropController {
       await this.session.send('Input.dispatchDragEvent', {
         type: 'drop', x: target.x, y: target.y, data,
       });
+      activeDragData = undefined;
       await releasePointer();
       return { status: 'drop-dispatched', ...summary };
     } catch {
+      await cancelDrag();
       await releasePointer();
       return { status: 'protocol-error', itemCount: 0, fileCount: 0, mimeTypes: [], totalPayloadBytes: 0 };
     } finally {
       if (timer) clearTimeout(timer);
       if (listener) this.session.off?.('Input.dragIntercepted', listener);
       try { await this.session.send('Input.setInterceptDrags', { enabled: false }); } catch {}
-      resolveDrag = undefined;
     }
   }
 }
