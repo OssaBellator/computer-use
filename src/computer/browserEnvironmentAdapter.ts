@@ -163,6 +163,38 @@ function plainDataRecord(value: unknown, label: string): Record<string, unknown>
   }
   return value;
 }
+function dataProperty(record: Record<string, unknown>, key: string): unknown {
+  return Object.getOwnPropertyDescriptor(record, key)?.value;
+}
+function snapshotEntityRef(value: unknown): Readonly<ComputerEntityRef> | undefined {
+  if (value === undefined) return undefined;
+  const source = plainDataRecord(value, 'browser action target');
+  return Object.freeze({
+    adapterId: dataProperty(source, 'adapterId'),
+    environment: dataProperty(source, 'environment'),
+    kind: dataProperty(source, 'kind'),
+    entityId: dataProperty(source, 'entityId'),
+    ...(dataProperty(source, 'surfaceId') !== undefined ? { surfaceId: dataProperty(source, 'surfaceId') } : {}),
+    ...(dataProperty(source, 'generation') !== undefined ? { generation: dataProperty(source, 'generation') } : {}),
+  } as ComputerEntityRef);
+}
+function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> {
+  const source = plainDataRecord(value, 'browser action request');
+  const target = snapshotEntityRef(dataProperty(source, 'target'));
+  return Object.freeze({
+    adapterId: dataProperty(source, 'adapterId'),
+    actionId: dataProperty(source, 'actionId'),
+    capability: dataProperty(source, 'capability'),
+    effect: dataProperty(source, 'effect'),
+    idempotency: dataProperty(source, 'idempotency'),
+    ...(target ? { target } : {}),
+    ...(Object.getOwnPropertyDescriptor(source, 'payload') ? { payload: dataProperty(source, 'payload') } : {}),
+  } as ComputerActionRequest);
+}
+function plainPayload(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  try { return plainDataRecord(value, 'browser action payload'); } catch { return undefined; }
+}
 function validateRuntimePolicyValue(key: keyof BrowserRuntimePolicy, value: unknown): void {
   if (value === undefined) return;
   switch (key) {
@@ -229,31 +261,40 @@ function boundedKey(value: unknown): value is string {
 }
 function validateActivatePayload(value: unknown): BrowserActivatePayload | undefined {
   if (value === undefined) return {};
-  if (!isRecord(value)) return undefined;
-  const method = value.method, key = value.key;
+  const record = plainPayload(value);
+  if (!record) return undefined;
+  const method = dataProperty(record, 'method'), key = dataProperty(record, 'key');
   if (method !== undefined && method !== 'auto' && method !== 'keyboard' && method !== 'pointer') return undefined;
   if (key !== undefined && !boundedKey(key)) return undefined;
   return { ...(method !== undefined ? { method } : {}), ...(key !== undefined ? { key } : {}) } as BrowserActivatePayload;
 }
 function validateTypePayload(value: unknown): BrowserTypePayload | undefined {
-  if (!isRecord(value) || typeof value.text !== 'string' || utf8Bytes(value.text) > MAX_TYPE_TEXT_BYTES) return undefined;
-  if (value.expectedValue !== undefined && (typeof value.expectedValue !== 'string' || utf8Bytes(value.expectedValue) > MAX_EXPECTED_VALUE_BYTES)) return undefined;
-  if (value.delayMs !== undefined && (!Number.isSafeInteger(value.delayMs) || (value.delayMs as number) < 0 || (value.delayMs as number) > MAX_TYPE_DELAY_MS)) return undefined;
-  const delayMs = value.delayMs as number | undefined;
-  if (delayMs !== undefined && [...value.text].length * delayMs > MAX_TYPE_DELAY_BUDGET_MS) return undefined;
+  const record = plainPayload(value);
+  if (!record) return undefined;
+  const text = dataProperty(record, 'text');
+  const expectedValue = dataProperty(record, 'expectedValue');
+  const rawDelayMs = dataProperty(record, 'delayMs');
+  if (typeof text !== 'string' || utf8Bytes(text) > MAX_TYPE_TEXT_BYTES) return undefined;
+  if (expectedValue !== undefined && (typeof expectedValue !== 'string' || utf8Bytes(expectedValue) > MAX_EXPECTED_VALUE_BYTES)) return undefined;
+  if (rawDelayMs !== undefined && (!Number.isSafeInteger(rawDelayMs) || (rawDelayMs as number) < 0 || (rawDelayMs as number) > MAX_TYPE_DELAY_MS)) return undefined;
+  const delayMs = rawDelayMs as number | undefined;
+  if (delayMs !== undefined && [...text].length * delayMs > MAX_TYPE_DELAY_BUDGET_MS) return undefined;
   return {
-    text: value.text,
-    ...(value.expectedValue !== undefined ? { expectedValue: value.expectedValue as string } : {}),
+    text,
+    ...(expectedValue !== undefined ? { expectedValue: expectedValue as string } : {}),
     ...(delayMs !== undefined ? { delayMs } : {}),
   };
 }
 function validatePressKeyPayload(value: unknown): BrowserPressKeyPayload | undefined {
-  return isRecord(value) && boundedKey(value.key) ? { key: value.key } : undefined;
+  const record = plainPayload(value);
+  const key = record ? dataProperty(record, 'key') : undefined;
+  return boundedKey(key) ? { key } : undefined;
 }
 function validateScrollPayload(value: unknown): BrowserScrollPayload | undefined {
-  if (value !== undefined && !isRecord(value)) return undefined;
-  const record = (value ?? {}) as Record<string, unknown>;
-  const deltaX = record.deltaX ?? 0, deltaY = record.deltaY ?? 0;
+  if (value === undefined) return undefined;
+  const record = plainPayload(value);
+  if (!record) return undefined;
+  const deltaX = dataProperty(record, 'deltaX') ?? 0, deltaY = dataProperty(record, 'deltaY') ?? 0;
   if (typeof deltaX !== 'number' || typeof deltaY !== 'number' || !Number.isFinite(deltaX) || !Number.isFinite(deltaY) ||
       Math.abs(deltaX) > MAX_SCROLL_DELTA || Math.abs(deltaY) > MAX_SCROLL_DELTA || (deltaX === 0 && deltaY === 0)) return undefined;
   return { deltaX, deltaY };
@@ -531,17 +572,11 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    const errors = validateComputerActionRequest(request, this.descriptor);
+    let authority: Readonly<ComputerActionRequest>;
+    try { authority = snapshotActionRequest(request); }
+    catch { return failedPreDispatch('browser.request.invalid'); }
+    const errors = validateComputerActionRequest(authority as ComputerActionRequest, this.descriptor);
     if (errors.length) return failedPreDispatch('browser.request.invalid');
-    const authority: ComputerActionRequest = {
-      adapterId: request.adapterId,
-      actionId: request.actionId,
-      capability: request.capability,
-      effect: request.effect,
-      idempotency: request.idempotency,
-      ...(request.target ? { target: { ...request.target } } : {}),
-      ...(request.payload !== undefined ? { payload: request.payload } : {}),
-    };
     if (!this.descriptor.capabilities.includes(authority.capability)) return failedPreDispatch('browser.capability.unsupported', 'unsupported');
     if (authority.capability.endsWith('.observe')) return authority.effect === 'observe-only' && authority.idempotency === 'read-only'
       ? { status: 'completed', dispatch: 'not-dispatched', verification: 'verified', evidence: ['browser.verified-noop'] }
@@ -554,13 +589,13 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
       const resolved = await this.resolveEntity(authority.target);
       if (!resolved) return failedPreDispatch('browser.target.stale');
       if (resolved.node.backendNodeId === undefined) return failedPreDispatch('browser.target.identity-unavailable');
-      try { return await this.runCommitmentAwareAction(authority, payload, resolved); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
+      try { return await this.runCommitmentAwareAction(authority as ComputerActionRequest, payload, resolved); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
     if (authority.capability === 'browser.press-key') {
       if (authority.target) return failedPreDispatch('browser.target.unexpected');
       const payload = validatePressKeyPayload(authority.payload);
       if (!payload) return failedPreDispatch('browser.payload.invalid');
-      try { return await this.runCommitmentAwareAction(authority, payload); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
+      try { return await this.runCommitmentAwareAction(authority as ComputerActionRequest, payload); } catch { return unknownAfterInvocation('browser.dispatch.unknown'); }
     }
     if (authority.effect !== 'local-reversible') return failedPreDispatch('browser.effect.unsupported');
 
