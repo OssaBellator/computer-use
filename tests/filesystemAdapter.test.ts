@@ -371,29 +371,38 @@ test('foreign adapter action envelopes are rejected before filesystem work', asy
       status: 'rejected',
       dispatch: 'not-dispatched',
       verification: 'rejected',
-      evidence: ['filesystem-read-request-rejected'],
+      evidence: ['filesystem-action-request-rejected'],
     });
   } finally {
     await f.cleanup();
   }
 });
 
-test('adapter action results remain coherent and mutations are not advertised or dispatched', async () => {
+test('adapter advertises narrowly typed mutations and rejects unprepared mutation dispatch', async () => {
   const f = await fixture();
   try {
-    assert.deepEqual(f.adapter.descriptor.capabilities, ['filesystem.read']);
+    assert.deepEqual(f.adapter.descriptor.capabilities, [
+      'filesystem.read',
+      'filesystem.create-file',
+      'filesystem.write-file',
+      'filesystem.create-directory',
+      'filesystem.copy',
+      'filesystem.move',
+      'filesystem.delete',
+      'filesystem.remove-empty-directory',
+    ]);
     const result = await f.adapter.act({
       adapterId: 'filesystem-test',
-      actionId: 'delete-nope',
+      actionId: 'delete-unprepared',
       capability: 'filesystem.delete',
       effect: 'local-destructive',
       idempotency: 'non-idempotent',
     });
     assert.deepEqual(result, {
-      status: 'unsupported',
+      status: 'rejected',
       dispatch: 'not-dispatched',
-      verification: 'unverified',
-      evidence: ['filesystem-capability-unsupported'],
+      verification: 'rejected',
+      evidence: ['filesystem-invalid-request'],
     });
   } finally {
     await f.cleanup();
