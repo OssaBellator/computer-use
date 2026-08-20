@@ -68,22 +68,25 @@ function documentForFrame(
   };
 }
 
-async function verificationDocument(
+async function freshVerificationDocument(
   engine: TaskRuntimeEngine,
   frameId: string,
-  existing?: DocumentContentSnapshot,
 ): Promise<DocumentContentSnapshot | undefined> {
-  if (existing) return documentForFrame(existing, frameId);
   if (!engine.documentContent) return undefined;
   const document = await engine.documentContent(TASK_COMMITMENT_VERIFICATION_DOCUMENT_OPTIONS);
   return document ? documentForFrame(document, frameId) : undefined;
 }
 
 /**
- * Capture a result baseline after approval but before browser input. The baseline
- * must be result-neutral (`unknown`) before dispatch; a pre-existing confirmation,
- * adverse result, pending state, or material mismatch would make later result
- * attribution ambiguous and therefore blocks dispatch in TaskRuntime.
+ * Capture a fresh result baseline after approval but before browser input. The
+ * earlier TaskObservation is used only to retain the approved target frame; its
+ * document snapshot is intentionally not reused because the page may have
+ * changed while approval was pending.
+ *
+ * TaskRuntime requires this baseline to be result-neutral (`unknown`) before
+ * dispatch. A pre-existing confirmation, adverse result, pending state, or
+ * material mismatch would make later result attribution ambiguous and blocks
+ * the action before any browser input is sent.
  */
 export async function captureTaskStepCommitmentVerificationBaseline(
   engine: TaskRuntimeEngine,
@@ -94,7 +97,7 @@ export async function captureTaskStepCommitmentVerificationBaseline(
   const frameId = activationTarget(step, before)?.frameId;
   if (!frameId) return undefined;
   try {
-    const document = await verificationDocument(engine, frameId, before.document);
+    const document = await freshVerificationDocument(engine, frameId);
     if (!document) return undefined;
     return {
       frameId,
