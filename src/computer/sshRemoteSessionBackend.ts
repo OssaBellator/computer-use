@@ -26,6 +26,8 @@ export interface SshProviderSession { readonly providerSessionId: string; readon
 export interface SshProviderExecLimits { readonly maxStdoutBytes: number; readonly maxStderrBytes: number; }
 export interface SshTransportProvider {
   connect(request: SshProviderConnectRequest): Promise<SshProviderSession>;
+  /** Must release native state represented by a malformed/partial connect result without trusting semantic fields on candidate. */
+  cleanupFailedConnect(candidate: unknown): Promise<void>;
   disconnect(session: SshProviderSession): Promise<void>;
   executeArgv(session: SshProviderSession, invocation: RemoteCommandInvocation, limits: SshProviderExecLimits): Promise<RemoteDispatchOutcome<RemoteCommandResult>>;
   observeMetadata?(session: SshProviderSession, limits: { readonly maxItems: number; readonly maxTextBytes: number }): Promise<readonly RemoteMetadataItem[]>;
@@ -54,19 +56,25 @@ function finiteTimeout(value: number | undefined, fallback: number, max: number)
   return resolved;
 }
 function ownData(record: object, key: string): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  } catch { return undefined; }
 }
 function plainRecord(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
+  try {
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+  } catch { return false; }
 }
 function snapshotCredentialMaterial(value: unknown): Readonly<SshCredentialMaterial> | undefined {
   if (!plainRecord(value)) return undefined;
   const out: { identityFile?: string; certificateFile?: string; agentSocket?: string } = {};
   for (const key of ['identityFile', 'certificateFile', 'agentSocket'] as const) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(value, key); }
+    catch { return undefined; }
     if (!descriptor) continue;
     if (!('value' in descriptor) || !finiteString(descriptor.value, MAX_PATH_BYTES)) return undefined;
     out[key] = descriptor.value;
@@ -175,10 +183,10 @@ export class SshRemoteSessionBackend implements RemoteSessionBackend {
       material = snapshotCredentialMaterial(await this.credentials.resolve(credential));
       if (!material) throw new Error('invalid ssh credential material');
     }
-    const providerCandidate = await this.provider.connect(Object.freeze({ endpoint, ...(material ? { credential: material } : {}) }));
+    const providerCandidate: unknown = await this.provider.connect(Object.freeze({ endpoint, ...(material ? { credential: material } : {}) }));
     const providerSession = snapshotProviderSession(providerCandidate);
     if (!providerSession) {
-      try { await this.provider.disconnect(providerCandidate); }
+      try { await this.provider.cleanupFailedConnect(providerCandidate); }
       catch { throw new Error('invalid ssh provider session; cleanup failed'); }
       throw new Error('invalid ssh provider session');
     }
@@ -275,6 +283,7 @@ function remoteArgvCommand(invocation: RemoteCommandInvocation): string {
 
 export class OpenSshProcessProvider implements SshTransportProvider {
   private readonly sessions = new Map<string, OpenSshOwnedSession>();
+  private readonly connectCandidates = new WeakMap<object, OpenSshOwnedSession>();
   private readonly executable: string;
   private readonly connectTimeoutMs: number;
   private readonly commandTimeoutMs: number;
@@ -307,13 +316,30 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     try {
       const result = await runBoundedProcess(this.executable, argv, this.connectTimeoutMs, 4096, 4096, this.environment(owned), this.cleanupAckTimeoutMs, this.processSpawner);
       if (!result.spawned || result.error || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.terminationAmbiguous || result.exitCode !== 0) throw new Error('ssh connect ambiguous');
+      const candidate = Object.freeze({ providerSessionId: owned.providerSessionId, remoteHostId: owned.remoteHostId });
       this.sessions.set(owned.providerSessionId, owned);
-      return Object.freeze({ providerSessionId: owned.providerSessionId, remoteHostId: owned.remoteHostId });
+      this.connectCandidates.set(candidate, owned);
+      return candidate;
     } catch (error) {
       await this.bestEffortControlExit(owned);
       await rm(owned.controlDirectory, { recursive: true, force: true });
       throw error;
     }
+  }
+
+  async cleanupFailedConnect(candidate: unknown): Promise<void> {
+    if (!candidate || typeof candidate !== 'object') return;
+    const owned = this.connectCandidates.get(candidate);
+    if (!owned) return;
+    this.sessions.delete(owned.providerSessionId);
+    let ambiguous = false;
+    try {
+      const result = await this.controlExit(owned);
+      ambiguous = !result.spawned || Boolean(result.error) || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.terminationAmbiguous || result.exitCode !== 0;
+    } finally {
+      await rm(owned.controlDirectory, { recursive: true, force: true });
+    }
+    if (ambiguous) throw new Error('ssh failed-connect cleanup ambiguous');
   }
 
   async disconnect(session: SshProviderSession): Promise<void> {

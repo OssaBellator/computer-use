@@ -23,6 +23,7 @@ const endpoint: RemoteEndpointIdentity = Object.freeze({ endpointId: 'ssh-fixtur
 
 class FakeSshProvider implements SshTransportProvider {
   connectCalls = 0;
+  cleanupCalls = 0;
   disconnectCalls = 0;
   execCalls = 0;
   seenConnect?: SshProviderConnectRequest;
@@ -31,12 +32,17 @@ class FakeSshProvider implements SshTransportProvider {
   nextSession: unknown = { providerSessionId: 'provider-1', remoteHostId: 'host-1' };
   outcome: unknown = { dispatch: 'dispatched-once', status: 'completed', value: { exitCode: 0, stdout: 'ok', stderr: '' } };
   error: unknown;
+  cleanupError: unknown;
   metadata: readonly RemoteMetadataItem[] = [];
 
   async connect(request: SshProviderConnectRequest): Promise<SshProviderSession> {
     this.connectCalls++;
     this.seenConnect = request;
     return this.nextSession as SshProviderSession;
+  }
+  async cleanupFailedConnect(_candidate: unknown): Promise<void> {
+    this.cleanupCalls++;
+    if (this.cleanupError) throw this.cleanupError;
   }
   async disconnect(_session: SshProviderSession): Promise<void> { this.disconnectCalls++; }
   async executeArgv(_session: SshProviderSession, invocation: RemoteCommandInvocation, limits: SshProviderExecLimits): Promise<RemoteDispatchOutcome<RemoteCommandResult>> {
@@ -81,12 +87,25 @@ test('credential resolver receives only handle and provider receives finite mate
   assert.equal(JSON.stringify(adapter.state()).includes('vault:ssh-prod'), false);
 });
 
-test('malformed provider connection is cleaned and never becomes adapter authority', async () => {
+test('malformed provider connection uses raw-candidate cleanup and never becomes adapter authority', async () => {
   const provider = new FakeSshProvider();
   provider.nextSession = { providerSessionId: '', remoteHostId: 'host-1' };
   const adapter = new RemoteSessionAdapter('ssh', endpoint, new SshRemoteSessionBackend(provider));
   await assert.rejects(() => adapter.connect(), /invalid ssh provider session/);
-  assert.equal(provider.disconnectCalls, 1);
+  assert.equal(provider.cleanupCalls, 1);
+  assert.equal(provider.disconnectCalls, 0);
+  assert.equal(adapter.state().authority, undefined);
+  assert.equal(adapter.state().lifecycle, 'failed');
+});
+
+test('malformed provider cleanup failure leaves adapter failed closed', async () => {
+  const provider = new FakeSshProvider();
+  provider.nextSession = { providerSessionId: '', remoteHostId: 'host-1' };
+  provider.cleanupError = new Error('cleanup ambiguous');
+  const adapter = new RemoteSessionAdapter('ssh', endpoint, new SshRemoteSessionBackend(provider));
+  await assert.rejects(() => adapter.connect(), /cleanup failed/);
+  assert.equal(provider.cleanupCalls, 1);
+  assert.equal(provider.disconnectCalls, 0);
   assert.equal(adapter.state().authority, undefined);
   assert.equal(adapter.state().lifecycle, 'failed');
 });
