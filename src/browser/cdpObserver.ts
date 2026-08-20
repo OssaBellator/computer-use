@@ -1,6 +1,11 @@
 import type { InteractionNode, Point, Rect } from '../types.js';
 import { snapshotInteractiveDom, type SnapshotPageLike } from './domSnapshot.js';
 import {
+  snapshotDocumentContent,
+  type DocumentContentOptions,
+  type DocumentContentSnapshot,
+} from './documentContent.js';
+import {
   buildInteractionFrameIdMap,
   captureCdpIdentityIndex,
   describeSnapshotFrames,
@@ -22,6 +27,8 @@ import {
 
 export interface BrowserInteractionObserver {
   snapshot(): Promise<readonly InteractionNode[]>;
+  /** Optional bounded structured reading model for non-interactive document content. */
+  documentContent?(options?: DocumentContentOptions): Promise<DocumentContentSnapshot>;
   targetPoint(node: InteractionNode): Promise<Point | null>;
   pointStillTargets(node: InteractionNode, point: Point): Promise<boolean>;
   viewportRect?(): Promise<Rect>;
@@ -31,7 +38,8 @@ type RefreshableSnapshotPage = SnapshotPageLike & { refresh?: () => Promise<void
 
 /**
  * Stateful CDP-backed observer that composes DOM semantics, stable backend/AX
- * identity, frame ownership, normalized geometry, and paint-order hit tests.
+ * identity, frame ownership, normalized geometry, paint-order hit tests, and a
+ * bounded structured reading model for non-interactive page content.
  */
 export class CdpInteractionObserver implements BrowserInteractionObserver {
   private identities?: CdpIdentityIndex;
@@ -62,6 +70,11 @@ export class CdpInteractionObserver implements BrowserInteractionObserver {
     const normalized = await enrichInteractionNodesWithCdpGeometry(withHierarchy, this.session);
     this.identities = identities;
     return normalized;
+  }
+
+  async documentContent(options: DocumentContentOptions = {}): Promise<DocumentContentSnapshot> {
+    await (this.page as RefreshableSnapshotPage).refresh?.();
+    return snapshotDocumentContent(this.page, options);
   }
 
   async targetPoint(node: InteractionNode): Promise<Point | null> {
