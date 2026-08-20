@@ -35,6 +35,7 @@ class ReviewFakeAdapter implements ComputerEnvironmentAdapter {
   actCount = 0;
   observeCount = 0;
   lastAction?: ComputerActionRequest;
+  nextResult: ComputerActionResult = { status: 'completed', dispatch: 'dispatched-once', verification: 'verified' };
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
     this.observeCount += 1;
@@ -54,7 +55,7 @@ class ReviewFakeAdapter implements ComputerEnvironmentAdapter {
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
     this.actCount += 1;
     this.lastAction = request;
-    return { status: 'completed', dispatch: 'dispatched-once', verification: 'verified' };
+    return this.nextResult;
   }
 }
 
@@ -67,6 +68,21 @@ function setup(): { adapter: ReviewFakeAdapter; registry: ComputerEnvironmentReg
 
 function program(step: ComputerTaskActionStep): ComputerTaskProgram {
   return { id: 'review-program', entry: step.id, steps: [step] };
+}
+
+function simpleAction(overrides: Partial<ComputerTaskActionStep> = {}): ComputerTaskActionStep {
+  return {
+    kind: 'action',
+    id: 'write',
+    request: {
+      adapterId: 'fake',
+      actionId: 'write',
+      capability: 'fake.write',
+      effect: 'local-reversible',
+      idempotency: 'idempotent',
+    },
+    ...overrides,
+  };
 }
 
 test('runtime dispatch is bound to immutable validated snapshot across awaited approval', async () => {
@@ -106,6 +122,54 @@ test('runtime dispatch is bound to immutable validated snapshot across awaited a
   assert.equal(adapter.lastAction?.effect, 'external-communication');
   assert.deepEqual(adapter.lastAction?.payload, { value: 'original' });
   assert.notEqual(adapter.lastAction?.payload, mutablePayload);
+});
+
+test('snapshot rejects accessor-backed executable fields before reading them', () => {
+  const { registry } = setup();
+  let getterReads = 0;
+  const request = {
+    adapterId: 'fake',
+    actionId: 'write',
+    effect: 'local-reversible' as const,
+    idempotency: 'idempotent' as const,
+  } as ComputerActionRequest;
+  Object.defineProperty(request, 'capability', {
+    enumerable: true,
+    configurable: true,
+    get: () => {
+      getterReads += 1;
+      return getterReads === 1 ? 'fake.write' : 'fake.read';
+    },
+  });
+  const task = program({ kind: 'action', id: 'write', request });
+
+  assert.throws(
+    () => new ComputerTaskRuntime(task, registry, { executionId: EXECUTION_ID }),
+    /accessor property/,
+  );
+  assert.equal(getterReads, 0);
+});
+
+test('snapshot rejects cyclic and oversized executable payload graphs', () => {
+  const { registry } = setup();
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  assert.throws(
+    () => new ComputerTaskRuntime(program(simpleAction({
+      request: { ...simpleAction().request, payload: cyclic },
+      checkpointBinding: 'cyclic-binding-0001',
+    })), registry, { executionId: EXECUTION_ID }),
+    /cyclic executable value/,
+  );
+
+  const oversized = Array.from({ length: 20_100 }, () => 0);
+  assert.throws(
+    () => new ComputerTaskRuntime(program(simpleAction({
+      request: { ...simpleAction().request, payload: oversized },
+      checkpointBinding: 'oversized-bind-0001',
+    })), registry, { executionId: EXECUTION_ID }),
+    /snapshot item budget|snapshot byte budget/,
+  );
 });
 
 test('request target cannot bypass task freshness binding', () => {
@@ -198,18 +262,7 @@ test('run retains only bounded metadata records and never raw observation data',
 
 test('hook evidence is restricted to bounded machine-readable codes', async () => {
   const { registry } = setup();
-  const task = program({
-    kind: 'action',
-    id: 'write',
-    request: {
-      adapterId: 'fake',
-      actionId: 'write',
-      capability: 'fake.write',
-      effect: 'local-reversible',
-      idempotency: 'idempotent',
-    },
-    verification: 'domain.verify',
-  });
+  const task = program(simpleAction({ verification: 'domain.verify' }));
   const result = await new ComputerTaskRuntime(task, registry, {
     executionId: EXECUTION_ID,
     hooks: {
@@ -228,29 +281,85 @@ test('hook evidence is restricted to bounded machine-readable codes', async () =
   assert.equal(result.evidence?.some((entry) => entry.includes('SECRET') || entry.length > 64), false);
 });
 
-test('direct typed checkpoint resume receives the same centralized validation as decoded checkpoints', () => {
-  const { registry } = setup();
-  const task = program({
-    kind: 'action',
-    id: 'write',
-    request: {
-      adapterId: 'fake',
-      actionId: 'write',
-      capability: 'fake.write',
-      effect: 'local-reversible',
-      idempotency: 'idempotent',
+test('throwing verifier after known dispatch is checkpointed non-replayably before the verifier await', async () => {
+  const first = setup();
+  const task = program(simpleAction({ verification: 'domain.throw' }));
+  const hooks = {
+    verifiers: {
+      'domain.throw': async () => {
+        throw new Error('verifier transport failed');
+      },
     },
-  });
-  const invalidCheckpoint = {
+  };
+  const runtime = new ComputerTaskRuntime(task, first.registry, { executionId: EXECUTION_ID, hooks });
+  const result = await runtime.run();
+  assert.equal(result.status, 'unverified');
+  assert.equal(first.adapter.actCount, 1);
+  assert.ok(result.evidence?.includes('verifier-threw-after-dispatch'));
+
+  const checkpoint = runtime.checkpoint();
+  assert.equal(checkpoint.actions[0]?.state, 'dispatched-unverified');
+  const resumed = setup();
+  const resumedResult = await new ComputerTaskRuntime(task, resumed.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+    hooks,
+  }).run();
+  assert.equal(resumedResult.status, 'reconciliation-required');
+  assert.equal(resumed.adapter.actCount, 0);
+});
+
+test('throwing verifier after unknown dispatch is checkpointed unknown and never replayed', async () => {
+  const first = setup();
+  first.adapter.nextResult = { status: 'unknown', dispatch: 'unknown', verification: 'unverified' };
+  const task = program(simpleAction({ verification: 'domain.throw' }));
+  const hooks = {
+    verifiers: {
+      'domain.throw': async () => {
+        throw new Error('verifier transport failed');
+      },
+    },
+  };
+  const runtime = new ComputerTaskRuntime(task, first.registry, { executionId: EXECUTION_ID, hooks });
+  const result = await runtime.run();
+  assert.equal(result.status, 'unknown-dispatch');
+  assert.equal(first.adapter.actCount, 1);
+
+  const checkpoint = runtime.checkpoint();
+  assert.equal(checkpoint.actions[0]?.state, 'unknown-dispatch');
+  const resumed = setup();
+  const resumedResult = await new ComputerTaskRuntime(task, resumed.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+    hooks,
+  }).run();
+  assert.equal(resumedResult.status, 'reconciliation-required');
+  assert.equal(resumed.adapter.actCount, 0);
+});
+
+test('direct typed checkpoint resume requires runtime provenance and explicit action history', () => {
+  const { registry } = setup();
+  const task = program(simpleAction());
+  const forgedCheckpoint = {
     version: 1,
     program: { id: task.id, hash: computerTaskProgramHash(task) },
     execution: { id: EXECUTION_ID },
-    cursor: { nextStepId: 'write', stepsExecuted: 1_000_001 },
+    cursor: { nextStepId: 'write', stepsExecuted: 1 },
     actions: [{ stepId: 'write', state: 'not-started' }],
   } as ComputerTaskCheckpoint;
 
   assert.throws(
-    () => new ComputerTaskRuntime(task, registry, { executionId: EXECUTION_ID, checkpoint: invalidCheckpoint }),
-    /invalid computer task checkpoint cursor/,
+    () => new ComputerTaskRuntime(task, registry, { executionId: EXECUTION_ID, checkpoint: forgedCheckpoint }),
+    /lacks runtime provenance/,
   );
+
+  const trusted = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: 0,
+    actions: {},
+  });
+  const runtime = new ComputerTaskRuntime(task, registry, { executionId: EXECUTION_ID, checkpoint: trusted });
+  assert.ok(runtime);
 });
