@@ -226,3 +226,48 @@ test('browser envelope snapshots never enumerate arbitrary caller own keys', asy
   assert.equal(adapter.options.runtimeOptions?.maxRisk, 'interaction');
   assert.equal(ownKeysCalls, 0);
 });
+
+test('browser envelope snapshots capture changing data descriptors exactly once', async () => {
+  const runtime = new ObservationRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  let ownKeysCalls = 0;
+  const reads = new Map<string, number>();
+  const changing = <T extends Record<string, unknown>>(value: T, replacements: Partial<T>): T => new Proxy(value, {
+    ownKeys() {
+      ownKeysCalls += 1;
+      throw new Error('bulk own-key enumeration must not run');
+    },
+    getOwnPropertyDescriptor(target, property) {
+      const key = String(property);
+      const count = (reads.get(key) ?? 0) + 1;
+      reads.set(key, count);
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+      if (!descriptor || !('value' in descriptor) || count === 1 || !(key in replacements)) return descriptor;
+      return { ...descriptor, value: replacements[key as keyof T] };
+    },
+  });
+
+  const limits = changing(
+    { maxItems: 1, maxTextBytes: 5, maxDepth: 1 },
+    { maxItems: 1_000_000_000, maxTextBytes: 1_000_000_000, maxDepth: 1_000_000_000 },
+  );
+  const request = changing(
+    {
+      adapterId: adapter.descriptor.id,
+      channel: 'semantic-ui' as const,
+      limits,
+    },
+    { channel: 'visual' as const },
+  );
+
+  const observed = await adapter.observe(request as ComputerObservationRequest);
+  assert.equal(observed.channel, 'semantic-ui');
+  assert.deepEqual(runtime.semanticOptions, { maxItems: 1, maxTextBytes: 5, maxDepth: 1 });
+  assert.equal(runtime.semanticCalls, 1);
+  assert.equal(runtime.visualCalls, 0);
+  assert.equal(reads.get('channel'), 1);
+  assert.equal(reads.get('maxItems'), 1);
+  assert.equal(reads.get('maxTextBytes'), 1);
+  assert.equal(reads.get('maxDepth'), 1);
+  assert.equal(ownKeysCalls, 0);
+});
