@@ -247,7 +247,11 @@ export async function observeTaskEngine(
   let downloads: BrowserDownloadSummary | undefined;
   try { nodes = await engine.refresh(); } catch {}
   try { browser = await engine.browserState?.(); } catch {}
-  if (options.document) { try { document = await engine.documentContent?.(); } catch {} }
+  if (options.document) {
+    if (!engine.documentContent) throw new Error('Structured document observation is not available');
+    document = await engine.documentContent();
+    if (!document) throw new Error('Structured document observation returned no snapshot');
+  }
   try { dialog = engine.dialogState?.(); } catch {}
   try { targets = engine.targetState?.(); } catch {}
   try { downloads = engine.downloadState?.(); } catch {}
