@@ -30,9 +30,11 @@ Missing profile entries are treated as unsupported. This keeps assessment fail-c
 
 `CapabilityAssessment.runnable` means no **required** capability is completely unsupported. `fullySupported` is stricter: every required and preferred capability must be fully supported. Partial required capabilities remain visible to the caller rather than being silently treated as either complete or absent.
 
-## Current standalone Chromium profile
+## Standalone Chromium profiles
 
-`STANDALONE_CHROMIUM_CAPABILITY_PROFILE` describes the version-0.35 standalone stack as the 0.36 capability layer sees it.
+`STANDALONE_CHROMIUM_CAPABILITY_PROFILE` remains the historical version-0.35 snapshot. It is not mutated when later slices land.
+
+`CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` describes the current stack. At version 0.40 it adds bounded document reading, partial native rich-text editing, and partial page-grounded commitment detection while keeping incomplete capabilities explicitly partial or unsupported.
 
 ### Strong current foundations
 
@@ -41,6 +43,7 @@ Missing profile entries are treated as unsupported. This keeps assessment fail-c
 - multi-page target/session control
 - navigation and history
 - semantic interactive-element observation
+- bounded structured document-content observation across frames/open Shadow DOM
 - browser state observation
 - visual screenshots and motion differencing
 - activation, pointer, relative pointer, keyboard, text entry, select controls, and scrolling
@@ -53,24 +56,36 @@ Missing profile entries are treated as unsupported. This keeps assessment fail-c
 - network activity observation is explicit opt-in
 - download observation requires download-controller configuration
 - uploads require upload-controller configuration
-- generic action verification exists for some remote side effects, but transaction/publishing semantics are not specialized
+- rich-text editing has bounded caret/selection observation plus exact native insertion/replacement/select-all/delete, but formatting, rich clipboard, drag/drop, and editor-specific verification are incomplete
+- commitment detection covers strong and context-corroborated purchase/booking/transfer/subscription/publish/destructive/security/process actions, but it is heuristic and site-specific semantics remain incomplete
+- generic action verification exists for some remote side effects, but transaction/publishing semantics are not specialized enough to be fully supported
 - generic semantic activation can operate some media controls, but playback/fullscreen state is not first-class
 - ordinary UI interaction can reach some sign-in/MFA pages, but user-handoff/passkey/authentication state is not first-class
 
 ### Important missing primitives
 
-- general document/article content observation
-- rich-text editing semantics
 - clipboard read/write
 - drag/drop
 - first-class media playback/fullscreen controls
 - browser permission and camera/microphone state
 - credential/passkey control and explicit user-mediated authentication state
-- page-side commitment detection before purchases/publishing/security changes
-- specialized external-side-effect/process-trigger verification
+- specialized post-commit external-side-effect/process-trigger verification bound to the intended commitment
 - long-running task checkpoints/replay
 
 The capability model intentionally exposes these gaps. A broad category should not appear complete merely because generic clicking and typing are available.
+
+## Transaction/commerce status at 0.40
+
+`transactions-commerce` requires navigation, semantic interaction, activation, text entry, select controls, browser state observation, commitment detection, an explicit confirmation gate, and external-side-effect verification.
+
+At 0.40 no required transaction capability is completely unsupported, so the category is mechanically **runnable** under the model. It is **not fully supported**:
+
+- `commitment-detection` is partial because the detector is bounded and heuristic rather than site-semantic;
+- `external-side-effect-verification` is partial because generic DOM/action verification does not yet prove that the intended order, booking, payment, transfer, or subscription actually completed with the expected terms.
+
+This distinction is intentional. Runnable means a planner can attempt a constrained workflow with explicit policy handling; it does not mean arbitrary financial workflows should proceed unattended.
+
+See [`commitment-safety.md`](commitment-safety.md) for the dynamic pre-commit gate and its fail-closed boundaries.
 
 ## Program requirement inference
 
@@ -83,12 +98,12 @@ Examples:
 - `upload` -> `file-upload` + `explicit-confirmation-gate`
 - `switch-page` / `open-tab` / `close-latest-tab` -> `multi-page`
 - `wait-network-idle` -> `network-activity-observation`
-- browser/download/dialog/target predicates -> their corresponding observation capabilities
+- browser/document/download/dialog/target predicates -> their corresponding observation capabilities
 - any step explicitly marked `external-side-effect` or `requiresApproval` -> `explicit-confirmation-gate`
 
 The returned capability set is stable-sorted in taxonomy order, and the analysis also surfaces side-effecting/approval step IDs.
 
-This is deliberately mechanical rather than semantic. A `click` on a button called “Place order” cannot yet infer `financial` commitment solely from the TaskProgram action kind. That is what future commitment detection and higher-level task descriptors must add.
+The analysis is deliberately mechanical. Dynamic commitment detection is a **runtime** observation immediately before a commit-capable action. A program does not need to contain the literal phrase `Place order` for the browser state to reveal that the resolved target has that accessible name.
 
 ## Commitment classes
 
@@ -104,22 +119,19 @@ This is deliberately mechanical rather than semantic. A `click` on a button call
 
 The default helper marks remote publishing, financial, identity/security, and process-trigger commitments as requiring explicit approval. More restrictive callers can require approval for reversible remote changes as well.
 
-This model complements `TaskRuntime`'s existing `interaction` / `external-side-effect` risk handling; it does not weaken it.
+The 0.40 detector reports a page-grounded commitment kind/class into `TaskApprovalContext.commitment`. The task trace retains only status/kind/confidence so amount/counterparty/schedule details do not become ordinary telemetry.
 
-## Why document observation is now the next high-leverage slice
+This model complements `TaskRuntime`'s `interaction` / `external-side-effect` declaration handling; it does not weaken it. An inferred commitment can require explicit approval even when a caller has otherwise raised `maxRisk` to allow declared external side effects.
 
-The capability assessment makes a structural weakness obvious: the current semantic snapshot is optimized for **interactive nodes**. That is excellent for clicking, typing, widgets, and games, but insufficient for broad research and reading tasks because headings, paragraphs, article text, table content, code blocks, lists, and other non-interactive document content are not represented as a bounded reading model.
+## Next high-leverage capability work
 
-A general document-content observer should therefore be implemented on the standalone CDP/session contracts, with:
+The highest-leverage transaction follow-up is specialized post-side-effect verification. The runtime should bind the state after a commit to the pre-commit summary and distinguish:
 
-- frame and open-shadow traversal;
-- bounded text/structure extraction rather than `document.body.innerText` dumping;
-- headings, landmarks, paragraphs, lists, tables, code/preformatted content, links, images/alt text, and metadata;
-- visibility plus document/viewport coordinates where useful;
-- stable structural/backend identity when available;
-- explicit byte/node/depth budgets;
-- deterministic ordering and truncation metadata;
-- optional targeted/region refresh for long documents;
-- no dependency on Playwright-style locator APIs.
+- completed versus pending;
+- succeeded versus declined/failed/canceled;
+- expected versus changed amount/currency;
+- expected versus changed recipient/merchant/service;
+- one-time versus recurring terms;
+- intended publication/process identity versus an unrelated state change.
 
-That primitive directly improves information research, content consumption, collaboration, creation/editing context, transaction review, and account-setting comprehension, making it a broader next investment than another site-specific action.
+For content creation/collaboration, clipboard-rich read/write, formatting runs, drag/drop, and editor-specific model verification remain major blockers. Identity flows still need first-class user-mediated authentication/passkey handoff, and long-running automation still needs durable checkpoint/replay semantics.

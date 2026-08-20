@@ -1,9 +1,11 @@
+import type { BrowserCommitmentSummary } from '../browser/commitmentDetector.js';
 import type { BrowserDialogHandleResult } from '../browser/dialogController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryResult } from '../browser/historyController.js';
 import type { BrowserNavigationResult } from '../browser/navigationController.js';
 import type { BrowserSelectResult } from '../browser/selectController.js';
 import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
+import { detectTaskStepCommitment } from './commitmentGate.js';
 import {
   validateTaskProgram,
   type ActivateTaskStep,
@@ -49,6 +51,8 @@ async function sleep(ms: number): Promise<void> { if (ms > 0) await new Promise<
 function riskOf(step: ActionStep): Exclude<TaskRisk, 'observe'> { if (step.kind === 'upload') return 'external-side-effect'; return step.risk ?? 'interaction'; }
 function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean { if (!result) return false; switch (step.kind) { case 'select-option': return result.status === 'selected' || result.status === 'already-selected'; case 'upload': return result.status === 'uploaded'; case 'switch-page': return result.status === 'switched'; case 'navigate': case 'history': return result.status === 'navigated'; case 'handle-dialog': return result.status === 'handled'; case 'open-tab': return result.status === 'created'; case 'close-latest-tab': return result.status === 'closed'; default: return result.status === 'verified'; } }
 function successOutcome(step: ActionStep): TaskTraceOutcome { switch (step.kind) { case 'upload': return 'uploaded'; case 'switch-page': return 'page-switched'; case 'navigate': return 'navigated'; case 'history': return 'history-navigated'; case 'handle-dialog': return 'dialog-handled'; case 'open-tab': return 'target-created'; case 'close-latest-tab': return 'target-closed'; default: return 'verified'; } }
+function isCommitmentCapableStep(step: ActionStep): step is ActivateTaskStep | PressKeyTaskStep { return step.kind === 'activate' || step.kind === 'press-key'; }
+function commitmentTraceFields(commitment: BrowserCommitmentSummary | undefined) { if (!commitment) return {}; return { commitmentStatus: commitment.status, ...(commitment.kind ? { commitmentKind: commitment.kind } : {}), commitmentConfidence: commitment.confidence }; }
 
 function predicateUsesDocument(predicate: TaskPredicate): boolean {
   switch (predicate.kind) {
@@ -100,7 +104,8 @@ export class TaskRuntime {
     const stepMap = new Map(program.steps.map((step) => [step.id, step] as const));
     const maxSteps = positiveInt(options.maxSteps, 64), maxVisits = positiveInt(options.maxVisitsPerStep, 8), maxNoProgress = positiveInt(options.maxConsecutiveNoProgress, 4), maxRisk = options.maxRisk ?? 'interaction';
     const trace: TaskTraceEntry[] = [], visits = new Map<string, number>();
-    const observe = () => observeTaskEngine(this.engine, { document: programUsesDocument(program) });
+    const documentRequired = programUsesDocument(program);
+    const observe = () => observeTaskEngine(this.engine, { document: documentRequired });
     let currentId = program.entry, consecutiveNoProgress = 0;
     const emit = async (entry: TaskTraceEntry) => { trace.push(entry); try { await options.onTrace?.(entry); } catch {} };
     const failed = (status: TaskRunStatus, stepsExecuted: number): TaskRunResult => ({ status, completed: false, finalStepId: currentId, stepsExecuted, trace, validationWarnings: validation.warnings });
@@ -112,10 +117,22 @@ export class TaskRuntime {
       let before; try { before = await observe(); } catch { return failed('failed', index); }
 
       if (step.kind === 'activate' || step.kind === 'hover' || step.kind === 'type' || step.kind === 'select-option' || step.kind === 'upload' || step.kind === 'press-key' || step.kind === 'scroll-viewport' || step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
-        const risk = riskOf(step), needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
+        const risk = riskOf(step);
+        let commitment: BrowserCommitmentSummary | undefined;
+        if ((options.commitmentDetection ?? 'auto') === 'auto' && isCommitmentCapableStep(step)) {
+          try { commitment = await detectTaskStepCommitment(this.engine, step, before); }
+          catch {
+            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
+            return failed('policy-blocked', index + 1);
+          }
+        }
+        const declarationNeedsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
+        const commitmentNeedsApproval = commitment?.requiresApproval === true;
+        const needsApproval = declarationNeedsApproval || commitmentNeedsApproval;
+        const approvalRisk: Exclude<TaskRisk, 'observe'> = commitmentNeedsApproval ? 'external-side-effect' : risk;
         let approved = !needsApproval;
-        if (needsApproval && options.approve) { try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk, visit }); } catch { approved = false; } }
-        if (!approved) { await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); return failed('policy-blocked', index + 1); }
+        if (needsApproval && options.approve) { try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk: approvalRisk, visit, ...(commitment ? { commitment } : {}) }); } catch { approved = false; } }
+        if (!approved) { await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); return failed('policy-blocked', index + 1); }
 
         let action: RuntimeActionResult | undefined, threw = false;
         try { action = await performAction(this.engine, step, inputs, options); } catch { threw = true; }
@@ -125,7 +142,7 @@ export class TaskRuntime {
         const madeProgress = changed || ((step.kind === 'scroll-viewport' || step.kind === 'select-option') && succeeded);
         consecutiveNoProgress = madeProgress ? 0 : consecutiveNoProgress + 1;
         const targetId = action && 'target' in action ? action.target?.id : action && 'targetId' in action ? action.targetId : undefined;
-        await emit({ index, stepId: step.id, kind: step.kind, outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed', ...(nextId ? { nextStepId: nextId } : {}), ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
+        await emit({ index, stepId: step.id, kind: step.kind, outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed', ...(nextId ? { nextStepId: nextId } : {}), ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
         if (consecutiveNoProgress >= maxNoProgress) return failed('stalled', index + 1);
         if (!nextId) return failed('failed', index + 1);
         currentId = nextId; continue;

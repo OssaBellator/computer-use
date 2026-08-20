@@ -5,6 +5,7 @@ export * from './graphBuilder.js';
 export * from './browser/domSnapshot.js';
 export * from './browser/documentContent.js';
 export * from './browser/documentSelection.js';
+export * from './browser/commitmentDetector.js';
 export * from './browser/cdpIdentity.js';
 export * from './browser/cdpGeometry.js';
 export * from './browser/cdpObserver.js';
