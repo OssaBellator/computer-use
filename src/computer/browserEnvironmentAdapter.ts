@@ -1,5 +1,9 @@
 import { TaskRuntime } from '../agent/taskRuntime.js';
 import type { TaskRuntimeEngine, TaskRuntimeOptions, TaskRunResult } from '../agent/taskRuntime.js';
+import type {
+  BoundedSemanticSnapshotLimits,
+  BoundedSemanticSnapshotResult,
+} from '../browser/boundedSemanticSnapshot.js';
 import type { DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { MediaStateSnapshot, ObserveMediaStateOptions } from '../browser/mediaState.js';
 import type { VisualCaptureOptions, VisualSnapshot } from '../browser/visualObserver.js';
@@ -84,6 +88,10 @@ export interface BrowserComputerRuntime extends TaskRuntimeEngine {
     targetId: string | undefined,
     limits: BrowserFrameDocumentTokenLimits,
   ): Promise<Readonly<Record<string, string>> | undefined>;
+  semanticSnapshot?(
+    targetId: string | undefined,
+    limits: BoundedSemanticSnapshotLimits,
+  ): Promise<BoundedSemanticSnapshotResult | undefined>;
   visualSnapshot?(targetId: string | undefined, options?: VisualCaptureOptions): Promise<VisualSnapshot | undefined>;
   mediaSnapshot?(targetId: string | undefined, options?: ObserveMediaStateOptions): Promise<MediaStateSnapshot | undefined>;
 }
@@ -451,6 +459,26 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
       : nodes.find((candidate) => candidate.frameId === frameId && (candidate.id === nodeId || candidate.structuralId === nodeId));
     return node ? { node, surface, identity: after, frameToken: expectedFrameToken } : undefined;
   }
+  private boundedObservedTarget(
+    target: ComputerEntityRef,
+    nodes: readonly InteractionNode[],
+    identity: BrowserDocumentIdentity,
+  ): InteractionNode | undefined {
+    const match = /^doc:([^:]+):frame:([^:]+)(?::gen:([^:]+))?:node:(.+)$/.exec(target.entityId);
+    if (!match) return undefined;
+    let frameId: string, explicitFrameToken: string | undefined, nodeId: string;
+    try {
+      frameId = decodeURIComponent(match[2]);
+      explicitFrameToken = match[3] === undefined ? undefined : decodeURIComponent(match[3]);
+      nodeId = decodeURIComponent(match[4]);
+    } catch { return undefined; }
+    if (frameId !== 'main' && (!identity.complete || explicitFrameToken === undefined)) return undefined;
+    if (frameId === 'main' && explicitFrameToken !== undefined) return undefined;
+    const expectedFrameToken = explicitFrameToken ?? match[1];
+    if (identity.topToken !== match[1] || identity.frameTokens[frameId] !== expectedFrameToken) return undefined;
+    return nodes.find((candidate) =>
+      candidate.frameId === frameId && (candidate.id === nodeId || candidate.structuralId === nodeId));
+  }
   private async entityIdentityCurrent(resolved: ResolvedEntity): Promise<boolean> {
     const current = await this.activeDocumentIdentity(resolved.surface);
     return current !== undefined &&
@@ -503,22 +531,25 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
 
     if (request.channel === 'semantic-ui') {
       if (!surface || this.runtime.activePageTargetId?.() !== surface.surfaceId) throw new Error('browser.surface.not-active');
-      let nodes: InteractionNode[], identity: BrowserDocumentIdentity;
+      if (!this.runtime.semanticSnapshot) throw new Error('browser.semantic.unsupported');
+      const maxItems = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
+      const maxTextBytes = boundedPositive(request.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
+      const maxDepth = boundedPositive(request.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
+      const before = await this.activeDocumentIdentity(surface);
+      if (!before) throw new Error('browser.document.identity-unavailable');
+      const snapshot = await this.runtime.semanticSnapshot(surface.surfaceId, { maxItems, maxTextBytes, maxDepth });
+      if (!snapshot) throw new Error('browser.semantic.unavailable');
+      const after = await this.activeDocumentIdentity(surface);
+      if (!after || !sameDocumentIdentity(before, after)) throw new Error('browser.document.identity-changed');
+      let nodes = snapshot.nodes;
       if (request.target) {
-        const resolved = await this.resolveEntity(request.target);
-        if (!resolved) throw new Error('browser.observation.target-stale');
-        nodes = [resolved.node];
-        identity = resolved.identity;
-      } else {
-        const before = await this.activeDocumentIdentity(surface);
-        if (!before) throw new Error('browser.document.identity-unavailable');
-        nodes = await this.runtime.refresh();
-        const after = await this.activeDocumentIdentity(surface);
-        if (!after || !sameDocumentIdentity(before, after)) throw new Error('browser.document.identity-changed');
-        identity = after;
+        const exact = this.boundedObservedTarget(request.target, nodes, after);
+        if (!exact) throw new Error('browser.observation.target-stale');
+        nodes = [exact];
       }
-      const bounded = this.boundSemantic(nodes, surface, identity, request);
-      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: !bounded.truncated, truncated: bounded.truncated, surface, ...(request.target ? { target: request.target } : {}), data: bounded.data };
+      const bounded = this.boundSemantic(nodes, surface, after, request);
+      const truncated = snapshot.truncated || bounded.truncated;
+      return { adapterId: this.descriptor.id, environment: 'browser', channel: request.channel, sequence, complete: snapshot.complete && !truncated, truncated, surface, ...(request.target ? { target: request.target } : {}), data: bounded.data };
     }
     if (request.channel === 'document') {
       const maxBlocks = boundedPositive(request.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
