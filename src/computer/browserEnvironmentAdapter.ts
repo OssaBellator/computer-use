@@ -179,16 +179,14 @@ interface ResolvedEntity {
 function utf8Bytes(value: string): number { return new TextEncoder().encode(value).byteLength; }
 function truncateUtf8(value: string, remaining: number): { value: string; bytes: number; truncated: boolean } {
   if (remaining <= 0) return { value: '', bytes: 0, truncated: value.length > 0 };
-  const size = utf8Bytes(value);
-  if (size <= remaining) return { value, bytes: size, truncated: false };
   let result = '', bytes = 0;
   for (const char of value) {
     const charBytes = utf8Bytes(char);
-    if (bytes + charBytes > remaining) break;
+    if (bytes + charBytes > remaining) return { value: result, bytes, truncated: true };
     result += char;
     bytes += charBytes;
   }
-  return { value: result, bytes, truncated: true };
+  return { value, bytes, truncated: false };
 }
 function boundedEvidence(values: readonly string[]): string[] {
   const result: string[] = [];
@@ -259,6 +257,109 @@ function boundedInteractionCapabilities(value: unknown): { values: InteractionCa
     values.push(descriptor.value);
   }
   return { values, truncated: length > MAX_SEMANTIC_CAPABILITIES };
+}
+function snapshotSemanticNode(
+  value: unknown,
+  remainingTextBytes: number,
+): { node: InteractionNode; textBytes: number; truncated: boolean } {
+  const source = plainDataRecord(value, 'browser semantic node', [
+    'id', 'structuralId', 'frameId', 'backendNodeId', 'role', 'name', 'value', 'focused', 'disabled',
+    'viewportVisible', 'mainViewportVisible', 'focusable', 'clickable', 'editable', 'scrollable',
+    'capabilities', 'interactionConfidence',
+  ]);
+  const id = dataProperty(source, 'id');
+  const structuralId = dataProperty(source, 'structuralId');
+  const frameId = dataProperty(source, 'frameId');
+  const backendNodeId = dataProperty(source, 'backendNodeId');
+  const focused = dataProperty(source, 'focused');
+  const disabled = dataProperty(source, 'disabled');
+  const viewportVisible = dataProperty(source, 'viewportVisible');
+  const mainViewportVisible = dataProperty(source, 'mainViewportVisible');
+  const focusable = dataProperty(source, 'focusable');
+  const clickable = dataProperty(source, 'clickable');
+  const editable = dataProperty(source, 'editable');
+  const scrollable = dataProperty(source, 'scrollable');
+  const interactionConfidence = dataProperty(source, 'interactionConfidence');
+  if (typeof id !== 'string' || id.length === 0 || typeof frameId !== 'string' || frameId.length === 0) {
+    throw new Error('browser.semantic.node-invalid');
+  }
+  if (structuralId !== undefined && typeof structuralId !== 'string') throw new Error('browser.semantic.node-invalid');
+  if (backendNodeId !== undefined && (typeof backendNodeId !== 'number' || !Number.isSafeInteger(backendNodeId) || backendNodeId < 1)) {
+    throw new Error('browser.semantic.node-invalid');
+  }
+  if (typeof focused !== 'boolean' || typeof disabled !== 'boolean' || typeof focusable !== 'boolean' ||
+      typeof clickable !== 'boolean' || typeof editable !== 'boolean' || typeof scrollable !== 'boolean' ||
+      typeof interactionConfidence !== 'number' || !Number.isFinite(interactionConfidence)) {
+    throw new Error('browser.semantic.node-invalid');
+  }
+  if (viewportVisible !== undefined && typeof viewportVisible !== 'boolean') throw new Error('browser.semantic.node-invalid');
+  if (mainViewportVisible !== undefined && typeof mainViewportVisible !== 'boolean') throw new Error('browser.semantic.node-invalid');
+  const capabilities = boundedInteractionCapabilities(dataProperty(source, 'capabilities'));
+  const node: InteractionNode = {
+    id,
+    ...(structuralId !== undefined ? { structuralId } : {}),
+    frameId,
+    ...(backendNodeId !== undefined ? { backendNodeId } : {}),
+    focused,
+    disabled,
+    ...(viewportVisible !== undefined ? { viewportVisible } : {}),
+    ...(mainViewportVisible !== undefined ? { mainViewportVisible } : {}),
+    focusable,
+    clickable,
+    editable,
+    scrollable,
+    capabilities: capabilities.values,
+    interactionConfidence,
+  };
+  let textBytes = 0;
+  let truncated = capabilities.truncated;
+  for (const field of ['role', 'name', 'value'] as const) {
+    const fieldValue = dataProperty(source, field);
+    if (fieldValue === undefined) continue;
+    if (typeof fieldValue !== 'string') throw new Error('browser.semantic.node-invalid');
+    const piece = truncateUtf8(fieldValue, Math.max(0, remainingTextBytes - textBytes));
+    if (piece.value) node[field] = piece.value;
+    textBytes += piece.bytes;
+    truncated ||= piece.truncated;
+  }
+  return { node: Object.freeze(node), textBytes, truncated };
+}
+function snapshotBoundedSemanticResult(
+  value: unknown,
+  limits: BoundedSemanticSnapshotLimits,
+): BoundedSemanticSnapshotResult {
+  const source = plainDataRecord(value, 'browser semantic result', ['nodes', 'complete', 'truncated']);
+  const complete = dataProperty(source, 'complete');
+  const sourceTruncated = dataProperty(source, 'truncated');
+  const sourceNodes = dataProperty(source, 'nodes');
+  if (typeof complete !== 'boolean' || typeof sourceTruncated !== 'boolean' || !Array.isArray(sourceNodes)) {
+    throw new Error('browser.semantic.result-invalid');
+  }
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(sourceNodes, 'length');
+  if (!lengthDescriptor || !('value' in lengthDescriptor) || typeof lengthDescriptor.value !== 'number' ||
+      !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+    throw new Error('browser.semantic.result-invalid');
+  }
+  const hardItemLimit = Math.min(Math.max(0, Math.floor(limits.maxItems)), MAX_OBSERVATION_ITEMS);
+  const hardTextLimit = Math.min(Math.max(0, Math.floor(limits.maxTextBytes)), MAX_OBSERVATION_TEXT_BYTES);
+  const sourceLength = lengthDescriptor.value;
+  const itemLimit = Math.min(sourceLength, hardItemLimit);
+  const nodes: InteractionNode[] = [];
+  let textBytes = 0;
+  let materialTruncated = sourceLength > itemLimit;
+  for (let index = 0; index < itemLimit; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(sourceNodes, String(index));
+    if (!descriptor || !('value' in descriptor)) throw new Error('browser.semantic.result-invalid');
+    const captured = snapshotSemanticNode(descriptor.value, Math.max(0, hardTextLimit - textBytes));
+    nodes.push(captured.node);
+    textBytes += captured.textBytes;
+    materialTruncated ||= captured.truncated;
+  }
+  return Object.freeze({
+    nodes: Object.freeze(nodes) as unknown as InteractionNode[],
+    complete: complete && !materialTruncated,
+    truncated: sourceTruncated || materialTruncated,
+  });
 }
 function snapshotEntityRef(value: unknown): Readonly<ComputerEntityRef> | undefined {
   if (value === undefined) return undefined;
@@ -613,12 +714,10 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     let textBytes = 0, truncated = nodes.length > maxItems;
     for (const node of nodes.slice(0, maxItems)) {
       if ((node.frameId !== 'main' && !identity.complete) || !identity.frameTokens[node.frameId]) throw new Error('browser.frame.identity-unavailable');
-      const capabilities = boundedInteractionCapabilities(node.capabilities);
-      truncated ||= capabilities.truncated;
       const bounded: BoundedSemanticNode = {
         entity: this.entityForNode(node, surface, identity), focused: node.focused, disabled: node.disabled,
         visible: node.mainViewportVisible !== false && node.viewportVisible !== false,
-        capabilities: capabilities.values,
+        capabilities: node.capabilities,
       };
       for (const field of ['role', 'name', 'value'] as const) {
         const source = node[field];
@@ -660,10 +759,14 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
       const maxItems = boundedPositive(authority.limits?.maxItems, DEFAULT_MAX_ITEMS, MAX_OBSERVATION_ITEMS);
       const maxTextBytes = boundedPositive(authority.limits?.maxTextBytes, DEFAULT_MAX_TEXT_BYTES, MAX_OBSERVATION_TEXT_BYTES);
       const maxDepth = boundedPositive(authority.limits?.maxDepth, MAX_OBSERVATION_DEPTH, MAX_OBSERVATION_DEPTH);
+      const semanticLimits = { maxItems, maxTextBytes, maxDepth };
       const before = await this.activeDocumentIdentity(surface);
       if (!before) throw new Error('browser.document.identity-unavailable');
-      const snapshot = await this.runtime.semanticSnapshot(surface.surfaceId, { maxItems, maxTextBytes, maxDepth });
-      if (!snapshot) throw new Error('browser.semantic.unavailable');
+      const rawSnapshot = await this.runtime.semanticSnapshot(surface.surfaceId, semanticLimits);
+      if (!rawSnapshot) throw new Error('browser.semantic.unavailable');
+      let snapshot: BoundedSemanticSnapshotResult;
+      try { snapshot = snapshotBoundedSemanticResult(rawSnapshot, semanticLimits); }
+      catch { throw new Error('browser.semantic.invalid-result'); }
       const after = await this.activeDocumentIdentity(surface);
       if (!after || !sameDocumentIdentity(before, after)) throw new Error('browser.document.identity-changed');
       let nodes = snapshot.nodes;
@@ -731,9 +834,13 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
           return async () => {
             const before = await adapter.activeDocumentIdentity(resolved.surface);
             if (!before || before.topToken !== resolved.identity.topToken || before.frameTokens[resolved.node.frameId] !== resolved.frameToken) return [];
-            const snapshot = await target.semanticSnapshot?.(resolved.surface.surfaceId, BOUNDED_ACTION_SEMANTIC_LIMITS);
+            const rawSnapshot = await target.semanticSnapshot?.(resolved.surface.surfaceId, BOUNDED_ACTION_SEMANTIC_LIMITS);
+            if (!rawSnapshot) return [];
+            let snapshot: BoundedSemanticSnapshotResult;
+            try { snapshot = snapshotBoundedSemanticResult(rawSnapshot, BOUNDED_ACTION_SEMANTIC_LIMITS); }
+            catch { return []; }
             const after = await adapter.activeDocumentIdentity(resolved.surface);
-            if (!snapshot || !after || !sameDocumentIdentity(before, after)) return [];
+            if (!after || !sameDocumentIdentity(before, after)) return [];
             return snapshot.nodes;
           };
         }
