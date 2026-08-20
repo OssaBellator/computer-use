@@ -81,17 +81,42 @@ function mapLinuxState(value: string): ProcessState {
 }
 function safeGeneration(startTicks: number): number { return Number.isSafeInteger(startTicks) && startTicks >= 0 ? startTicks : 0; }
 const PROCESS_STATES = new Set<ProcessState>(['running', 'sleeping', 'waiting', 'stopped', 'zombie', 'dead', 'unknown']);
-function validProcessRecordForPid(value: unknown, requestedPid: number): value is ProcessRecord {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Partial<ProcessRecord>;
-  if (record.pid !== requestedPid || !Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
-  if (!Number.isSafeInteger(record.startTicks) || (record.startTicks ?? -1) < 0) return false;
-  if (typeof record.name !== 'string' || typeof record.state !== 'string' || !PROCESS_STATES.has(record.state as ProcessState)) return false;
-  if (record.parentPid !== undefined && (!Number.isSafeInteger(record.parentPid) || record.parentPid < 0)) return false;
-  if (record.executable !== undefined && typeof record.executable !== 'string') return false;
-  if (record.cpuTimeTicks !== undefined && (!Number.isFinite(record.cpuTimeTicks) || record.cpuTimeTicks < 0)) return false;
-  if (record.rssBytes !== undefined && (!Number.isFinite(record.rssBytes) || record.rssBytes < 0)) return false;
-  return true;
+const PROCESS_RECORD_KEYS = new Set(['pid', 'parentPid', 'startTicks', 'name', 'executable', 'state', 'cpuTimeTicks', 'rssBytes']);
+function snapshotProcessRecordForPid(value: unknown, requestedPid: number): Readonly<ProcessRecord> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  if (Object.getOwnPropertySymbols(value).length > 0) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!PROCESS_RECORD_KEYS.has(key) || !('value' in descriptor)) return undefined;
+  }
+  const field = (key: string): unknown => descriptors[key] && 'value' in descriptors[key]! ? descriptors[key]!.value : undefined;
+  const pid = field('pid');
+  const parentPid = field('parentPid');
+  const startTicks = field('startTicks');
+  const name = field('name');
+  const executable = field('executable');
+  const state = field('state');
+  const cpuTimeTicks = field('cpuTimeTicks');
+  const rssBytes = field('rssBytes');
+  if (pid !== requestedPid || !Number.isSafeInteger(pid) || (pid as number) <= 0) return undefined;
+  if (!Number.isSafeInteger(startTicks) || (startTicks as number) < 0) return undefined;
+  if (typeof name !== 'string' || typeof state !== 'string' || !PROCESS_STATES.has(state as ProcessState)) return undefined;
+  if (parentPid !== undefined && (!Number.isSafeInteger(parentPid) || (parentPid as number) < 0)) return undefined;
+  if (executable !== undefined && typeof executable !== 'string') return undefined;
+  if (cpuTimeTicks !== undefined && (typeof cpuTimeTicks !== 'number' || !Number.isFinite(cpuTimeTicks) || cpuTimeTicks < 0)) return undefined;
+  if (rssBytes !== undefined && (typeof rssBytes !== 'number' || !Number.isFinite(rssBytes) || rssBytes < 0)) return undefined;
+  return Object.freeze({
+    pid: pid as number,
+    ...(parentPid === undefined ? {} : { parentPid: parentPid as number }),
+    startTicks: startTicks as number,
+    name,
+    ...(executable === undefined ? {} : { executable }),
+    state: state as ProcessState,
+    ...(cpuTimeTicks === undefined ? {} : { cpuTimeTicks }),
+    ...(rssBytes === undefined ? {} : { rssBytes }),
+  });
 }
 
 export class HostProcessSnapshotSource implements ProcessSnapshotSource {
@@ -152,12 +177,12 @@ export class ProcessIdentityStore {
     for (const pid of batch.pids) {
       if (items.length >= limit) break;
       inspected += 1;
-      const record = await this.source.inspect(pid);
-      if (validProcessRecordForPid(record, pid)) items.push(this.toSnapshot(record));
+      const record = snapshotProcessRecordForPid(await this.source.inspect(pid), pid);
+      if (record) items.push(this.toSnapshot(record));
     }
     return { items, truncated: batch.truncated || inspected < batch.pids.length };
   }
-  async inspect(pid: number): Promise<BoundedProcessSnapshot | undefined> { const record = await this.source.inspect(pid); return validProcessRecordForPid(record, pid) ? this.toSnapshot(record) : undefined; }
+  async inspect(pid: number): Promise<BoundedProcessSnapshot | undefined> { const record = snapshotProcessRecordForPid(await this.source.inspect(pid), pid); return record ? this.toSnapshot(record) : undefined; }
   async acknowledgeSpawn(pid: number): Promise<ComputerEntityRef> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const record = await Promise.race([
@@ -167,13 +192,14 @@ export class ProcessIdentityStore {
       }),
     ]);
     if (timeout) clearTimeout(timeout);
-    if (validProcessRecordForPid(record, pid)) return this.toSnapshot(record).ref;
+    const snapshot = snapshotProcessRecordForPid(record, pid);
+    if (snapshot) return this.toSnapshot(snapshot).ref;
     const generation = SYNTHETIC_GENERATION_BASE + (this.syntheticCounter++ % 1_000_000);
     this.syntheticByPid.set(pid, generation);
     return this.ref(pid, generation);
   }
   ref(pid: number, generation: number): ComputerEntityRef { return { adapterId: this.adapterId, environment: 'process', kind: 'process', entityId: `pid:${pid}`, generation }; }
-  private toSnapshot(record: ProcessRecord): BoundedProcessSnapshot { const generation = safeGeneration(record.startTicks); this.syntheticByPid.delete(record.pid); return { ref: this.ref(record.pid, generation), pid: record.pid, ...(record.parentPid !== undefined ? { parentPid: record.parentPid } : {}), name: truncateUtf8(record.name, MAX_NAME_BYTES), ...(record.executable ? { executable: truncateUtf8(basename(record.executable), MAX_NAME_BYTES) } : {}), state: record.state, ...(record.cpuTimeTicks !== undefined ? { cpuTimeTicks: Math.max(0, Math.floor(record.cpuTimeTicks)) } : {}), ...(record.rssBytes !== undefined ? { rssBytes: Math.max(0, Math.floor(record.rssBytes)) } : {}) }; }
+  private toSnapshot(record: Readonly<ProcessRecord>): BoundedProcessSnapshot { const generation = safeGeneration(record.startTicks); this.syntheticByPid.delete(record.pid); return { ref: this.ref(record.pid, generation), pid: record.pid, ...(record.parentPid !== undefined ? { parentPid: record.parentPid } : {}), name: truncateUtf8(record.name, MAX_NAME_BYTES), ...(record.executable ? { executable: truncateUtf8(basename(record.executable), MAX_NAME_BYTES) } : {}), state: record.state, ...(record.cpuTimeTicks !== undefined ? { cpuTimeTicks: Math.max(0, Math.floor(record.cpuTimeTicks)) } : {}), ...(record.rssBytes !== undefined ? { rssBytes: Math.max(0, Math.floor(record.rssBytes)) } : {}) }; }
 }
 
 function applyTextBudget(items: readonly BoundedProcessSnapshot[], maxTextBytes: number): { items: BoundedProcessSnapshot[]; truncated: boolean } {
