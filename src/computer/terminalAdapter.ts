@@ -486,7 +486,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
       return {
         status: 'failed',
         dispatch: 'dispatched-once',
-        verification: exitStatusVerifiesDomain ? 'verified' : 'unverified',
+        verification: exitStatusVerifiesDomain ? 'verified' : 'not-applicable',
         evidence: [exitStatusVerifiesDomain ? 'terminal.execution.timeout' : 'terminal.execution.timeout-domain-unverified'],
         details,
       };
@@ -495,7 +495,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
       return {
         status: 'completed',
         dispatch: 'dispatched-once',
-        verification: exitStatusVerifiesDomain ? 'verified' : 'unverified',
+        verification: exitStatusVerifiesDomain ? 'verified' : 'not-applicable',
         evidence: [exitStatusVerifiesDomain ? 'terminal.execution.exited-zero' : 'terminal.execution.exited-zero-domain-unverified'],
         details,
       };
@@ -503,7 +503,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     return {
       status: 'failed',
       dispatch: 'dispatched-once',
-      verification: exitStatusVerifiesDomain ? 'verified' : 'unverified',
+      verification: exitStatusVerifiesDomain ? 'verified' : 'not-applicable',
       evidence: [
         outcome.code === null
           ? (exitStatusVerifiesDomain ? 'terminal.execution.signaled' : 'terminal.execution.signaled-domain-unverified')
