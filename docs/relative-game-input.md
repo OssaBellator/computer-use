@@ -4,7 +4,7 @@ This slice adds a small but important foundation for browser games that use cont
 
 ## Input capability
 
-`BrowserInput` now has an optional `movePointerBy(delta)` capability. The delta is expressed in viewport CSS pixels and represents movement relative to the adapter's last successful pointer position.
+`BrowserInput` has an optional `movePointerBy(delta)` capability. The delta is expressed in viewport CSS pixels and represents movement relative to the adapter's last successful pointer position.
 
 The bundled CDP and Playwright-compatible adapters both implement the capability by tracking a logical pointer position and issuing the next normal browser mouse move at `current + delta`.
 
@@ -40,17 +40,17 @@ A policy may request either `pointer` or `pointerDelta` in one tick, never both.
 
 Held keys and buttons still use the existing state-diff semantics, so a game can receive one `keydown`, multiple relative mouse movements across subsequent ticks, and one cleanup `keyup` when the loop stops.
 
-## Browser semantics and pointer lock
+## Pointer lock and capture
 
-The local Chromium regression verifies browser-observed `mousemove.movementX` / `movementY` values from real CDP mouse moves while a keyboard control remains held. It does not synthesize those DOM events.
+Relative coordinate accumulation does not by itself prove that a page owns pointer lock. For interactions that require lock, wrap the existing input with `guardRelativePointerInput()` and a `PointerLockController`. Required mode suppresses the delta and throws before dispatch when the observed lock is absent or belongs to the wrong frame/element/renderer. Preferred mode suppresses the delta and requires an explicit degradation callback; it never silently substitutes an absolute move.
 
-Pointer-lock acquisition itself is browser- and page-policy-dependent and generally requires the page's normal activation flow. Headless Chromium does not provide a reliable stand-in for every site's pointer-lock permission behavior, so the regression deliberately tests the input invariant beneath pointer lock rather than claiming universal lock acquisition.
+The CDP observer resolves `document.pointerLockElement` to browser backend identity and can associate it with frame/target and game-region generation. Separate pointer-capture observation uses `hasPointerCapture(pointerId)`. See [`pointer-lock-lifecycle.md`](pointer-lock-lifecycle.md) for the state machines, bounded recovery hooks, and lifecycle signals.
 
-On pages that are not pointer-locked, accumulated relative moves can eventually leave the useful viewport region. Policies intended for ordinary pointer interaction should continue using absolute target acquisition; `pointerDelta` is intended for bounded relative-control windows such as mouse-look, drag-like steering, or a page that has already captured the pointer.
+For ordinary interactions that intentionally do not require pointer lock, the original `movePointerBy()` path remains available. This preserves bounded relative-control windows and existing optional adapters without making Pointer Lock a universal requirement for every relative delta.
 
 ## Regression coverage
 
-The unit tests cover:
+The relative-input unit tests cover:
 
 - CDP relative-coordinate accumulation and subsequent button origin
 - Playwright-compatible relative-coordinate accumulation
@@ -61,4 +61,4 @@ The unit tests cover:
 
 `tests/integration/relativeGameInputSmoke.test.mjs` launches local Chromium, injects a deterministic game fixture into `about:blank`, holds `w` across control ticks, and applies three `{ x: 6, y: -2 }` relative moves. The fixture must observe exactly one keydown, one cleanup keyup, and browser-reported mouse deltas totaling yaw `18` and pitch `-6`.
 
-No GitHub Actions or platform UI automation is required for this regression; it runs through the repository's existing local Chromium test path.
+Pointer-lock/capture lifecycle coverage is separate in `tests/integration/pointerLockLifecycleSmoke.test.mjs` so unsupported headless pointer-lock behavior can be isolated accurately instead of weakening the base relative-input invariant.
