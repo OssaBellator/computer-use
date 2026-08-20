@@ -21,6 +21,7 @@ const endpoint: RemoteEndpointIdentity = Object.freeze({ endpointId: 'ssh-advers
 
 class AdversarialSshProvider implements SshTransportProvider {
   connectCalls = 0;
+  cleanupCalls = 0;
   disconnectCalls = 0;
   execCalls = 0;
   nextSession: unknown = { providerSessionId: 'provider-1', remoteHostId: 'host-1' };
@@ -31,6 +32,7 @@ class AdversarialSshProvider implements SshTransportProvider {
     this.connectCalls++;
     return this.nextSession as SshProviderSession;
   }
+  async cleanupFailedConnect(_candidate: unknown): Promise<void> { this.cleanupCalls++; }
   async disconnect(_session: SshProviderSession): Promise<void> { this.disconnectCalls++; }
   async executeArgv(_session: SshProviderSession, _invocation: RemoteCommandInvocation, _limits: SshProviderExecLimits): Promise<RemoteDispatchOutcome<RemoteCommandResult>> {
     this.execCalls++;
@@ -72,7 +74,7 @@ test('credential material accessors are rejected before provider connect', async
   assert.equal(adapter.state().authority, undefined);
 });
 
-test('provider session accessors are not invoked and malformed candidate is cleaned once', async () => {
+test('provider session accessors are not invoked and malformed candidate uses raw cleanup once', async () => {
   const provider = new AdversarialSshProvider();
   let accessorCalls = 0;
   const candidate = { remoteHostId: 'host-1' } as Record<string, unknown>;
@@ -84,7 +86,26 @@ test('provider session accessors are not invoked and malformed candidate is clea
   const adapter = new RemoteSessionAdapter('ssh', endpoint, new SshRemoteSessionBackend(provider));
   await assert.rejects(() => adapter.connect(), /invalid ssh provider session/);
   assert.equal(accessorCalls, 0);
-  assert.equal(provider.disconnectCalls, 1);
+  assert.equal(provider.cleanupCalls, 1);
+  assert.equal(provider.disconnectCalls, 0);
+  assert.equal(adapter.state().authority, undefined);
+});
+
+test('provider prototype trap fails closed and still reaches raw-candidate cleanup', async () => {
+  const provider = new AdversarialSshProvider();
+  let prototypeTrapCalls = 0;
+  const candidate = new Proxy({}, {
+    getPrototypeOf() {
+      prototypeTrapCalls++;
+      throw new Error('hostile prototype trap');
+    },
+  });
+  provider.nextSession = candidate;
+  const adapter = new RemoteSessionAdapter('ssh', endpoint, new SshRemoteSessionBackend(provider));
+  await assert.rejects(() => adapter.connect(), /invalid ssh provider session/);
+  assert.equal(prototypeTrapCalls, 1);
+  assert.equal(provider.cleanupCalls, 1);
+  assert.equal(provider.disconnectCalls, 0);
   assert.equal(adapter.state().authority, undefined);
 });
 
