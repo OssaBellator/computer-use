@@ -246,7 +246,7 @@ test('timeout is dispatched once and reports process timeout without domain veri
     const result = await adapter.act(argvRequest(cwd, { argv: ['-e', 'setInterval(() => {}, 1000)'], timeoutMs: 50 }));
     assert.equal(result.status, 'failed');
     assert.equal(result.dispatch, 'dispatched-once');
-    assert.equal(result.verification, 'unverified');
+    assert.equal(result.verification, 'not-applicable');
     assert.deepEqual(result.evidence, ['terminal.execution.timeout-domain-unverified']);
     assert.equal((result.details as TerminalExecutionDetails).timedOut, true);
   } finally { await rm(cwd, { recursive: true, force: true }); }
@@ -308,14 +308,14 @@ test('argv and shell are separate capabilities and shell stays explicit', async 
   const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test', new FakeProcessSource()), closingSpawner(calls), stableBinder());
   const argvResult = await adapter.act(argvRequest('/fixture', { argv: ['literal;argument'] }));
   assert.equal(argvResult.status, 'completed');
-  assert.equal(argvResult.verification, 'unverified');
+  assert.equal(argvResult.verification, 'not-applicable');
   assert.equal(calls[0]?.options.shell, false);
   const shellResult = await adapter.act({
     adapterId: 'terminal:test', actionId: 'shell', capability: 'terminal.execute.shell', effect: 'security-sensitive', idempotency: 'non-idempotent',
     payload: { mode: 'shell', shellExecutable: '/fixture/shell', shellArgs: ['-c'], command: 'echo x', cwd: '/fixture', classification: 'local-compute' },
   });
   assert.equal(shellResult.status, 'completed');
-  assert.equal(shellResult.verification, 'unverified');
+  assert.equal(shellResult.verification, 'not-applicable');
   assert.deepEqual(calls[1]?.argv, ['-c', 'echo x']);
   assert.equal(calls[1]?.options.shell, false);
 });
@@ -337,7 +337,7 @@ test('non-zero exit under stronger effect is process failure but domain unverifi
     const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'));
     const result = await adapter.act(argvRequest(cwd, { argv: ['-e', 'process.exit(7)'] }));
     assert.equal(result.status, 'failed');
-    assert.equal(result.verification, 'unverified');
+    assert.equal(result.verification, 'not-applicable');
     assert.deepEqual(result.evidence, ['terminal.execution.nonzero-exit-domain-unverified']);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
