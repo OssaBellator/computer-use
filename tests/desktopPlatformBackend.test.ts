@@ -47,6 +47,14 @@ function surfaceTarget(adapter:DesktopUiEnvironmentAdapter,window:Awaited<Return
   return {adapterId:adapter.descriptor.id,environment:'desktop-ui' as const,kind:'surface' as const,entityId:window.nativeWindowId,surfaceId:window.nativeWindowId,generation:window.generation};
 }
 
+test('independent platform backend instances never recreate the same public window authority',async()=>{
+  const first = new DesktopUiEnvironmentAdapter(new PlatformDesktopUiBackend(new ContractBridge()),'desktop:first');
+  const second = new DesktopUiEnvironmentAdapter(new PlatformDesktopUiBackend(new ContractBridge()),'desktop:second');
+  const firstWindow = await observed(first);
+  const secondWindow = await observed(second);
+  assert.notEqual(firstWindow.nativeWindowId,secondWindow.nativeWindowId);
+});
+
 test('window native-handle replacement advances generation instead of reusing authority',async()=>{
   const bridge = new ContractBridge();
   const adapter = new DesktopUiEnvironmentAdapter(new PlatformDesktopUiBackend(bridge),'desktop:contract');
