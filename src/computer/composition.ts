@@ -27,6 +27,14 @@ function snapshotAdapter(
   });
 }
 
+function validateAndSnapshotAdapter(adapter: ComputerEnvironmentAdapter): ComputerEnvironmentAdapter {
+  const validationRegistry = new ComputerEnvironmentRegistry();
+  validationRegistry.register(adapter);
+  const [descriptor] = validationRegistry.descriptors();
+  if (!descriptor) throw new Error('registered adapter descriptor unavailable');
+  return snapshotAdapter(adapter, descriptor);
+}
+
 /**
  * Small environment-neutral composition root for computer-use programs.
  *
@@ -58,21 +66,10 @@ export class ComputerRuntimeComposition {
   }
 
   register(adapter: ComputerEnvironmentAdapter): this {
-    this.registry.register(adapter);
-    const untracked = this.registry.descriptors().filter(({ id }) => !this.runtimeAdapters.has(id));
-    if (untracked.length !== 1) {
-      for (const descriptor of untracked) this.registry.unregister(descriptor.id);
-      throw new Error('registered adapter descriptor unavailable');
-    }
-
-    const descriptor = untracked[0];
-    try {
-      this.runtimeAdapters.set(descriptor.id, snapshotAdapter(adapter, descriptor));
-      return this;
-    } catch (error) {
-      this.registry.unregister(descriptor.id);
-      throw error;
-    }
+    const snapshot = validateAndSnapshotAdapter(adapter);
+    this.registry.register(snapshot);
+    this.runtimeAdapters.set(snapshot.descriptor.id, snapshot);
+    return this;
   }
 
   unregister(adapterId: string): boolean {
