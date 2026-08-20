@@ -1,10 +1,12 @@
 import {
+  COMPUTER_ENVIRONMENT_KINDS,
   type ComputerActionRequest,
   type ComputerActionResult,
   type ComputerEnvironmentAdapter,
   type ComputerEnvironmentAdapterDescriptor,
   type ComputerObservationEnvelope,
   type ComputerObservationRequest,
+  validComputerCapabilityId,
   validateComputerActionRequest,
   validateComputerEntityRef,
   validateComputerObservationRequest,
@@ -25,6 +27,11 @@ export class ComputerAdapterRoutingError extends Error {
   }
 }
 
+interface RegisteredAdapter {
+  adapter: ComputerEnvironmentAdapter;
+  descriptor: ComputerEnvironmentAdapterDescriptor;
+}
+
 function boundedIdentifier(value: string, max = 256): boolean {
   return value.length > 0 && value.length <= max && !/[\r\n\0]/.test(value);
 }
@@ -32,10 +39,15 @@ function boundedIdentifier(value: string, max = 256): boolean {
 function validateDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): string[] {
   const errors: string[] = [];
   if (!boundedIdentifier(descriptor.id)) errors.push('adapter id must be bounded and non-empty');
+  if (!COMPUTER_ENVIRONMENT_KINDS.includes(descriptor.kind)) errors.push('adapter kind is unsupported');
   if (!boundedIdentifier(descriptor.version, 128)) errors.push('adapter version must be bounded and non-empty');
+  if (!Array.isArray(descriptor.capabilities) || descriptor.capabilities.length > 512) {
+    errors.push('adapter capabilities must contain at most 512 entries');
+    return errors;
+  }
   const seen = new Set<string>();
   for (const capability of descriptor.capabilities) {
-    if (!boundedIdentifier(capability)) errors.push('adapter capability must be bounded and non-empty');
+    if (!validComputerCapabilityId(capability)) errors.push('adapter capability must be a bounded machine identifier');
     if (seen.has(capability)) errors.push(`duplicate adapter capability: ${capability}`);
     seen.add(capability);
   }
@@ -43,12 +55,12 @@ function validateDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): s
 }
 
 function cloneDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): ComputerEnvironmentAdapterDescriptor {
-  return {
+  return Object.freeze({
     id: descriptor.id,
     kind: descriptor.kind,
     version: descriptor.version,
     capabilities: Object.freeze([...descriptor.capabilities]),
-  };
+  });
 }
 
 function invalidObservationResponse(
@@ -102,23 +114,27 @@ function validEvidence(evidence: readonly string[] | undefined): boolean {
 /**
  * Adapter registry/router for the environment-neutral core.
  *
+ * Descriptors are snapshotted at registration so an adapter cannot mutate its
+ * validated identity/kind/capability authority after registration.
+ *
  * Observation contract violations throw because observations are read-only.
  * Action adapter failures after invocation never throw through this boundary:
  * once dispatch might have occurred, the registry returns dispatch=unknown so a
  * caller cannot accidentally interpret an exception as a safe-to-retry action.
  */
 export class ComputerEnvironmentRegistry {
-  private readonly adapters = new Map<string, ComputerEnvironmentAdapter>();
+  private readonly adapters = new Map<string, RegisteredAdapter>();
 
   register(adapter: ComputerEnvironmentAdapter): void {
     const errors = validateDescriptor(adapter.descriptor);
     if (errors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-descriptor', errors.join('; '));
     }
-    if (this.adapters.has(adapter.descriptor.id)) {
-      throw new ComputerAdapterRoutingError('adapter-already-registered', `adapter already registered: ${adapter.descriptor.id}`);
+    const descriptor = cloneDescriptor(adapter.descriptor);
+    if (this.adapters.has(descriptor.id)) {
+      throw new ComputerAdapterRoutingError('adapter-already-registered', `adapter already registered: ${descriptor.id}`);
     }
-    this.adapters.set(adapter.descriptor.id, adapter);
+    this.adapters.set(descriptor.id, { adapter, descriptor });
   }
 
   unregister(adapterId: string): boolean {
@@ -132,21 +148,21 @@ export class ComputerEnvironmentRegistry {
 
   descriptors(): ComputerEnvironmentAdapterDescriptor[] {
     return [...this.adapters.values()]
-      .map((adapter) => cloneDescriptor(adapter.descriptor))
+      .map(({ descriptor }) => cloneDescriptor(descriptor))
       .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    const adapter = this.adapters.get(request.adapterId);
-    if (!adapter) {
+    const registered = this.adapters.get(request.adapterId);
+    if (!registered) {
       throw new ComputerAdapterRoutingError('adapter-not-found', `adapter not found: ${request.adapterId}`);
     }
-    const requestErrors = validateComputerObservationRequest(request, adapter.descriptor);
+    const requestErrors = validateComputerObservationRequest(request, registered.descriptor);
     if (requestErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-request', requestErrors.join('; '));
     }
-    const response = await adapter.observe(request);
-    const responseErrors = invalidObservationResponse(request, adapter.descriptor, response);
+    const response = await registered.adapter.observe(request);
+    const responseErrors = invalidObservationResponse(request, registered.descriptor, response);
     if (responseErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-response', responseErrors.join('; '));
     }
@@ -154,17 +170,17 @@ export class ComputerEnvironmentRegistry {
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    const adapter = this.adapters.get(request.adapterId);
-    if (!adapter) return nondispatched('unsupported', 'adapter-not-found');
+    const registered = this.adapters.get(request.adapterId);
+    if (!registered) return nondispatched('unsupported', 'adapter-not-found');
 
-    const requestErrors = validateComputerActionRequest(request, adapter.descriptor);
+    const requestErrors = validateComputerActionRequest(request, registered.descriptor);
     if (requestErrors.length > 0) return nondispatched('rejected', 'invalid-action-request');
-    if (!adapter.descriptor.capabilities.includes(request.capability)) {
+    if (!registered.descriptor.capabilities.includes(request.capability)) {
       return nondispatched('unsupported', 'capability-not-advertised');
     }
 
     try {
-      const result = await adapter.act(request);
+      const result = await registered.adapter.act(request);
       if (
         !['completed', 'rejected', 'unsupported', 'failed', 'unknown'].includes(result.status) ||
         !['not-dispatched', 'dispatched-once', 'unknown'].includes(result.dispatch) ||
