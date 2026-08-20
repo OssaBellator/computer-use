@@ -1,5 +1,6 @@
 import {
   computerActionMayAutoRetry,
+  validateComputerActionRequest,
   validateComputerObservationRequest,
   type ComputerActionIdempotency,
   type ComputerActionRequest,
@@ -128,12 +129,23 @@ export interface SystemDeviceActionLedger {
   record(actionId: string, result: Readonly<ComputerActionResult>): Promise<void>;
 }
 
+/**
+ * Acquisition budget passed into backend enumeration. Backends must not materialize
+ * more than maxItems entries and should keep dynamic text acquisition within
+ * maxTextBytes. The adapter also rejects an over-limit returned collection before
+ * iterating it.
+ */
+export interface SystemDeviceEnumerationBudget {
+  readonly maxItems: number;
+  readonly maxTextBytes: number;
+}
+
 export interface SystemDeviceBackend {
   readonly platformFamily: string;
   privilegeState(): Promise<SystemDevicePrivilegeState>;
   systemInformation(): Promise<SystemDeviceBackendResult<BoundedSystemInformation>>;
-  enumerateDevices(): Promise<SystemDeviceBackendResult<readonly BoundedDeviceMetadata[]>>;
-  enumerateVolumes(): Promise<SystemDeviceBackendResult<readonly BoundedVolumeMetadata[]>>;
+  enumerateDevices(budget: Readonly<SystemDeviceEnumerationBudget>): Promise<SystemDeviceBackendResult<readonly BoundedDeviceMetadata[]>>;
+  enumerateVolumes(budget: Readonly<SystemDeviceEnumerationBudget>): Promise<SystemDeviceBackendResult<readonly BoundedVolumeMetadata[]>>;
   observeSystemSetting(scope: SystemSettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SystemSettingObservation>>;
   observeSecuritySetting(scope: SecuritySettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SecuritySettingObservation>>;
   freshMutationBaseline(target: SystemDeviceIdentity, setting: string): Promise<SystemDeviceBackendResult<SystemDeviceMutationBaseline>>;
@@ -149,6 +161,8 @@ const MAX_ID_BYTES = 192;
 const MAX_LABEL_BYTES = 160;
 const MAX_VALUE_BYTES = 256;
 const MAX_EVIDENCE = 32;
+const MAX_ENUMERATION_ITEMS = 256;
+const MAX_ENUMERATION_TEXT_BYTES = 65_536;
 const SAFE_MACHINE_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
 const SAFE_SETTING = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 const SYSTEM_STATES = new Set(['known', 'unsupported', 'permission-denied', 'unknown']);
@@ -388,7 +402,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'device' as const,
-      version: 'system-device-foundation-v4',
+      version: 'system-device-foundation-v5',
       capabilities: Object.freeze([
         'device.observe',
         'system.observe',
@@ -407,51 +421,92 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
       };
     }
 
-    // Shared validation above guarantees positive bounded safe integers when supplied.
-    const maxItems = Math.min(request.limits?.maxItems ?? 64, 256);
+    const maxItems = Math.min(request.limits?.maxItems ?? 64, MAX_ENUMERATION_ITEMS);
     const textBudget: TextBudget = {
-      remaining: Math.min(request.limits?.maxTextBytes ?? 16_384, 65_536),
+      remaining: Math.min(request.limits?.maxTextBytes ?? 16_384, MAX_ENUMERATION_TEXT_BYTES),
       truncated: false,
     };
-    const [rawAccess, system, devices, volumes] = await Promise.all([
-      this.backend.privilegeState(), this.backend.systemInformation(),
-      this.backend.enumerateDevices(), this.backend.enumerateVolumes(),
+
+    const [rawAccess, system] = await Promise.all([
+      this.backend.privilegeState(),
+      this.backend.systemInformation(),
     ]);
     const access = sanitizePrivilege(rawAccess);
-    const unavailable = system.state !== 'ok' ? accessFromFailure(system) :
-      devices.state !== 'ok' ? accessFromFailure(devices) :
-      volumes.state !== 'ok' ? accessFromFailure(volumes) : undefined;
-    const chosenAccess = unavailable ?? access;
     const boundedAccess: SystemDevicePrivilegeState = {
-      state: chosenAccess.state,
-      reason: consumeText(chosenAccess.reason, textBudget),
+      state: access.state,
+      reason: consumeText(access.reason, textBudget),
     };
 
     let remainingItems = maxItems;
+    const deviceBudget: SystemDeviceEnumerationBudget = Object.freeze({
+      maxItems: remainingItems,
+      maxTextBytes: textBudget.remaining,
+    });
+    const devices = await this.backend.enumerateDevices(deviceBudget);
+    if (devices.state === 'ok' && (!Array.isArray(devices.value) || devices.value.length > deviceBudget.maxItems)) {
+      return {
+        adapterId: this.adapterId, environment: 'device', channel: 'device',
+        sequence: this.sequence++, complete: false, truncated: true,
+        data: {
+          access: { state: 'unsupported-platform', reason: 'invalid-backend-observation' },
+          devices: [], volumes: [],
+        },
+      };
+    }
+
+    const unavailableAfterDevices = system.state !== 'ok' ? accessFromFailure(system) :
+      devices.state !== 'ok' ? accessFromFailure(devices) : undefined;
     const boundedDevices: BoundedDeviceMetadata[] = [];
     if (devices.state === 'ok') {
+      remainingItems -= devices.value.length;
       for (const raw of devices.value) {
-        if (remainingItems === 0) break;
         const bounded = boundDevice(raw);
         if (!bounded) { textBudget.truncated = true; continue; }
         bounded.label = consumeText(bounded.label, textBudget);
         boundedDevices.push(bounded);
-        remainingItems -= 1;
       }
-      if (devices.value.length > boundedDevices.length) textBudget.truncated = true;
     }
+
+    let volumes: SystemDeviceBackendResult<readonly BoundedVolumeMetadata[]> = { state: 'ok', value: [] };
+    if (remainingItems > 0) {
+      const volumeBudget: SystemDeviceEnumerationBudget = Object.freeze({
+        maxItems: remainingItems,
+        maxTextBytes: textBudget.remaining,
+      });
+      volumes = await this.backend.enumerateVolumes(volumeBudget);
+      if (volumes.state === 'ok' && (!Array.isArray(volumes.value) || volumes.value.length > volumeBudget.maxItems)) {
+        return {
+          adapterId: this.adapterId, environment: 'device', channel: 'device',
+          sequence: this.sequence++, complete: false, truncated: true,
+          data: {
+            access: { state: 'unsupported-platform', reason: 'invalid-backend-observation' },
+            devices: boundedDevices, volumes: [],
+          },
+        };
+      }
+    } else {
+      textBudget.truncated = true;
+    }
+
+    const unavailable = unavailableAfterDevices ??
+      (volumes.state !== 'ok' ? accessFromFailure(volumes) : undefined);
+    const chosenAccess = unavailable ?? boundedAccess;
+    const finalAccess: SystemDevicePrivilegeState = {
+      state: chosenAccess.state,
+      reason: chosenAccess === boundedAccess
+        ? boundedAccess.reason
+        : consumeText(chosenAccess.reason, textBudget),
+    };
 
     const boundedVolumes: BoundedVolumeMetadata[] = [];
     if (volumes.state === 'ok') {
+      remainingItems -= volumes.value.length;
       for (const raw of volumes.value) {
-        if (remainingItems === 0) break;
         const bounded = boundVolume(raw);
         if (!bounded) { textBudget.truncated = true; continue; }
         bounded.filesystemType = consumeText(bounded.filesystemType, textBudget);
         boundedVolumes.push(bounded);
-        remainingItems -= 1;
       }
-      if (volumes.value.length > boundedVolumes.length) textBudget.truncated = true;
     }
 
     let boundedSystem: BoundedSystemInformation | undefined;
@@ -472,7 +527,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     return {
       adapterId: this.adapterId, environment: 'device', channel: 'device',
       sequence: this.sequence++, complete: !unavailable, truncated: textBudget.truncated,
-      data: { access: boundedAccess, system: boundedSystem, devices: boundedDevices, volumes: boundedVolumes } satisfies SystemDeviceSnapshot,
+      data: { access: finalAccess, system: boundedSystem, devices: boundedDevices, volumes: boundedVolumes } satisfies SystemDeviceSnapshot,
     };
   }
 
@@ -518,6 +573,10 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
+    const requestErrors = validateComputerActionRequest(request, this.descriptor);
+    if (requestErrors.length > 0) {
+      return actionResult('rejected', 'not-dispatched', 'unverified', ['invalid-action-request']);
+    }
     if (request.adapterId !== this.adapterId) {
       return actionResult('unsupported', 'not-dispatched', 'unverified', ['adapter-mismatch']);
     }
