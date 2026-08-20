@@ -44,6 +44,24 @@ test('system observation obeys item and text bounds and reports truncation', asy
   assert.equal(byText.complete,false);
 });
 
+test('system backend enumeration is bounded before response materialization', async () => {
+  const backend = new SyntheticDesktopUiBackend();
+  backend.lazyWindowCount = 1_000_000;
+  let factoryCalls = 0;
+  backend.lazyWindowFactory = (index) => {
+    factoryCalls += 1;
+    return {nativeWindowId:`lazy-${index}`,generation:1,title:`Window ${index}`,foreground:index===0,focused:index===0};
+  };
+  const adapter = new DesktopUiEnvironmentAdapter(backend,'desktop:test');
+  const obs = await adapter.observe({adapterId:'desktop:test',channel:'system',limits:{maxItems:3,maxTextBytes:10_000,maxDepth:1}});
+  const data = obs.data as DesktopSystemObservationData;
+  assert.equal(data.windows.length,3);
+  assert.equal(obs.truncated,true);
+  assert.equal(obs.complete,false);
+  assert.equal(backend.systemEnumeratedWindows,3);
+  assert.equal(factoryCalls,3);
+});
+
 test('window replacement invalidates old generation and control identity', async () => {
   const {backend,adapter} = fixture();
   backend.windows = [{nativeWindowId:'win-1',generation:2,foreground:true,focused:true}];
