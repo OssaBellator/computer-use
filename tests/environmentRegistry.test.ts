@@ -8,6 +8,7 @@ import type {
   ComputerActionRequest,
   ComputerActionResult,
   ComputerEnvironmentAdapter,
+  ComputerEnvironmentAdapterDescriptor,
   ComputerObservationEnvelope,
   ComputerObservationRequest,
 } from '../src/computer/environmentAdapter.js';
@@ -89,6 +90,36 @@ test('cross-adapter targets and unadvertised capabilities fail before adapter di
   assert.equal(adapter.actionCalls, 0);
 });
 
+test('runtime-invalid effect/idempotency/capability values fail before adapter dispatch', async () => {
+  const adapter = new FakeAdapter();
+  const registry = new ComputerEnvironmentRegistry();
+  registry.register(adapter);
+
+  const malformed = {
+    adapterId: 'browser-primary',
+    actionId: 'bad-1',
+    capability: 'browser activate with prose',
+    effect: 'totally-safe',
+    idempotency: 'repeat-it',
+  } as unknown as ComputerActionRequest;
+  const result = await registry.act(malformed);
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.equal(adapter.actionCalls, 0);
+
+  const inconsistent = {
+    adapterId: 'browser-primary',
+    actionId: 'bad-2',
+    capability: 'browser.activate',
+    effect: 'external-communication',
+    idempotency: 'read-only',
+  } as ComputerActionRequest;
+  const second = await registry.act(inconsistent);
+  assert.equal(second.status, 'rejected');
+  assert.equal(second.dispatch, 'not-dispatched');
+  assert.equal(adapter.actionCalls, 0);
+});
+
 test('adapter exception after invocation becomes unknown dispatch rather than retry-safe failure', async () => {
   const adapter = new FakeAdapter();
   adapter.throwOnAction = true;
@@ -120,6 +151,47 @@ test('observation routing rejects adapter identity drift', async () => {
     () => registry.observe({ adapterId: 'browser-primary', channel: 'semantic-ui' }),
     (error: unknown) => error instanceof ComputerAdapterRoutingError && error.code === 'invalid-observation-response',
   );
+});
+
+test('registered descriptor authority is snapshotted and cannot be expanded later', async () => {
+  const descriptor: ComputerEnvironmentAdapterDescriptor = {
+    id: 'mutable-adapter',
+    kind: 'browser',
+    version: '1',
+    capabilities: ['browser.activate'],
+  };
+  let actionCalls = 0;
+  const adapter: ComputerEnvironmentAdapter = {
+    descriptor,
+    async observe(request) {
+      return {
+        adapterId: 'mutable-adapter', environment: 'browser', channel: request.channel,
+        sequence: 0, complete: true, truncated: false, data: {},
+      };
+    },
+    async act() {
+      actionCalls += 1;
+      return { status: 'completed', dispatch: 'dispatched-once', verification: 'verified' };
+    },
+  };
+  const registry = new ComputerEnvironmentRegistry();
+  registry.register(adapter);
+
+  descriptor.kind = 'filesystem';
+  descriptor.capabilities = ['browser.activate', 'filesystem.delete'];
+
+  assert.equal(registry.descriptor('mutable-adapter')?.kind, 'browser');
+  assert.deepEqual(registry.descriptor('mutable-adapter')?.capabilities, ['browser.activate']);
+  const result = await registry.act({
+    adapterId: 'mutable-adapter',
+    actionId: 'delete-1',
+    capability: 'filesystem.delete',
+    effect: 'local-destructive',
+    idempotency: 'non-idempotent',
+  });
+  assert.equal(result.status, 'unsupported');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.equal(actionCalls, 0);
 });
 
 test('registry descriptor ordering is locale-independent and duplicate ids are rejected', () => {
