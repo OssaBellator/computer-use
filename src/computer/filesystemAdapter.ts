@@ -51,7 +51,8 @@ export type FilesystemErrorCode =
   | 'filesystem-destination-exists'
   | 'filesystem-approval-required'
   | 'filesystem-plan-stale'
-  | 'filesystem-plan-consumed';
+  | 'filesystem-plan-consumed'
+  | 'filesystem-hardlink-overwrite-rejected';
 
 export class FilesystemAdapterError extends Error {
   constructor(readonly code: FilesystemErrorCode, message: string) {
@@ -178,6 +179,8 @@ export interface FilesystemObjectSnapshot {
   readonly key: string;
   readonly generation: number;
   readonly revision: string;
+  readonly moveRevision: string;
+  readonly linkCount: number;
   readonly fallbackRevision?: string;
 }
 
@@ -242,6 +245,9 @@ function fallbackRevision(stats: BigStats): string {
 }
 function snapshotRevision(stats: BigStats): string {
   return [objectKey(stats), stats.size.toString(36), stats.mtimeNs.toString(36), stats.ctimeNs.toString(36), stats.nlink.toString(36)].join(':');
+}
+function moveRevision(stats: BigStats): string {
+  return [objectKey(stats), stats.size.toString(36), stats.mtimeNs.toString(36), stats.mode.toString(36), stats.nlink.toString(36)].join(':');
 }
 function statKind(stats: BigStats): 'file' | 'directory' | 'symlink' | 'other' {
   if (stats.isFile()) return 'file';
@@ -363,8 +369,23 @@ async function directLstat(path: string): Promise<BigStats | undefined> {
 function matchesObject(stats: BigStats, expected: FilesystemObjectSnapshot, rootDevice: string): boolean {
   return stats.dev.toString() === rootDevice && statKind(stats) === expected.kind && objectKey(stats) === expected.key && snapshotRevision(stats) === expected.revision && (birthtimeReliable(stats) || fallbackRevision(stats) === expected.fallbackRevision);
 }
+function matchesMovedObject(stats: BigStats, expected: FilesystemObjectSnapshot, rootDevice: string): boolean {
+  return stats.dev.toString() === rootDevice && statKind(stats) === expected.kind && objectKey(stats) === expected.key && moveRevision(stats) === expected.moveRevision;
+}
 async function dispatchLeafStats(path: string): Promise<BigStats | undefined> {
   const stats = await directLstat(path); if (stats?.isSymbolicLink()) throw new MutationNotDispatchedError('filesystem-symlink-rejected'); return stats;
+}
+
+async function overwriteMaterial(destination: FilesystemPathSnapshot, material: FilesystemMaterialSnapshot, rootDevice: string): Promise<void> {
+  const expected = destination.leaf; if (!expected) throw new MutationNotDispatchedError('filesystem-race-detected');
+  let handle;
+  try {
+    const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+    handle = await open(destination.absolutePath, fsConstants.O_WRONLY | noFollow);
+    const current = await handle.stat({ bigint: true }) as unknown as BigStats;
+    if (!matchesObject(current, expected, rootDevice)) throw new MutationNotDispatchedError('filesystem-race-detected');
+    await handle.truncate(0); await handle.writeFile(material.bytes); await handle.sync();
+  } finally { await handle?.close(); }
 }
 
 export class HostFilesystemMutationDispatcher implements FilesystemMutationDispatcher {
@@ -381,22 +402,15 @@ export class HostFilesystemMutationDispatcher implements FilesystemMutationDispa
     }
     switch (mutation.operation) {
       case 'create-file':
-      case 'copy':
         try { await writeFile(destination.absolutePath, mutation.material.bytes, { flag: 'wx' }); }
         catch (error) { if (fsCode(error) === 'EEXIST' || fsCode(error) === 'ELOOP') throw new MutationNotDispatchedError('filesystem-race-detected'); throw error; }
         return;
-      case 'write-file': {
-        const expected = destination.leaf; if (!expected) throw new MutationNotDispatchedError('filesystem-race-detected');
-        let handle;
-        try {
-          const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
-          handle = await open(destination.absolutePath, fsConstants.O_WRONLY | noFollow);
-          const current = await handle.stat({ bigint: true }) as unknown as BigStats;
-          if (!matchesObject(current, expected, rootDevice)) throw new MutationNotDispatchedError('filesystem-race-detected');
-          await handle.truncate(0); await handle.writeFile(mutation.material.bytes); await handle.sync();
-        } finally { await handle?.close(); }
+      case 'copy':
+        if (destination.leaf) { await overwriteMaterial(destination, mutation.material, rootDevice); return; }
+        try { await writeFile(destination.absolutePath, mutation.material.bytes, { flag: 'wx' }); }
+        catch (error) { if (fsCode(error) === 'EEXIST' || fsCode(error) === 'ELOOP') throw new MutationNotDispatchedError('filesystem-race-detected'); throw error; }
         return;
-      }
+      case 'write-file': await overwriteMaterial(destination, mutation.material, rootDevice); return;
       case 'create-directory':
         try { await mkdir(destination.absolutePath); }
         catch (error) { if (fsCode(error) === 'EEXIST' || fsCode(error) === 'ELOOP') throw new MutationNotDispatchedError('filesystem-race-detected'); throw error; }
@@ -453,12 +467,13 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     let effect: PreparedPlan['effect']; let capability: string;
     switch (intent.operation) {
       case 'create-file': destination = await this.snapshotPath(intent.path, true); this.requireMissingDestination(destination); material = this.materialFromText(intent.content); effect = 'local-reversible'; capability = 'filesystem.create-file'; break;
-      case 'write-file': destination = await this.snapshotPath(intent.path, false); await this.requireExpected(destination, intent.expectedTarget, 'file'); material = this.materialFromText(intent.content); expectedDestination = intent.expectedTarget; target = intent.expectedTarget; effect = 'local-destructive'; capability = 'filesystem.write-file'; break;
+      case 'write-file':
+        destination = await this.snapshotPath(intent.path, false); await this.requireExpected(destination, intent.expectedTarget, 'file'); this.rejectHardlinkOverwrite(destination); material = this.materialFromText(intent.content); expectedDestination = intent.expectedTarget; target = intent.expectedTarget; effect = 'local-destructive'; capability = 'filesystem.write-file'; break;
       case 'create-directory': destination = await this.snapshotPath(intent.path, true); this.requireMissingDestination(destination); effect = 'local-reversible'; capability = 'filesystem.create-directory'; break;
       case 'copy':
         source = await this.snapshotPath(intent.sourcePath, false); await this.requireExpected(source, intent.expectedSource, 'file'); destination = await this.snapshotPath(intent.destinationPath, true);
         if (source.absolutePath === destination.absolutePath) throw new FilesystemAdapterError('filesystem-invalid-request', 'copy source and destination must be distinct paths');
-        this.checkOverwrite(destination, intent.overwrite, intent.expectedDestination); expectedSource = intent.expectedSource; expectedDestination = intent.expectedDestination; target = intent.expectedSource;
+        this.checkOverwrite(destination, intent.overwrite, intent.expectedDestination); if (destination.leaf) this.rejectHardlinkOverwrite(destination); expectedSource = intent.expectedSource; expectedDestination = intent.expectedDestination; target = intent.expectedSource;
         material = await this.acquireCopyMaterial(source, boundedLimit(intent.maxBytes, HARD_MAX_MUTATION_BYTES, HARD_MAX_MUTATION_BYTES)); effect = destination.leaf ? 'local-destructive' : 'local-reversible'; capability = 'filesystem.copy'; break;
       case 'move':
         source = await this.snapshotPath(intent.sourcePath, false); await this.requireExpected(source, intent.expectedSource); if (source.leaf?.kind === 'directory') await this.assertEmptyDirectory(source.absolutePath, source.leaf);
@@ -556,9 +571,12 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
     return Object.freeze({ relativePath: relative(this.rootPath, absolutePath), absolutePath, parentPath, parent, ...(leaf ? { leaf } : {}) });
   }
   private objectSnapshot(record: IdentityRecord, stats: BigStats): FilesystemObjectSnapshot {
-    return Object.freeze({ kind: record.kind, key: record.key, generation: record.generation, revision: snapshotRevision(stats), ...(record.fallbackRevision === undefined ? {} : { fallbackRevision: record.fallbackRevision }) });
+    return Object.freeze({ kind: record.kind, key: record.key, generation: record.generation, revision: snapshotRevision(stats), moveRevision: moveRevision(stats), linkCount: safeNumber(stats.nlink), ...(record.fallbackRevision === undefined ? {} : { fallbackRevision: record.fallbackRevision }) });
   }
   private requireMissingDestination(destination: FilesystemPathSnapshot): void { if (destination.leaf) throw new FilesystemAdapterError('filesystem-destination-exists', 'destination already exists'); }
+  private rejectHardlinkOverwrite(destination: FilesystemPathSnapshot): void {
+    if (destination.leaf && destination.leaf.linkCount > 1) throw new FilesystemAdapterError('filesystem-hardlink-overwrite-rejected', 'in-place overwrite of a hardlinked file would mutate unnamed aliases');
+  }
   private async requireExpected(snapshot: FilesystemPathSnapshot, ref: ComputerEntityRef, kind?: 'file' | 'directory'): Promise<void> {
     await this.recordForRef(ref); if (!snapshot.leaf || !sameRefIdentity(ref, snapshot.leaf) || (kind && snapshot.leaf.kind !== kind)) throw new FilesystemAdapterError('filesystem-target-stale', 'path no longer names the expected generation-aware object');
   }
@@ -603,7 +621,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
       case 'create-file': return { operation: 'create-file', destination: plan.destination, material: plan.material! };
       case 'write-file': return { operation: 'write-file', destination: plan.destination, material: plan.material! };
       case 'create-directory': return { operation: 'create-directory', destination: plan.destination };
-      case 'copy': return plan.destination.leaf ? { operation: 'write-file', destination: plan.destination, material: plan.material! } : { operation: 'copy', source: plan.source!, destination: plan.destination, material: plan.material! };
+      case 'copy': return { operation: 'copy', source: plan.source!, destination: plan.destination, material: plan.material! };
       case 'move': return { operation: 'move', source: plan.source!, destination: plan.destination };
       case 'delete': return { operation: 'delete', source: plan.source!, destination: plan.destination };
       case 'remove-empty-directory': return { operation: 'remove-empty-directory', source: plan.source!, destination: plan.destination };
@@ -624,7 +642,7 @@ export class FilesystemComputerEnvironmentAdapter implements ComputerEnvironment
       }
       case 'move': {
         const old = await directLstat(plan.source!.absolutePath); if (old) throw new FilesystemAdapterError('filesystem-race-detected', 'move source still exists after dispatch');
-        const stats = await this.safeLstat(plan.destination.absolutePath); const expected = plan.source!.leaf!; if (!matchesObject(stats, expected, this.rootDevice)) throw new FilesystemAdapterError('filesystem-race-detected', 'move destination is not the expected source object');
+        const stats = await this.safeLstat(plan.destination.absolutePath); const expected = plan.source!.leaf!; if (!matchesMovedObject(stats, expected, this.rootDevice)) throw new FilesystemAdapterError('filesystem-race-detected', 'move destination is not the expected source object');
         await this.assertCanonicalPath(plan.destination.absolutePath); const record = this.identities.get(expected.key)!; record.locators.delete(plan.source!.absolutePath); record.locators.add(plan.destination.absolutePath);
         return { operation: plan.operation, source: plan.source!.relativePath, destination: plan.destination.relativePath, entity: this.refFor(record) };
       }
