@@ -126,6 +126,50 @@ test('observe then unstarted action remains a valid checkpoint after action pref
   assert.equal(resumed.adapter.actCount, 1);
 });
 
+test('verifier cannot mutate dispatch fields to bypass effectful post-dispatch verification', async () => {
+  const environment = registryWith(['fake.write']);
+  const verifyTask: ComputerTaskProgram = {
+    id: 'immutable-adapter-result-review',
+    entry: 'write',
+    steps: [{
+      kind: 'action',
+      id: 'write',
+      request: {
+        adapterId: 'fake',
+        actionId: 'write',
+        capability: 'fake.write',
+        effect: 'local-reversible',
+        idempotency: 'idempotent',
+      },
+      verification: 'domain.verify',
+    }],
+  };
+
+  const result = await new ComputerTaskRuntime(verifyTask, environment.registry, {
+    executionId: EXECUTION_ID,
+    hooks: {
+      verifiers: {
+        'domain.verify': async ({ adapterResult }) => {
+          assert.equal(Object.isFrozen(adapterResult), true);
+          let mutationRejected = false;
+          try {
+            adapterResult.dispatch = 'not-dispatched';
+          } catch {
+            mutationRejected = true;
+          }
+          assert.equal(mutationRejected, true);
+          assert.equal(adapterResult.dispatch, 'dispatched-once');
+          return { state: 'not-applicable' };
+        },
+      },
+    },
+  }).run();
+
+  assert.equal(result.status, 'unverified');
+  assert.ok(result.evidence?.includes('post-dispatch-verification-required'));
+  assert.equal(environment.adapter.actCount, 1);
+});
+
 test('zero-step checkpoint cannot move cursor away from program entry', () => {
   const twoStepTask: ComputerTaskProgram = {
     id: 'checkpoint-zero-step-review',
