@@ -47,17 +47,20 @@ test('standalone TaskRuntime gates and verifies a synthetic checkout commitment 
         document.body.innerHTML = [
           '<main>',
           '<h1>Review your order</h1>',
+          '<p>Order reference: SYN-ORDER-42</p>',
           '<p>Order total AUD 25.00</p>',
           '<p>Merchant: Synthetic Store</p>',
           '<p>Payment method: Test Card</p>',
           '<button id="confirm" aria-pressed="false" style="position:absolute;left:120px;top:180px;width:140px;height:44px">Confirm</button>',
           '<p id="status">Not submitted</p>',
+          '<p id="receipt"></p>',
           '</main>',
         ].join('');
         document.querySelector('#confirm').addEventListener('click', () => {
           window.commitCount += 1;
           document.querySelector('#confirm').setAttribute('aria-pressed', 'true');
           document.querySelector('#status').textContent = 'Synthetic order confirmed';
+          document.querySelector('#receipt').textContent = 'Confirmation number: SYN-ORDER-42';
         });
       })()`,
     });
@@ -102,12 +105,15 @@ test('standalone TaskRuntime gates and verifies a synthetic checkout commitment 
     assert.equal(approval?.counterparty, 'synthetic store');
     assert.equal(verification?.status, 'confirmed');
     assert.equal(verification?.observed?.amount?.value, '25.00');
+    assert.equal(verification?.identity?.relation, 'matched-expected');
+    assert.deepEqual(verification?.identity?.matchedTypes, ['confirmation']);
     assert.equal(allowed.trace[0]?.outcome, 'commitment-confirmed');
     assert.equal(allowed.trace[0]?.commitmentVerificationStatus, 'confirmed');
 
     const traceText = JSON.stringify(allowed.trace);
     assert.equal(traceText.includes('25.00'), false);
     assert.equal(traceText.includes('synthetic store'), false);
+    assert.equal(traceText.includes('SYN-ORDER-42'), false);
   } finally {
     await agent.shutdown();
   }
