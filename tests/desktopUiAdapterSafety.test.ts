@@ -282,3 +282,34 @@ test('proxy get traps cannot drift validation from the frozen keyboard dispatch 
   assert.equal(result.status,'completed'); assert.equal(getCalls,0); assert.deepEqual(backend.actions[0]?.payload,{kind:'text',text:'safe'});
   assert.equal(Object.isFrozen(backend.actions[0]?.payload),true);
 });
+
+test('accessor-backed backend action results degrade to unknown after dispatch', async () => {
+  const {backend,adapter} = fixture();
+  backend.keyboard = async (window,input,effect) => {
+    backend.actions.push({kind:'keyboard',window,input,effect,payload:input} as any);
+    const result:any = {};
+    Object.defineProperty(result,'status',{enumerable:true,get:()=> 'completed'});
+    Object.defineProperty(result,'dispatched',{enumerable:true,get:()=> false});
+    Object.defineProperty(result,'verified',{enumerable:true,value:true});
+    return result;
+  };
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'bad-result-accessor',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'idempotent',target,payload:{kind:'key-down',key:'A'}});
+  assert.equal(backend.actions.length,1);
+  assert.equal(result.status,'unknown');
+  assert.equal(result.dispatch,'unknown');
+  assert.equal(result.verification,'unverified');
+  assert.deepEqual(result.evidence,['desktop-backend-result-invalid']);
+});
+
+test('malformed backend action result cannot become retry-safe after native emission', async () => {
+  const {backend,adapter} = fixture();
+  backend.keyboard = async (window,input,effect) => {
+    backend.actions.push({kind:'keyboard',window,input,effect,payload:input} as any);
+    return {status:'completed',dispatched:'no',verified:true,evidence:['safe-code']} as any;
+  };
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'bad-result-shape',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'idempotent',target,payload:{kind:'key-down',key:'A'}});
+  assert.equal(backend.actions.length,1);
+  assert.equal(result.status,'unknown');
+  assert.equal(result.dispatch,'unknown');
+  assert.equal(result.verification,'unverified');
+});
