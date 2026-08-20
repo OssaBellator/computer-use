@@ -14,7 +14,7 @@ import type { InteractionNode } from '../src/types.js';
 
 function node(frameId = 'main'): InteractionNode {
   return {
-    id: 'backend:41',
+    id: `${frameId}:button:nth-of-type(1)`,
     structuralId: `${frameId}:button:nth-of-type(1)`,
     backendNodeId: 41,
     frameId,
@@ -51,6 +51,7 @@ class GenerationRuntime implements BrowserComputerRuntime {
   activateCalls = 0;
   hoverCalls = 0;
   typeCalls = 0;
+  refreshCalls = 0;
 
   browserTargets(): BrowserTargetState[] { return this.targets.map((target) => ({ ...target })); }
   activePageTargetId(): string | undefined { return this.active; }
@@ -86,33 +87,66 @@ class GenerationRuntime implements BrowserComputerRuntime {
     }
     return { ...this.frameTokens };
   }
+  private consumeMutation(): void {
+    const mutate = this.refreshMutation;
+    this.refreshMutation = undefined;
+    mutate?.();
+  }
   async semanticSnapshot(
     _targetId: string | undefined,
     limits: BoundedSemanticSnapshotLimits,
   ) {
-    const mutate = this.refreshMutation;
-    this.refreshMutation = undefined;
-    mutate?.();
-    const nodes = this.nodes.slice(0, limits.maxItems).map((item) => ({ ...item }));
+    this.consumeMutation();
+    const nodes = this.nodes.slice(0, limits.maxItems).map((item) => ({ ...item, backendNodeId: undefined }));
     return { nodes, complete: this.nodes.length <= limits.maxItems, truncated: this.nodes.length > limits.maxItems };
   }
+  async resolveBoundedSemanticTarget(
+    _targetId: string | undefined,
+    entityId: string,
+    _limits: BoundedSemanticSnapshotLimits,
+  ): Promise<InteractionNode | undefined> {
+    this.consumeMutation();
+    return this.nodes.find((item) => item.id === entityId || item.structuralId === entityId);
+  }
+  async activateBoundedSemantic(
+    _targetId: string | undefined,
+    entityId: string,
+  ): Promise<{ status: string; target: InteractionNode | null }> {
+    const target = this.nodes.find((item) => item.id === entityId || item.structuralId === entityId) ?? null;
+    if (!target) return { status: 'target-not-found', target };
+    this.activateCalls += 1;
+    return { status: 'verified', target };
+  }
+  async hoverBoundedSemantic(
+    _targetId: string | undefined,
+    entityId: string,
+  ): Promise<{ status: string; target: InteractionNode | null }> {
+    const target = this.nodes.find((item) => item.id === entityId || item.structuralId === entityId) ?? null;
+    if (!target) return { status: 'target-not-found', target };
+    this.hoverCalls += 1;
+    return { status: 'verified', target };
+  }
+  async typeBoundedSemantic(
+    _targetId: string | undefined,
+    entityId: string,
+  ): Promise<{ status: string; target: InteractionNode | null }> {
+    const target = this.nodes.find((item) => item.id === entityId || item.structuralId === entityId) ?? null;
+    if (!target) return { status: 'target-not-found', target };
+    this.typeCalls += 1;
+    return { status: 'verified', target };
+  }
   async refresh(): Promise<InteractionNode[]> {
-    const mutate = this.refreshMutation;
-    this.refreshMutation = undefined;
-    mutate?.();
-    return this.nodes.map((item) => ({ ...item }));
+    this.refreshCalls += 1;
+    throw new Error('legacy full refresh must not run through browser adapter actions');
   }
   async activate(): Promise<{ status: string; target: InteractionNode | null }> {
-    this.activateCalls += 1;
-    return { status: 'verified', target: this.nodes[0] ?? null };
+    throw new Error('legacy activation must not run through browser adapter actions');
   }
   async hover(): Promise<{ status: string; target: InteractionNode | null }> {
-    this.hoverCalls += 1;
-    return { status: 'verified', target: this.nodes[0] ?? null };
+    throw new Error('legacy hover must not run through browser adapter actions');
   }
   async typeInto(): Promise<{ status: string; target: InteractionNode | null }> {
-    this.typeCalls += 1;
-    return { status: 'verified', target: this.nodes[0] ?? null };
+    throw new Error('legacy type must not run through browser adapter actions');
   }
 }
 
@@ -148,18 +182,19 @@ test('browser entity identity invalidates deterministically on child-frame docum
   runtime.frameTokens = { main: '1', 'frame-1': 'child-a' };
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
   const target = await observedTarget(adapter);
-  assert.match(target.entityId, /frame:frame-1:gen:child-a:backend:41$/);
+  assert.match(target.entityId, /frame:frame-1:gen:child-a:node:/);
 
   runtime.frameTokens['frame-1'] = 'child-b';
   const result = await adapter.act(action(adapter, 'browser.hover', target));
   assert.equal(result.status, 'rejected');
   assert.equal(result.dispatch, 'not-dispatched');
   assert.equal(runtime.hoverCalls, 0);
+  assert.equal(runtime.refreshCalls, 0);
   assert.equal(runtime.timeOrigin, 1);
   assert.equal(runtime.targets[0].sequence, 7);
 });
 
-test('semantic observation fails closed when document generation changes during refresh', async () => {
+test('semantic observation fails closed when document generation changes during bounded acquisition', async () => {
   const runtime = new GenerationRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
   runtime.refreshMutation = () => {
@@ -173,7 +208,7 @@ test('semantic observation fails closed when document generation changes during 
   );
 });
 
-test('action does not dispatch when refresh returns same backend id from a replacement document', async () => {
+test('action does not dispatch when bounded target lookup sees a replacement document with the same structural id', async () => {
   const runtime = new GenerationRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
   const target = await observedTarget(adapter);
@@ -187,6 +222,7 @@ test('action does not dispatch when refresh returns same backend id from a repla
   assert.equal(result.status, 'rejected');
   assert.equal(result.dispatch, 'not-dispatched');
   assert.equal(runtime.hoverCalls, 0);
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('activation remains definitely not-dispatched when child-frame identity changes at the TaskRuntime dispatch boundary', async () => {
@@ -205,9 +241,10 @@ test('activation remains definitely not-dispatched when child-frame identity cha
   assert.equal(result.dispatch, 'not-dispatched');
   assert.equal(result.verification, 'not-applicable');
   assert.equal(runtime.activateCalls, 0);
+  assert.equal(runtime.refreshCalls, 0);
 });
 
-test('validated action authority is immutable while entity resolution awaits', async () => {
+test('validated action authority is immutable while bounded entity resolution awaits', async () => {
   const runtime = new GenerationRuntime();
   const approvals: Array<{ programName: string; kind: string; risk: string }> = [];
   const adapter = new BrowserComputerEnvironmentAdapter(runtime, {
@@ -247,6 +284,7 @@ test('validated action authority is immutable while entity resolution awaits', a
     risk: 'external-side-effect',
   }]);
   assert.equal(runtime.activateCalls, 0);
+  assert.equal(runtime.refreshCalls, 0);
 });
 
 test('accessor-backed action authority is rejected before getters can drift effect or target', async () => {
