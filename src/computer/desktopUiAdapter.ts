@@ -28,6 +28,8 @@ const MAX_VISUAL_TOKEN_BYTES = 256;
 const MAX_MEDIA_TYPE_BYTES = 128;
 const KEY_MODIFIERS = new Set(['alt', 'control', 'meta', 'shift']);
 
+type DesktopKeyboardModifier = 'alt'|'control'|'meta'|'shift';
+
 export interface DesktopWindowSurface {
   surface: ComputerSurfaceRef;
   nativeWindowId: string;
@@ -115,12 +117,12 @@ function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undef
   if (p.text !== undefined) return undefined;
   if (p.modifiers === undefined) return { kind: p.kind, key: p.key };
   if (!Array.isArray(p.modifiers) || p.modifiers.length > KEY_MODIFIERS.size) return undefined;
-  const seen = new Set<string>();
+  const seen = new Set<DesktopKeyboardModifier>();
   for (const modifier of p.modifiers) {
-    if (typeof modifier !== 'string' || !KEY_MODIFIERS.has(modifier) || seen.has(modifier)) return undefined;
-    seen.add(modifier);
+    if (typeof modifier !== 'string' || !KEY_MODIFIERS.has(modifier) || seen.has(modifier as DesktopKeyboardModifier)) return undefined;
+    seen.add(modifier as DesktopKeyboardModifier);
   }
-  return { kind: p.kind, key: p.key, modifiers: [...seen] as DesktopKeyboardInput extends infer _T ? readonly ('alt'|'control'|'meta'|'shift')[] : never };
+  return { kind: p.kind, key: p.key, modifiers: [...seen] };
 }
 
 export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
