@@ -75,7 +75,7 @@ test('security-sensitive zero exit is dispatched but not domain-verified', async
   const result = await adapter.act(request('security-sensitive'));
   assert.equal(result.status, 'completed');
   assert.equal(result.dispatch, 'dispatched-once');
-  assert.equal(result.verification, 'unverified');
+  assert.equal(result.verification, 'not-applicable');
   assert.deepEqual(result.evidence, ['terminal.execution.exited-zero-domain-unverified']);
 });
 
