@@ -125,6 +125,11 @@ function normalize(value: string | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/** Locale-independent code-unit ordering for deterministic serialized/derived output. */
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function rectEqual(a: Rect | undefined, b: Rect | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
@@ -278,9 +283,11 @@ function addFrameHint(
 
 /**
  * Deterministically compare two document snapshots. Exact identity-based change
- * sets are kept separate from derived relocation/content-update guesses. Refresh
- * hints describe where a future extractor refresh would be useful; they perform
- * no browser interaction themselves.
+ * sets are kept separate from derived relocation/content-update guesses. Frames
+ * with an extraction error on either side are excluded from exact assertions:
+ * an observation failure is not evidence that content or the frame was deleted.
+ * Refresh hints describe where a future extractor refresh would be useful; they
+ * perform no browser interaction themselves.
  */
 export function diffDocumentContent(
   previous: DocumentContentSnapshot,
@@ -296,14 +303,20 @@ export function diffDocumentContent(
   const maxRefreshHints = positiveInteger('maxRefreshHints', options.maxRefreshHints ?? 32);
   const maxHintBlockIds = positiveInteger('maxHintBlockIds', options.maxHintBlockIds ?? 24);
 
-  const previousById = new Map(previous.blocks.map((block) => [block.id, block]));
-  const currentById = new Map(current.blocks.map((block) => [block.id, block]));
-  const addedAll = current.blocks.filter((block) => !previousById.has(block.id));
-  const removedAll = previous.blocks.filter((block) => !currentById.has(block.id));
+  const uncertainFrames = new Set([
+    ...previous.frameErrors.map((error) => error.frameId),
+    ...current.frameErrors.map((error) => error.frameId),
+  ]);
+  const exactPreviousBlocks = previous.blocks.filter((block) => !uncertainFrames.has(block.frameId));
+  const exactCurrentBlocks = current.blocks.filter((block) => !uncertainFrames.has(block.frameId));
+  const previousById = new Map(exactPreviousBlocks.map((block) => [block.id, block]));
+  const currentById = new Map(exactCurrentBlocks.map((block) => [block.id, block]));
+  const addedAll = exactCurrentBlocks.filter((block) => !previousById.has(block.id));
+  const removedAll = exactPreviousBlocks.filter((block) => !currentById.has(block.id));
 
   const changedAll: DocumentBlockChange[] = [];
   let unchangedBlockCount = 0;
-  for (const block of current.blocks) {
+  for (const block of exactCurrentBlocks) {
     const before = previousById.get(block.id);
     if (!before) continue;
     const fields = changedFields(before, block);
@@ -378,7 +391,7 @@ export function diffDocumentContent(
     const currentBlock = currentById.get(pair.currentBlockId);
     if (currentBlock) addHint(hintMap, currentBlock, 'structural-change', 0.45, maxHintBlockIds);
   }
-  for (const error of current.frameErrors) addFrameHint(hintMap, error.frameId, 'frame-error', 1);
+  for (const frameId of uncertainFrames) addFrameHint(hintMap, frameId, 'frame-error', 1);
   for (const frame of current.frames) {
     if (frame.browserExtractionTruncated) addFrameHint(hintMap, frame.frameId, 'truncated-extraction', 0.95);
   }
@@ -397,17 +410,21 @@ export function diffDocumentContent(
       ...(hint.rect ? { rect: { ...hint.rect } } : {}),
       relatedBlockIds: [...hint.relatedBlockIds],
     }))
-    .sort((a, b) => b.priority - a.priority || a.frameId.localeCompare(b.frameId) || a.reason.localeCompare(b.reason))
+    .sort((a, b) => b.priority - a.priority || compareCodeUnits(a.frameId, b.frameId) || compareCodeUnits(a.reason, b.reason))
     .slice(0, maxRefreshHints);
 
   const previousFrames = new Set(previous.frames.map((frame) => frame.frameId));
   const currentFrames = new Set(current.frames.map((frame) => frame.frameId));
-  const addedFrameIdsAll = current.frames.filter((frame) => !previousFrames.has(frame.frameId)).map((frame) => frame.frameId);
-  const removedFrameIdsAll = previous.frames.filter((frame) => !currentFrames.has(frame.frameId)).map((frame) => frame.frameId);
+  const addedFrameIdsAll = current.frames
+    .filter((frame) => !uncertainFrames.has(frame.frameId) && !previousFrames.has(frame.frameId))
+    .map((frame) => frame.frameId);
+  const removedFrameIdsAll = previous.frames
+    .filter((frame) => !uncertainFrames.has(frame.frameId) && !currentFrames.has(frame.frameId))
+    .map((frame) => frame.frameId);
   const addedFrameIds = addedFrameIdsAll.slice(0, maxFrameChanges);
   const removedFrameIds = removedFrameIdsAll.slice(0, maxFrameChanges);
 
-  const truncated = previous.truncated || current.truncated ||
+  const truncated = previous.truncated || current.truncated || uncertainFrames.size > 0 ||
     addedAll.length > maxAddedBlocks || removedAll.length > maxRemovedBlocks ||
     changedAll.length > maxChangedBlocks || relocation.truncated || likelyUpdatesTruncated ||
     addedFrameIdsAll.length > maxFrameChanges || removedFrameIdsAll.length > maxFrameChanges ||
