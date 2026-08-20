@@ -1,4 +1,7 @@
 import type { ComputerCapability } from './computerCapabilities.js';
+import {
+  strongestComputerCapabilityImplementationStatus,
+} from './computerCapabilityImplementationStatusOrdering.js';
 import type {
   ComputerCapabilityImplementationStatus,
   ComputerCapabilityScope,
@@ -11,14 +14,6 @@ export interface ComputerCapabilityScopeEvidence {
   profileIds: readonly string[];
   notes: readonly string[];
 }
-
-const STATUS_RANK: Readonly<Record<ComputerCapabilityImplementationStatus, number>> = {
-  unsupported: 0,
-  'backend-required': 1,
-  'implemented-foundation': 2,
-  partial: 3,
-  implemented: 4,
-};
 
 function codeUnitCompare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -58,7 +53,7 @@ export function collectComputerCapabilityScopeEvidence(
         continue;
       }
 
-      if (STATUS_RANK[state.status] > STATUS_RANK[current.status]) current.status = state.status;
+      current.status = strongestComputerCapabilityImplementationStatus(current.status, state.status);
       current.profileIds.add(profile.id);
       if (state.note) current.notes.add(state.note);
     }
