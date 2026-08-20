@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { validateTaskProgram, type TaskProgram } from './taskProgram.js';
+import { validateTaskProgram, type TaskProgram, type TaskStep } from './taskProgram.js';
 
 export const TASK_CHECKPOINT_VERSION = 1 as const;
 export const TASK_CHECKPOINT_FORMAT = 'browser-automation/task-checkpoint' as const;
@@ -10,6 +10,7 @@ export const TASK_CHECKPOINT_MAX_BUDGET = 1_000_000;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const FINGERPRINT_HEX = /^[0-9a-f]{64}$/;
+const EXECUTION_ID_HEX = /^[0-9a-f]{32,64}$/;
 
 /** The exact task-program model is hashed; callers cannot pass an id-only projection by accident. */
 export type CheckpointableTaskProgram = TaskProgram;
@@ -17,6 +18,11 @@ export type CheckpointableTaskProgram = TaskProgram;
 export interface TaskCheckpointProgramIdentity {
   id: string;
   hash: string;
+}
+
+export interface TaskCheckpointExecutionIdentity {
+  /** Caller-generated non-sensitive 128-256 bit identity for one logical task execution. */
+  id: string;
 }
 
 export interface TaskCheckpointVisitCounter {
@@ -33,9 +39,9 @@ export interface TaskCheckpointBudgets {
 export interface TaskCheckpointCursor {
   /** The next task-program step that should execute after resume. */
   stepId: string;
-  /** Total task-program steps already started before this checkpoint. */
+  /** Total task-program steps already started and completed before this checkpoint. */
   stepsExecuted: number;
-  /** Visit counts for steps already started, sorted by step id when serialized. */
+  /** Visit counts for completed steps, sorted by step id when serialized. */
   visits: readonly TaskCheckpointVisitCounter[];
   consecutiveNoProgress: number;
 }
@@ -43,6 +49,7 @@ export interface TaskCheckpointCursor {
 export interface TaskCheckpoint {
   version: typeof TASK_CHECKPOINT_VERSION;
   program: TaskCheckpointProgramIdentity;
+  execution: TaskCheckpointExecutionIdentity;
   cursor: TaskCheckpointCursor;
   budgets: TaskCheckpointBudgets;
   /** Opaque 256-bit lowercase-hex fingerprint derived from non-sensitive browser resume state. */
@@ -51,6 +58,8 @@ export interface TaskCheckpoint {
 
 export interface CreateTaskCheckpointOptions {
   programId: string;
+  /** Unique opaque identity for this logical execution; must not be derived from trusted input values. */
+  executionId: string;
   program: CheckpointableTaskProgram;
   currentStepId: string;
   stepsExecuted: number;
@@ -82,6 +91,7 @@ export class TaskCheckpointCodecError extends Error {
 export type TaskCheckpointCompatibilityIssueCode =
   | 'wrong-program'
   | 'modified-program'
+  | 'wrong-execution'
   | 'invalid-program'
   | 'impossible-step'
   | 'exhausted-budget'
@@ -96,6 +106,7 @@ export interface TaskCheckpointCompatibilityIssue {
 
 export interface TaskCheckpointCompatibilityOptions {
   programId: string;
+  executionId: string;
   program: CheckpointableTaskProgram;
   currentBrowserStateFingerprint?: string;
 }
@@ -111,6 +122,18 @@ export interface TaskResumeInputBindingResult {
   /** Program validation failures contain program metadata only, never trusted input values. */
   validationErrors?: string[];
   /** Ephemeral trusted values for the resumed runtime. Never serialize this object. */
+  inputs?: Readonly<Record<string, string>>;
+}
+
+export interface PrepareTaskCheckpointResumeOptions extends TaskCheckpointCompatibilityOptions {
+  trustedInputs: Readonly<Record<string, string>>;
+}
+
+export interface TaskCheckpointResumePreparation {
+  ready: boolean;
+  issues: TaskCheckpointCompatibilityIssue[];
+  missingInputs: string[];
+  /** Ephemeral trusted values exposed only after compatibility checks pass. Never serialize this object. */
   inputs?: Readonly<Record<string, string>>;
 }
 
@@ -167,10 +190,20 @@ function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function assertIdentifier(value: unknown, field: string): asserts value is string {
   if (typeof value !== 'string' || !value.trim()) codecError('invalid-schema', `${field} must be a non-empty string`);
   if (utf8Bytes(value) > TASK_CHECKPOINT_MAX_IDENTIFIER_BYTES) {
     codecError('invalid-schema', `${field} exceeds ${TASK_CHECKPOINT_MAX_IDENTIFIER_BYTES} UTF-8 bytes`);
+  }
+}
+
+function assertExecutionId(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !EXECUTION_ID_HEX.test(value)) {
+    codecError('invalid-schema', 'checkpoint execution id must be 32 to 64 lowercase hexadecimal characters');
   }
 }
 
@@ -196,7 +229,7 @@ function assertExactKeys(object: Record<string, unknown>, expected: readonly str
 
 function assertCheckpointSchema(value: unknown): asserts value is TaskCheckpoint {
   if (!isPlainObject(value)) codecError('invalid-schema', 'checkpoint payload must be an object');
-  assertExactKeys(value, ['version', 'program', 'cursor', 'budgets', 'browserStateFingerprint'], 'checkpoint payload');
+  assertExactKeys(value, ['version', 'program', 'execution', 'cursor', 'budgets', 'browserStateFingerprint'], 'checkpoint payload');
   if (value.version !== TASK_CHECKPOINT_VERSION) {
     codecError('unsupported-version', `unsupported checkpoint version: ${String(value.version)}`);
   }
@@ -207,6 +240,10 @@ function assertCheckpointSchema(value: unknown): asserts value is TaskCheckpoint
   if (typeof value.program.hash !== 'string' || !SHA256_HEX.test(value.program.hash)) {
     codecError('invalid-schema', 'checkpoint program hash must be a lowercase SHA-256 hex digest');
   }
+
+  if (!isPlainObject(value.execution)) codecError('invalid-schema', 'checkpoint execution identity must be an object');
+  assertExactKeys(value.execution, ['id'], 'checkpoint execution identity');
+  assertExecutionId(value.execution.id);
 
   if (!isPlainObject(value.budgets)) codecError('invalid-schema', 'checkpoint budgets must be an object');
   assertExactKeys(value.budgets, ['maxSteps', 'maxVisitsPerStep', 'maxConsecutiveNoProgress'], 'checkpoint budgets');
@@ -243,12 +280,13 @@ function normalizeCheckpoint(checkpoint: TaskCheckpoint): TaskCheckpoint {
   return {
     version: TASK_CHECKPOINT_VERSION,
     program: { id: checkpoint.program.id, hash: checkpoint.program.hash },
+    execution: { id: checkpoint.execution.id },
     cursor: {
       stepId: checkpoint.cursor.stepId,
       stepsExecuted: checkpoint.cursor.stepsExecuted,
       visits: checkpoint.cursor.visits
         .map(({ stepId, count }) => ({ stepId, count }))
-        .sort((left, right) => left.stepId.localeCompare(right.stepId)),
+        .sort((left, right) => compareCodeUnits(left.stepId, right.stepId)),
       consecutiveNoProgress: checkpoint.cursor.consecutiveNoProgress,
     },
     budgets: {
@@ -275,9 +313,57 @@ function assertValidTaskProgram(program: CheckpointableTaskProgram): void {
   if (!validation.valid) codecError('invalid-program', `cannot checkpoint invalid task program: ${validation.errors.join('; ')}`);
 }
 
-/** Deterministic SHA-256 over a canonical JSON representation of the complete task program. */
-export function hashTaskProgram(program: CheckpointableTaskProgram): string {
+function referencedStepIds(step: TaskStep): readonly string[] {
+  switch (step.kind) {
+    case 'activate': case 'hover': case 'type': case 'select-option': case 'upload': case 'press-key': case 'scroll-viewport': case 'switch-page': case 'navigate': case 'history': case 'handle-dialog': case 'open-tab': case 'close-latest-tab': case 'assert':
+      return [step.next, ...(step.onFailure ? [step.onFailure] : [])];
+    case 'branch': return [step.then, step.else];
+    case 'wait': case 'wait-network-idle': return [step.next, ...(step.onTimeout ? [step.onTimeout] : [])];
+    case 'fail': return [];
+    case 'complete': return step.onFailure ? [step.onFailure] : [];
+  }
+}
+
+/**
+ * Necessary structural history check for a between-steps checkpoint. Every visited step and the
+ * current cursor must be reachable from the entry by following edges through steps that have
+ * actually been visited. This does not attempt to reconstruct branch predicate outcomes.
+ */
+function cursorHistoryIsStructurallyPossible(program: CheckpointableTaskProgram, checkpoint: TaskCheckpoint): boolean {
+  if (checkpoint.cursor.stepsExecuted === 0) {
+    return checkpoint.cursor.visits.length === 0 && checkpoint.cursor.stepId === program.entry;
+  }
+
+  const visited = new Set(checkpoint.cursor.visits.map((visit) => visit.stepId));
+  const allowed = new Set(visited);
+  allowed.add(checkpoint.cursor.stepId);
+  const stepMap = new Map(program.steps.map((step) => [step.id, step] as const));
+  const reachable = new Set<string>();
+  const queue = [program.entry];
+
+  while (queue.length) {
+    const id = queue.shift()!;
+    if (reachable.has(id) || !allowed.has(id)) continue;
+    reachable.add(id);
+    if (!visited.has(id)) continue;
+    const step = stepMap.get(id);
+    if (!step) continue;
+    for (const next of referencedStepIds(step)) if (allowed.has(next)) queue.push(next);
+  }
+
+  if (!reachable.has(checkpoint.cursor.stepId)) return false;
+  for (const id of visited) if (!reachable.has(id)) return false;
+  return true;
+}
+
+function hashValidTaskProgram(program: CheckpointableTaskProgram): string {
   return sha256Hex(canonicalJson(program));
+}
+
+/** Deterministic SHA-256 over a canonical JSON representation of a valid complete task program. */
+export function hashTaskProgram(program: CheckpointableTaskProgram): string {
+  assertValidTaskProgram(program);
+  return hashValidTaskProgram(program);
 }
 
 export function createTaskCheckpoint(options: CreateTaskCheckpointOptions): TaskCheckpoint {
@@ -286,8 +372,9 @@ export function createTaskCheckpoint(options: CreateTaskCheckpointOptions): Task
     version: TASK_CHECKPOINT_VERSION,
     program: {
       id: options.programId,
-      hash: hashTaskProgram(options.program),
+      hash: hashValidTaskProgram(options.program),
     },
+    execution: { id: options.executionId },
     cursor: {
       stepId: options.currentStepId,
       stepsExecuted: options.stepsExecuted,
@@ -303,6 +390,7 @@ export function createTaskCheckpoint(options: CreateTaskCheckpointOptions): Task
   });
   const compatibility = checkTaskCheckpointCompatibility(checkpoint, {
     programId: options.programId,
+    executionId: options.executionId,
     program: options.program,
     currentBrowserStateFingerprint: options.browserStateFingerprint,
   });
@@ -373,8 +461,12 @@ export function checkTaskCheckpointCompatibility(
 
   if (checkpoint.program.id !== options.programId) {
     issues.push({ code: 'wrong-program', message: 'checkpoint program identity does not match the requested program' });
-  } else if (programValidation.valid && checkpoint.program.hash !== hashTaskProgram(options.program)) {
+  } else if (programValidation.valid && checkpoint.program.hash !== hashValidTaskProgram(options.program)) {
     issues.push({ code: 'modified-program', message: 'checkpoint program hash does not match the current program definition' });
+  }
+
+  if (!EXECUTION_ID_HEX.test(options.executionId) || checkpoint.execution.id !== options.executionId) {
+    issues.push({ code: 'wrong-execution', message: 'checkpoint execution identity does not match the logical task execution being resumed' });
   }
 
   const programStepIds = programValidation.valid
@@ -386,7 +478,7 @@ export function checkTaskCheckpointCompatibility(
 
   const seenVisitSteps = new Set<string>();
   let visitTotal = 0;
-  let countersMalformed = false;
+  let countersMalformed = checkpoint.cursor.consecutiveNoProgress > checkpoint.cursor.stepsExecuted;
   let currentStepVisits = 0;
   for (const visit of checkpoint.cursor.visits) {
     if (seenVisitSteps.has(visit.stepId)) countersMalformed = true;
@@ -402,7 +494,13 @@ export function checkTaskCheckpointCompatibility(
     countersMalformed = true;
   }
   if (countersMalformed) {
-    issues.push({ code: 'malformed-counters', message: 'checkpoint visit counters are inconsistent with execution state or configured budgets' });
+    issues.push({ code: 'malformed-counters', message: 'checkpoint counters are inconsistent with execution state or configured budgets' });
+  }
+
+  if (programValidation.valid && programStepIds && [...seenVisitSteps].every((id) => programStepIds.has(id))) {
+    if (!cursorHistoryIsStructurallyPossible(options.program, checkpoint)) {
+      issues.push({ code: 'impossible-step', message: 'checkpoint cursor and visit history cannot arise from the current program graph' });
+    }
   }
 
   if (
@@ -424,7 +522,8 @@ export function checkTaskCheckpointCompatibility(
 
 /**
  * Re-bind trusted input values after restart without ever persisting them in the checkpoint.
- * Only own properties matching inputs declared by the current valid program are copied.
+ * Only own data properties matching inputs declared by the current valid program are copied;
+ * accessors are not invoked.
  */
 export function bindTrustedTaskResumeInputs(
   program: CheckpointableTaskProgram,
@@ -436,11 +535,32 @@ export function bindTrustedTaskResumeInputs(
   const missingInputs: string[] = [];
   const selected: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const name of declared) {
-    const hasOwn = Object.prototype.hasOwnProperty.call(trustedInputs, name);
-    const value = hasOwn ? trustedInputs[name] : undefined;
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(trustedInputs, name); }
+    catch { descriptor = undefined; }
+    const value = descriptor && 'value' in descriptor ? descriptor.value : undefined;
     if (typeof value !== 'string') missingInputs.push(name);
     else selected[name] = value;
   }
   if (missingInputs.length) return { ok: false, missingInputs };
   return { ok: true, missingInputs: [], inputs: Object.freeze(selected) };
+}
+
+/**
+ * Fail-closed resume preparation: compatibility (including execution identity and browser state)
+ * is checked before trusted input properties are read or exposed to the caller.
+ */
+export function prepareTaskCheckpointResume(
+  checkpoint: TaskCheckpoint,
+  options: PrepareTaskCheckpointResumeOptions,
+): TaskCheckpointResumePreparation {
+  const compatibility = checkTaskCheckpointCompatibility(checkpoint, options);
+  if (!compatibility.compatible) {
+    return { ready: false, issues: compatibility.issues, missingInputs: [] };
+  }
+  const binding = bindTrustedTaskResumeInputs(options.program, options.trustedInputs);
+  if (!binding.ok) {
+    return { ready: false, issues: [], missingInputs: binding.missingInputs };
+  }
+  return { ready: true, issues: [], missingInputs: [], inputs: binding.inputs };
 }
