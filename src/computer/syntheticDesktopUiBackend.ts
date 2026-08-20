@@ -33,7 +33,7 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
   systemEnumeratedWindows = 0;
   focusedControlId?: string;
   accessibility = new Map<string, DesktopAccessibilityObservation>();
-  private observedAccessibilityRoots = new Map<string, DesktopAccessibilityNode>();
+  private observedAccessibilityControls = new Map<string, Map<string, DesktopAccessibilityNode>>();
   visuals = new Map<string, DesktopVisualObservation>();
   lazyVisuals = new Map<string, {width:number;height:number;byteLength:number;token?:string;mediaType?:string}>();
   visualMaterializations = 0;
@@ -64,8 +64,23 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
   }
   observeAccessibility(window:DesktopNativeWindowRef, _limits:Required<ComputerObservationLimits>):Promise<DesktopAccessibilityObservation> {
     const observation = this.accessibility.get(this.key(window)) ?? {status:'unavailable' as const,window,reason:'not-configured'};
-    if (observation.status === 'available' && observation.root) this.observedAccessibilityRoots.set(this.key(window), observation.root);
-    else this.observedAccessibilityRoots.delete(this.key(window));
+    if (observation.status === 'available' && observation.root) {
+      const controls = new Map<string, DesktopAccessibilityNode>();
+      const queue: Array<{node:DesktopAccessibilityNode;depth:number}> = [{node:observation.root,depth:0}];
+      let cursor = 0;
+      while (cursor < queue.length && controls.size < 256) {
+        const {node,depth} = queue[cursor++]!;
+        if (!controls.has(node.controlId)) controls.set(node.controlId,node);
+        if (depth >= 16 || !node.children) continue;
+        const remaining = 256 - controls.size - (queue.length - cursor);
+        const childLimit = Math.min(node.children.length, Math.max(0, remaining));
+        for (let index = 0; index < childLimit; index += 1) {
+          const child = node.children[index];
+          if (child) queue.push({node:child,depth:depth + 1});
+        }
+      }
+      this.observedAccessibilityControls.set(this.key(window),controls);
+    } else this.observedAccessibilityControls.delete(this.key(window));
     return Promise.resolve(observation);
   }
   observeVisual(window:DesktopNativeWindowRef, limits:DesktopVisualAcquisitionLimits):Promise<DesktopVisualObservation> {
@@ -90,15 +105,15 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
   }
   private currentControlExists(window:DesktopNativeWindowRef, controlId:string): boolean {
     const observation = this.accessibility.get(this.key(window));
-    const leasedRoot = this.observedAccessibilityRoots.get(this.key(window));
-    if (!observation || observation.status !== 'available' || !observation.root || observation.root !== leasedRoot) return false;
+    const leasedControl = this.observedAccessibilityControls.get(this.key(window))?.get(controlId);
+    if (!observation || observation.status !== 'available' || !observation.root || !leasedControl) return false;
     const queue: Array<{node:DesktopAccessibilityNode;depth:number}> = [{node:observation.root,depth:0}];
     let cursor = 0;
     let seen = 0;
     while (cursor < queue.length && seen < 256) {
       const {node,depth} = queue[cursor++]!;
       seen += 1;
-      if (node.controlId === controlId) return true;
+      if (node.controlId === controlId) return node === leasedControl;
       if (depth >= 16 || !node.children) continue;
       const remaining = 256 - seen - (queue.length - cursor);
       const childLimit = Math.min(node.children.length, Math.max(0, remaining));
