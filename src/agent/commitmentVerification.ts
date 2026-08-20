@@ -98,6 +98,18 @@ function sameBrowserDocument(
   return before.timeOrigin === after.timeOrigin && before.url === after.url && before.origin === after.origin;
 }
 
+function pageContext(
+  document: DocumentContentSnapshot,
+  browserState: BrowserStateSnapshot | undefined,
+  resultContext: BrowserCommitmentResultContext,
+): VerificationPageContext {
+  return {
+    document,
+    ...(browserState ? { browserState } : {}),
+    resultContext,
+  };
+}
+
 async function activePageContext(
   engine: TaskRuntimeEngine,
   frameId: string,
@@ -108,11 +120,7 @@ async function activePageContext(
   const stateAfter = await engine.browserState?.();
   if (!sameBrowserDocument(stateBefore, stateAfter)) return undefined;
   const scoped = document ? documentForFrame(document, frameId) : undefined;
-  return scoped ? {
-    document: scoped,
-    ...(stateAfter ?? stateBefore ? { browserState: stateAfter ?? stateBefore } : {}),
-    resultContext: 'same-page',
-  } : undefined;
+  return scoped ? pageContext(scoped, stateAfter ?? stateBefore, 'same-page') : undefined;
 }
 
 async function associatedPopupContext(
@@ -142,11 +150,7 @@ async function associatedPopupContext(
   const stateAfter = await engine.browserStateForPage?.(candidate.targetId);
   if (!sameBrowserDocument(stateBefore, stateAfter)) return undefined;
   const scoped = document ? documentForFrame(document, 'main') : undefined;
-  return scoped ? {
-    document: scoped,
-    ...(stateAfter ?? stateBefore ? { browserState: stateAfter ?? stateBefore } : {}),
-    resultContext: 'bound-popup',
-  } : undefined;
+  return scoped ? pageContext(scoped, stateAfter ?? stateBefore, 'bound-popup') : undefined;
 }
 
 function freshCommitment(
@@ -240,11 +244,12 @@ export async function captureTaskStepCommitmentVerificationBaseline(
       context.browserState,
     );
     const targets = engine.targetState?.();
+    const pageTargetId = engine.activePageTargetId?.();
     return {
       frameId: freshTarget.frameId,
       verification: verifyBrowserCommitment(approved, context.document),
       identity,
-      ...(engine.activePageTargetId?.() ? { pageTargetId: engine.activePageTargetId!() } : {}),
+      ...(pageTargetId ? { pageTargetId } : {}),
       ...(targets ? { pageCount: targets.pages } : {}),
       ...(targets?.latestPage ? { latestPageSequence: targets.latestPage.sequence } : {}),
     };
