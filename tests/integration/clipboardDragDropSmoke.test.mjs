@@ -114,11 +114,13 @@ test('raw CDP transfers browser-native drag data without exposing payload text',
       document.body.innerHTML = '<div id="source" draggable="true" style="position:absolute;left:20px;top:20px;width:100px;height:60px">source</div><div id="target" style="position:absolute;left:260px;top:20px;width:140px;height:100px">target</div>';
       const source = document.querySelector('#source');
       const target = document.querySelector('#target');
+      target.dataset.dropCount = '0';
       source.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', 'synthetic-private-drag-payload'));
       target.addEventListener('dragover', (event) => event.preventDefault());
       target.addEventListener('drop', (event) => {
         event.preventDefault();
         target.dataset.received = event.dataTransfer.getData('text/plain');
+        target.dataset.dropCount = String(Number(target.dataset.dropCount || '0') + 1);
       });
     })()`,
   });
@@ -135,10 +137,11 @@ test('raw CDP transfers browser-native drag data without exposing payload text',
   assert.equal(result.status, 'drop-dispatched');
   assert.equal(JSON.stringify(result).includes('synthetic-private-drag-payload'), false);
   const received = await client.send('Runtime.evaluate', {
-    expression: `document.querySelector('#target').dataset.received`,
+    expression: `({ received: document.querySelector('#target').dataset.received, dropCount: document.querySelector('#target').dataset.dropCount })`,
     returnByValue: true,
   });
-  assert.equal(received.result.value, 'synthetic-private-drag-payload');
+  assert.equal(received.result.value.received, 'synthetic-private-drag-payload');
+  assert.equal(received.result.value.dropCount, '1');
 });
 
 test('raw clipboard access remains bounded and never mutates browser permission state', async (t) => {
