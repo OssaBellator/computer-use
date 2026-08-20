@@ -12,12 +12,14 @@ export type RemoteProtocolKind = typeof REMOTE_PROTOCOL_KINDS[number];
 export type RemoteConnectionLifecycle = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 export interface RemoteEndpointIdentity {
+  /** Caller-supplied opaque identity. It must uniquely identify the intended host endpoint. */
   endpointId: string;
   protocol: RemoteProtocolKind;
   host: string;
   port: number;
 }
 
+/** Opaque reference only. Implementations may resolve it inside a trusted credential boundary. */
 export interface RemoteSecretHandle {
   readonly kind: 'secret-handle';
   readonly handleId: string;
@@ -25,6 +27,7 @@ export interface RemoteSecretHandle {
 
 export interface RemoteSessionConnection {
   sessionId: string;
+  /** Backend-observed identity for the peer actually reached. */
   remoteHostId: string;
   capabilities: readonly string[];
 }
@@ -36,12 +39,16 @@ export interface RemoteSessionAuthority {
   generation: number;
 }
 
-export interface RemoteMetadataItem { key: string; value: string; }
+export interface RemoteMetadataItem {
+  key: string;
+  value: string;
+}
 
 export interface RemoteDisplayFrame {
   width: number;
   height: number;
   format: 'synthetic-rgba' | 'synthetic-png';
+  /** Synthetic/test transports may provide bytes. Production backends can use a bounded opaque frame token instead. */
   bytes?: Uint8Array;
   frameId?: string;
 }
@@ -55,8 +62,19 @@ export interface RemoteVisualInput {
 }
 
 /** argv-style invocation: command/args are distinct strings; no shell parsing is implied. */
-export interface RemoteCommandInvocation { command: string; args?: readonly string[]; }
-export interface RemoteCommandResult { exitCode: number | null; stdout?: string; stderr?: string; }
+export interface RemoteCommandInvocation {
+  command: string;
+  args?: readonly string[];
+}
+
+export interface RemoteCommandResult {
+  exitCode: number | null;
+  stdout?: string;
+  stderr?: string;
+  /** Adapter-owned truncation markers. Backends need not set or trust these. */
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+}
 
 export class RemoteDispatchError extends Error {
   constructor(readonly dispatch: 'not-dispatched' | 'unknown', readonly evidence: string) {
@@ -92,6 +110,11 @@ const MAX_COMMAND_BYTES = 4_096;
 const MAX_COMMAND_ARGS = 128;
 const MAX_COMMAND_ARG_BYTES = 4_096;
 const MAX_COMMAND_TOTAL_BYTES = 65_536;
+const MAX_COMMAND_OUTPUT_BYTES = 65_536;
+const MAX_VISUAL_COORDINATE = 1_000_000;
+const MAX_VISUAL_KEY_BYTES = 128;
+const MAX_VISUAL_TEXT_BYTES = 4_096;
+const MACHINE_EVIDENCE_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 const REMOTE_CAPABILITY_PATTERN = /^remote\.(session\.observe|metadata\.observe|display\.observe|visual\.input|ssh\.execute)$/;
 
 function utf8Bytes(value: string): number { return new TextEncoder().encode(value).byteLength; }
@@ -172,6 +195,51 @@ function validCommandInvocation(value: unknown): value is RemoteCommandInvocatio
   }
   return true;
 }
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key)) && allowed.every((key) => key === 'kind' || key in value);
+}
+function validVisualInput(value: unknown): value is RemoteVisualInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const input = value as Record<string, unknown>;
+  if (input.kind === 'pointer') {
+    return exactKeys(input, ['kind', 'x', 'y']) && typeof input.x === 'number' && typeof input.y === 'number' &&
+      Number.isFinite(input.x) && Number.isFinite(input.y) && input.x >= 0 && input.y >= 0 &&
+      input.x <= MAX_VISUAL_COORDINATE && input.y <= MAX_VISUAL_COORDINATE;
+  }
+  if (input.kind === 'key') {
+    return exactKeys(input, ['kind', 'key']) && typeof input.key === 'string' && bounded(input.key, MAX_VISUAL_KEY_BYTES);
+  }
+  if (input.kind === 'text') {
+    return exactKeys(input, ['kind', 'text']) && typeof input.text === 'string' && utf8Bytes(input.text) <= MAX_VISUAL_TEXT_BYTES && !/\0/.test(input.text);
+  }
+  return false;
+}
+function safeEvidenceCode(value: unknown): string {
+  return typeof value === 'string' && MACHINE_EVIDENCE_PATTERN.test(value) ? value : 'remote-backend-evidence-invalid';
+}
+function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
+  let used = 0;
+  let out = '';
+  for (const char of value) {
+    const size = utf8Bytes(char);
+    if (used + size > maxBytes) return { value: out, truncated: true };
+    out += char;
+    used += size;
+  }
+  return { value: out, truncated: false };
+}
+function safeCommandResult(value: RemoteCommandResult): RemoteCommandResult {
+  if (!value || typeof value !== 'object' || (value.exitCode !== null && !Number.isSafeInteger(value.exitCode))) {
+    return { exitCode: null, stdoutTruncated: true, stderrTruncated: true };
+  }
+  const stdout = typeof value.stdout === 'string' ? truncateUtf8(value.stdout, MAX_COMMAND_OUTPUT_BYTES) : undefined;
+  const stderr = typeof value.stderr === 'string' ? truncateUtf8(value.stderr, MAX_COMMAND_OUTPUT_BYTES) : undefined;
+  return {
+    exitCode: value.exitCode,
+    ...(stdout ? { stdout: stdout.value, stdoutTruncated: stdout.truncated || value.stdoutTruncated === true } : {}),
+    ...(stderr ? { stderr: stderr.value, stderrTruncated: stderr.truncated || value.stderrTruncated === true } : {}),
+  };
+}
 
 export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor;
@@ -181,18 +249,32 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   private sequence = 0;
   private discoveredCapabilities: readonly string[] = [];
 
-  constructor(readonly adapterId: string, readonly endpoint: RemoteEndpointIdentity, private readonly backend: RemoteSessionBackend) {
-    if (!bounded(adapterId) || !validEndpoint(endpoint) || backend.protocol !== endpoint.protocol) throw new Error('invalid remote-session adapter configuration');
+  constructor(
+    readonly adapterId: string,
+    readonly endpoint: RemoteEndpointIdentity,
+    private readonly backend: RemoteSessionBackend,
+  ) {
+    if (!bounded(adapterId) || !validEndpoint(endpoint) || backend.protocol !== endpoint.protocol) {
+      throw new Error('invalid remote-session adapter configuration');
+    }
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'remote-session' as const,
       version: '0.1.0',
-      capabilities: Object.freeze(['remote.session.observe', 'remote.metadata.observe', ...(endpoint.protocol === 'ssh' ? ['remote.ssh.execute'] : ['remote.display.observe', 'remote.visual.input'])]),
+      capabilities: Object.freeze([
+        'remote.session.observe', 'remote.metadata.observe',
+        ...(endpoint.protocol === 'ssh' ? ['remote.ssh.execute'] : ['remote.display.observe', 'remote.visual.input']),
+      ]),
     });
   }
 
   state(): Readonly<{ lifecycle: RemoteConnectionLifecycle; endpoint: RemoteEndpointIdentity; authority?: RemoteSessionAuthority; capabilities: readonly string[] }> {
-    return Object.freeze({ lifecycle: this.lifecycle, endpoint: Object.freeze({ ...this.endpoint }), authority: this.connection ? Object.freeze(this.currentAuthority()) : undefined, capabilities: this.discoveredCapabilities });
+    return Object.freeze({
+      lifecycle: this.lifecycle,
+      endpoint: Object.freeze({ ...this.endpoint }),
+      authority: this.connection ? Object.freeze(this.currentAuthority()) : undefined,
+      capabilities: this.discoveredCapabilities,
+    });
   }
 
   async connect(credential?: RemoteSecretHandle): Promise<RemoteSessionAuthority> {
@@ -246,7 +328,9 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
     this.assertRequestAdapter(request.adapterId);
     const base = { adapterId: this.adapterId, environment: 'remote-session' as const, channel: request.channel, sequence: ++this.sequence };
-    if (request.channel === 'network') return { ...base, complete: true, truncated: false, data: this.state() };
+    if (request.channel === 'network') {
+      return { ...base, complete: true, truncated: false, data: this.state() };
+    }
     const connection = this.requireConnection();
     this.assertSurfaceAuthority(request.surface);
     if (request.channel === 'terminal' && this.endpoint.protocol === 'ssh') {
@@ -279,17 +363,24 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
       if (this.endpoint.protocol !== 'ssh' || !this.backend.executeRemoteCommand) return this.unsupported('remote-ssh-unavailable');
       const invocation = payload?.invocation;
       if (!validCommandInvocation(invocation)) return this.reject('remote-command-invalid');
-      try { return this.fromDispatch(await this.backend.executeRemoteCommand(connection, invocation)); }
-      catch (error) { return this.transportFailure(error); }
+      try {
+        return this.fromDispatch(await this.backend.executeRemoteCommand(connection, invocation), safeCommandResult);
+      } catch (error) {
+        return this.transportFailure(error);
+      }
     }
     if (request.capability === 'remote.visual.input') {
       if ((this.endpoint.protocol !== 'rdp' && this.endpoint.protocol !== 'vnc') || !this.backend.sendVisualInput) return this.unsupported('remote-visual-input-unavailable');
       const input = payload?.input;
-      if (!input || typeof input !== 'object') return this.reject('remote-input-invalid');
+      if (!validVisualInput(input)) return this.reject('remote-input-invalid');
       let mapped: ComputerActionResult;
-      try { mapped = this.fromDispatch(await this.backend.sendVisualInput(connection, input as RemoteVisualInput)); }
-      catch (error) { mapped = this.transportFailure(error); }
+      try {
+        mapped = this.fromDispatch(await this.backend.sendVisualInput(connection, input));
+      } catch (error) {
+        mapped = this.transportFailure(error);
+      }
       if (mapped.status === 'completed') {
+        // Transport acceptance / changed pixels cannot prove an application-level side effect.
         return { ...mapped, status: 'unknown', verification: 'unverified', evidence: [...(mapped.evidence ?? []), 'remote-visual-effect-unverified'] };
       }
       return mapped;
@@ -313,7 +404,9 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   private assertSurfaceAuthority(surface: ComputerSurfaceRef | undefined): void {
     if (!surface) return;
     const current = this.surfaceRef();
-    if (surface.adapterId !== current.adapterId || surface.environment !== current.environment || surface.surfaceId !== current.surfaceId || surface.generation !== current.generation || surface.parentSurfaceId !== current.parentSurfaceId) throw new Error('stale or mismatched remote surface');
+    if (surface.adapterId !== current.adapterId || surface.environment !== current.environment || surface.surfaceId !== current.surfaceId || surface.generation !== current.generation || surface.parentSurfaceId !== current.parentSurfaceId) {
+      throw new Error('stale or mismatched remote surface');
+    }
   }
   private authorityError(authority: RemoteSessionAuthority): string | undefined {
     const current = this.currentAuthority();
@@ -325,13 +418,16 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   private reject(evidence: string): ComputerActionResult { return { status: 'rejected', dispatch: 'not-dispatched', verification: 'unverified', evidence: [evidence] }; }
   private unsupported(evidence: string): ComputerActionResult { return { status: 'unsupported', dispatch: 'not-dispatched', verification: 'unverified', evidence: [evidence] }; }
   private transportFailure(error: unknown): ComputerActionResult {
-    if (error instanceof RemoteDispatchError && error.dispatch === 'not-dispatched') return { status: 'failed', dispatch: 'not-dispatched', verification: 'unverified', evidence: [error.evidence] };
-    const evidence = error instanceof RemoteDispatchError ? error.evidence : 'remote-transport-failure-ambiguous';
+    if (error instanceof RemoteDispatchError && error.dispatch === 'not-dispatched') {
+      return { status: 'failed', dispatch: 'not-dispatched', verification: 'unverified', evidence: [safeEvidenceCode(error.evidence)] };
+    }
+    const evidence = error instanceof RemoteDispatchError ? safeEvidenceCode(error.evidence) : 'remote-transport-failure-ambiguous';
     return { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: [evidence] };
   }
-  private fromDispatch<T>(result: RemoteDispatchOutcome<T>): ComputerActionResult {
-    if (result.dispatch === 'not-dispatched') return { status: 'failed', dispatch: 'not-dispatched', verification: 'unverified', evidence: [result.evidence] };
-    if (result.dispatch === 'unknown') return { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: [result.evidence] };
-    return { status: 'completed', dispatch: 'dispatched-once', verification: 'not-applicable', evidence: result.evidence ? [result.evidence] : undefined, details: result.value };
+  private fromDispatch<T>(result: RemoteDispatchOutcome<T>, mapValue?: (value: T) => unknown): ComputerActionResult {
+    if (result.dispatch === 'not-dispatched') return { status: 'failed', dispatch: 'not-dispatched', verification: 'unverified', evidence: [safeEvidenceCode(result.evidence)] };
+    if (result.dispatch === 'unknown') return { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: [safeEvidenceCode(result.evidence)] };
+    const details = result.value === undefined ? undefined : (mapValue ? mapValue(result.value) : result.value);
+    return { status: 'completed', dispatch: 'dispatched-once', verification: 'not-applicable', evidence: result.evidence ? [safeEvidenceCode(result.evidence)] : undefined, details };
   }
 }
