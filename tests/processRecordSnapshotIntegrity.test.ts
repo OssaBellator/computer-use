@@ -57,3 +57,50 @@ test('spawn acknowledgement cannot turn a changing source record into a foreign 
   assert.notEqual(ref.generation, 88);
   assert.equal(changing.getterCalls(), 0);
 });
+
+test('process record snapshot uses only bounded schema descriptor reads', async () => {
+  let extraGetterCalls = 0;
+  const record: Record<string, unknown> = {
+    pid: 100,
+    startTicks: 77,
+    name: 'bounded-source',
+    state: 'running',
+  };
+  Object.defineProperty(record, 'irrelevant', {
+    enumerable: true,
+    get() {
+      extraGetterCalls += 1;
+      return 'ignored';
+    },
+  });
+  const symbol = Symbol('irrelevant');
+  Object.defineProperty(record, symbol, {
+    enumerable: true,
+    get() {
+      extraGetterCalls += 1;
+      return 'ignored';
+    },
+  });
+
+  const originalDescriptors = Object.getOwnPropertyDescriptors;
+  const originalSymbols = Object.getOwnPropertySymbols;
+  Object.getOwnPropertyDescriptors = ((value: object) => {
+    if (value === record) throw new Error('bulk descriptor enumeration forbidden');
+    return originalDescriptors(value);
+  }) as typeof Object.getOwnPropertyDescriptors;
+  Object.getOwnPropertySymbols = ((value: object) => {
+    if (value === record) throw new Error('bulk symbol enumeration forbidden');
+    return originalSymbols(value);
+  }) as typeof Object.getOwnPropertySymbols;
+  try {
+    const identities = new ProcessIdentityStore('process:test', sourceFor(() => record as unknown as ProcessRecord));
+    const snapshot = await identities.inspect(100);
+    assert.equal(snapshot?.pid, 100);
+    assert.equal(snapshot?.ref.entityId, 'pid:100');
+    assert.equal(snapshot?.ref.generation, 77);
+    assert.equal(extraGetterCalls, 0);
+  } finally {
+    Object.getOwnPropertyDescriptors = originalDescriptors;
+    Object.getOwnPropertySymbols = originalSymbols;
+  }
+});
