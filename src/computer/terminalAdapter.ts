@@ -353,6 +353,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     if (payloadError) return this.prelaunchFailure(payloadError);
     const requiredEffect = this.effectResolver.requiredEffect(payload);
     if (!requiredEffect || requestedEffect !== requiredEffect) return this.prelaunchFailure('terminal.effect.mismatch');
+    const exitStatusVerifiesDomain = requiredEffect === 'process-execution';
 
     const executableInput = payload.mode === 'argv' ? payload.executable : payload.shellExecutable;
     const cwdInput = payload.cwd;
@@ -485,8 +486,8 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
       return {
         status: 'failed',
         dispatch: 'dispatched-once',
-        verification: 'verified',
-        evidence: ['terminal.execution.timeout'],
+        verification: exitStatusVerifiesDomain ? 'verified' : 'unverified',
+        evidence: [exitStatusVerifiesDomain ? 'terminal.execution.timeout' : 'terminal.execution.timeout-domain-unverified'],
         details,
       };
     }
@@ -494,16 +495,20 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
       return {
         status: 'completed',
         dispatch: 'dispatched-once',
-        verification: 'verified',
-        evidence: ['terminal.execution.exited-zero'],
+        verification: exitStatusVerifiesDomain ? 'verified' : 'unverified',
+        evidence: [exitStatusVerifiesDomain ? 'terminal.execution.exited-zero' : 'terminal.execution.exited-zero-domain-unverified'],
         details,
       };
     }
     return {
       status: 'failed',
       dispatch: 'dispatched-once',
-      verification: 'verified',
-      evidence: [outcome.code === null ? 'terminal.execution.signaled' : 'terminal.execution.nonzero-exit'],
+      verification: exitStatusVerifiesDomain ? 'verified' : 'unverified',
+      evidence: [
+        outcome.code === null
+          ? (exitStatusVerifiesDomain ? 'terminal.execution.signaled' : 'terminal.execution.signaled-domain-unverified')
+          : (exitStatusVerifiesDomain ? 'terminal.execution.nonzero-exit' : 'terminal.execution.nonzero-exit-domain-unverified'),
+      ],
       details,
     };
   }
