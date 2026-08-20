@@ -446,3 +446,34 @@ test('observation request authority and limits cannot drift during asynchronous 
   assert.deepEqual(accessibilityLimits,{maxItems:1,maxTextBytes:100,maxDepth:1});
   assert.equal(Object.isFrozen(result.target),true);
 });
+
+test('window generation is revalidated after control preflight before native dispatch', async () => {
+  for (const [capability,payload] of [
+    ['desktop.focus',undefined],
+    ['desktop.keyboard',{kind:'key-down',key:'A'}],
+    ['desktop.pointer.absolute',{kind:'move',x:1,y:2}],
+    ['desktop.pointer.relative',{dx:1,dy:2}],
+  ] as const) {
+    const {backend,adapter} = fixture();
+    const control = {adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'root',surfaceId:'win-1',generation:1};
+    const originalObserveAccessibility = backend.observeAccessibility.bind(backend);
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const enteredAccessibility = new Promise<void>((resolve) => { entered = resolve; });
+    backend.observeAccessibility = async (window,limits) => {
+      entered();
+      await gate;
+      return originalObserveAccessibility(window,limits);
+    };
+    const pending = adapter.act({adapterId:'desktop:test',actionId:`replace-${capability}`,capability,effect:'local-reversible',idempotency:'idempotent',target:control,...(payload === undefined ? {} : {payload})});
+    await enteredAccessibility;
+    backend.windows = [{nativeWindowId:'win-1',generation:2,foreground:true,focused:true}];
+    release();
+    const result = await pending;
+    assert.equal(result.status,'rejected');
+    assert.equal(result.dispatch,'not-dispatched');
+    assert.deepEqual(result.evidence,['stale-window']);
+    assert.equal(backend.actions.length,0);
+  }
+});
