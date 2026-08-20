@@ -81,25 +81,26 @@ function mapLinuxState(value: string): ProcessState {
 }
 function safeGeneration(startTicks: number): number { return Number.isSafeInteger(startTicks) && startTicks >= 0 ? startTicks : 0; }
 const PROCESS_STATES = new Set<ProcessState>(['running', 'sleeping', 'waiting', 'stopped', 'zombie', 'dead', 'unknown']);
-const PROCESS_RECORD_KEYS = new Set(['pid', 'parentPid', 'startTicks', 'name', 'executable', 'state', 'cpuTimeTicks', 'rssBytes']);
+const PROCESS_RECORD_FIELDS = ['pid', 'parentPid', 'startTicks', 'name', 'executable', 'state', 'cpuTimeTicks', 'rssBytes'] as const;
 function snapshotProcessRecordForPid(value: unknown, requestedPid: number): Readonly<ProcessRecord> | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return undefined;
-  if (Object.getOwnPropertySymbols(value).length > 0) return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  for (const [key, descriptor] of Object.entries(descriptors)) {
-    if (!PROCESS_RECORD_KEYS.has(key) || !('value' in descriptor)) return undefined;
+  const captured: Partial<Record<(typeof PROCESS_RECORD_FIELDS)[number], unknown>> = {};
+  for (const key of PROCESS_RECORD_FIELDS) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) continue;
+    if (!('value' in descriptor)) return undefined;
+    captured[key] = descriptor.value;
   }
-  const field = (key: string): unknown => descriptors[key] && 'value' in descriptors[key]! ? descriptors[key]!.value : undefined;
-  const pid = field('pid');
-  const parentPid = field('parentPid');
-  const startTicks = field('startTicks');
-  const name = field('name');
-  const executable = field('executable');
-  const state = field('state');
-  const cpuTimeTicks = field('cpuTimeTicks');
-  const rssBytes = field('rssBytes');
+  const pid = captured.pid;
+  const parentPid = captured.parentPid;
+  const startTicks = captured.startTicks;
+  const name = captured.name;
+  const executable = captured.executable;
+  const state = captured.state;
+  const cpuTimeTicks = captured.cpuTimeTicks;
+  const rssBytes = captured.rssBytes;
   if (pid !== requestedPid || !Number.isSafeInteger(pid) || (pid as number) <= 0) return undefined;
   if (!Number.isSafeInteger(startTicks) || (startTicks as number) < 0) return undefined;
   if (typeof name !== 'string' || typeof state !== 'string' || !PROCESS_STATES.has(state as ProcessState)) return undefined;
