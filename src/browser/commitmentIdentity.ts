@@ -166,6 +166,16 @@ function canonicalIdentifier(value: string): string {
   return value.normalize('NFKC').trim().replace(/^#+/, '').toLocaleUpperCase('en-US');
 }
 
+function looksLikeCredential(value: string): boolean {
+  return /^sk[-_][A-Za-z0-9_-]{16,}$/i.test(value) ||
+    /^gh[pousr]_[A-Za-z0-9]{20,}$/i.test(value) ||
+    /^github_pat_[A-Za-z0-9_]{20,}$/i.test(value) ||
+    /^xox[baprs]-[A-Za-z0-9-]{20,}$/i.test(value) ||
+    /^AIza[A-Za-z0-9_-]{20,}$/.test(value) ||
+    /^(?:AKIA|ASIA)[A-Z0-9]{16}$/.test(value) ||
+    /^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(value);
+}
+
 function safeIdentifier(value: string, maxBytes: number, explicitSeparator: boolean): string | undefined {
   const trimmed = value.trim().replace(/[),.;]+$/, '');
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,63}$/.test(trimmed)) return undefined;
@@ -174,12 +184,11 @@ function safeIdentifier(value: string, maxBytes: number, explicitSeparator: bool
   if (!explicitSeparator && !/[0-9._:/-]/.test(trimmed)) return undefined;
   // Never retain values that are visibly URL- or credential-shaped even when a
   // page places them next to an unsafe generic reference label.
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed)) return undefined;
-  if (/^(?:sk[-_]|gh[pousr]_|github_pat_|xox[baprs]-|AIza|AKIA|ASIA)/i.test(trimmed)) return undefined;
-  if (/^eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}$/.test(trimmed)) return undefined;
-  // Avoid retaining values shaped like payment-card or long account numbers even
-  // when a page applies an unsafe generic label to them.
-  if (/^\d{12,19}$/.test(trimmed.replace(/[- ]/g, ''))) return undefined;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(trimmed) || looksLikeCredential(trimmed)) return undefined;
+  // Reject numeric account/card-like values and compact IBAN-shaped values. This
+  // intentionally prefers a false negative over retaining financial credentials.
+  if (/^\d{12,}$/.test(trimmed.replace(/-/g, ''))) return undefined;
+  if (/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/i.test(trimmed)) return undefined;
   const bounded = boundedUtf8(trimmed, maxBytes);
   return bounded && bounded.length >= 2 ? bounded : undefined;
 }
@@ -200,9 +209,12 @@ function extractFromText(
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
       const candidate = match[2]!;
-      // A spaced numeric credential would otherwise be truncated to its first
-      // group (for example, 4111 from a longer card-like value).
-      if (/^\d+$/.test(candidate) && /^\s+\d/.test(text.slice(pattern.lastIndex))) continue;
+      const following = text.slice(pattern.lastIndex);
+      // Spaced numeric credentials would otherwise be truncated to their first
+      // group (for example, 4111 from a longer card-like value). A two-letter
+      // country prefix plus check digits can similarly be the first IBAN group.
+      if (/^\d+$/.test(candidate) && /^\s+\d/.test(following)) continue;
+      if (/^[A-Z]{2}\d{2}$/i.test(candidate) && /^\s+[A-Z0-9]{2,4}\b/i.test(following)) continue;
       const value = safeIdentifier(candidate, maxBytes, match[1] !== undefined);
       if (value) found.push({ type: descriptor.type, value });
       if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
@@ -227,6 +239,11 @@ function uniqueIdentifiers(
   return output;
 }
 
+function snapshotOrigin(browserState: BrowserStateSnapshot | undefined): string | undefined {
+  const origin = browserState?.origin;
+  return origin && origin !== 'null' ? origin : undefined;
+}
+
 /** Extract only explicitly-labelled, bounded, non-secret operation/result IDs. */
 export function snapshotBrowserCommitmentIdentity(
   kind: BrowserCommitmentKind,
@@ -237,9 +254,10 @@ export function snapshotBrowserCommitmentIdentity(
   const maxDocumentBlocks = positiveInteger(options.maxDocumentBlocks, 128);
   const maxIdentifiers = positiveInteger(options.maxIdentifiers, 8);
   const maxIdentifierBytes = Math.min(96, positiveInteger(options.maxIdentifierBytes, 96));
+  const origin = snapshotOrigin(browserState);
   if (!document) {
     return {
-      ...(browserState?.origin ? { origin: browserState.origin } : {}),
+      ...(origin ? { origin } : {}),
       identifiers: [],
       documentContext: 'unavailable',
     };
@@ -260,7 +278,7 @@ export function snapshotBrowserCommitmentIdentity(
   }
 
   return {
-    ...(browserState?.origin ? { origin: browserState.origin } : {}),
+    ...(origin ? { origin } : {}),
     identifiers: uniqueIdentifiers(identifiers, maxIdentifiers),
     documentContext: document.truncated || document.frameErrors.length > 0 ? 'incomplete' : 'available',
   };
