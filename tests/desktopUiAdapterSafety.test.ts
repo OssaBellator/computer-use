@@ -29,7 +29,7 @@ test('native input cannot be mislabeled observe-only', async () => {
   assert.equal(backend.actions.length,0);
 });
 
-test('keyboard payloads reject missing, oversized, duplicate, and unknown fields before dispatch', async () => {
+test('keyboard payloads reject missing, oversized, duplicate, and malformed schema fields before dispatch', async () => {
   const cases: unknown[] = [
     {kind:'key-down'},
     {kind:'key-up',key:'x'.repeat(200)},
@@ -37,7 +37,6 @@ test('keyboard payloads reject missing, oversized, duplicate, and unknown fields
     {kind:'text',text:'x',modifiers:['shift']},
     {kind:'key-down',key:'A',modifiers:['shift','shift']},
     {kind:'key-down',key:'A',modifiers:['caps-lock']},
-    {kind:'key-down',key:'A',extra:true},
   ];
   for (const payload of cases) {
     const {backend,adapter} = fixture();
@@ -54,7 +53,6 @@ test('absolute pointer payload is discriminated, bounded, and validates buttons'
     {kind:'click',x:1,y:2,button:'primary'},
     {kind:'move',x:1,y:2,button:'left'},
     {kind:'down',x:1_000_001,y:0,button:'left'},
-    {kind:'up',x:1,y:2,button:'left',extra:true},
     {kind:'move',x:1.5,y:2},
   ];
   for (const payload of cases) {
@@ -66,14 +64,49 @@ test('absolute pointer payload is discriminated, bounded, and validates buttons'
   }
 });
 
-test('relative pointer payload rejects huge deltas and unknown fields before dispatch', async () => {
-  const cases: unknown[] = [{dx:100_001,dy:0},{dx:1,dy:2,extra:true},{dx:1.2,dy:2}];
+test('relative pointer payload rejects huge and malformed deltas before dispatch', async () => {
+  const cases: unknown[] = [{dx:100_001,dy:0},{dx:1.2,dy:2}];
   for (const payload of cases) {
     const {backend,adapter} = fixture();
     const result = await adapter.act({adapterId:'desktop:test',actionId:'bad-relative',capability:'desktop.pointer.relative',effect:'local-reversible',idempotency:'idempotent',target,payload});
     assert.equal(result.dispatch,'not-dispatched');
     assert.deepEqual(result.evidence,['invalid-pointer-payload']);
     assert.equal(backend.actions.length,0);
+  }
+});
+
+test('schema capture ignores untrusted extra keys without global own-key enumeration', async () => {
+  {
+    const {backend,adapter} = fixture();
+    let ownKeysCalls = 0;
+    const raw = new Proxy({
+      windows:[{nativeWindowId:'win-1',generation:1,foreground:true,focused:true,secret:'ignored'}],
+      truncated:false,
+      secret:'ignored',
+    } as any, {
+      ownKeys() { ownKeysCalls += 1; throw new Error('global own-key enumeration forbidden'); },
+    });
+    backend.observeSystem = async () => raw;
+    const obs = await adapter.observe({adapterId:'desktop:test',channel:'system',limits:{maxItems:1,maxTextBytes:1000,maxDepth:1}});
+    assert.equal((obs.data as any).windows[0].nativeWindowId,'win-1');
+    assert.equal((obs.data as any).windows[0].secret,undefined);
+    assert.equal(ownKeysCalls,0);
+  }
+
+  for (const [capability,payload,expected] of [
+    ['desktop.keyboard',{kind:'key-down',key:'A',extra:'ignored'},{kind:'key-down',key:'A'}],
+    ['desktop.pointer.absolute',{kind:'move',x:1,y:2,extra:'ignored'},{kind:'move',x:1,y:2}],
+    ['desktop.pointer.relative',{dx:1,dy:2,extra:'ignored'},{dx:1,dy:2}],
+  ] as const) {
+    const {backend,adapter} = fixture();
+    let ownKeysCalls = 0;
+    const proxied = new Proxy(payload as any,{
+      ownKeys() { ownKeysCalls += 1; throw new Error('global own-key enumeration forbidden'); },
+    });
+    const result = await adapter.act({adapterId:'desktop:test',actionId:'bounded-schema',capability,effect:'local-reversible',idempotency:'idempotent',target,payload:proxied});
+    assert.equal(result.status,'completed');
+    assert.equal(ownKeysCalls,0);
+    assert.deepEqual(backend.actions[0]?.payload,expected);
   }
 });
 
