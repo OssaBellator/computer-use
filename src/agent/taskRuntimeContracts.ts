@@ -5,6 +5,11 @@ import type {
   BrowserCommitmentStatus,
   BrowserCommitmentSummary,
 } from '../browser/commitmentDetector.js';
+import type {
+  BrowserCommitmentMaterialField,
+  BrowserCommitmentVerificationStatus,
+  BrowserCommitmentVerificationSummary,
+} from '../browser/commitmentVerifier.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
@@ -46,8 +51,47 @@ export interface TaskRuntimeEngine {
   closeLatestUnattachedPage?(): Promise<CloseBrowserTargetResult | undefined>;
 }
 
-export type TaskRunStatus = 'completed' | 'failed' | 'invalid-program' | 'missing-input' | 'budget-exhausted' | 'loop-detected' | 'stalled' | 'policy-blocked';
-export type TaskTraceOutcome = 'verified' | 'uploaded' | 'page-switched' | 'navigated' | 'history-navigated' | 'dialog-handled' | 'target-created' | 'target-closed' | 'failed' | 'exception' | 'asserted' | 'assertion-failed' | 'branch-then' | 'branch-else' | 'wait-satisfied' | 'wait-timeout' | 'completed' | 'completion-condition-failed' | 'policy-blocked';
+export type TaskRunStatus =
+  | 'completed'
+  | 'failed'
+  | 'invalid-program'
+  | 'missing-input'
+  | 'budget-exhausted'
+  | 'loop-detected'
+  | 'stalled'
+  | 'policy-blocked'
+  | 'side-effect-pending'
+  | 'side-effect-declined'
+  | 'side-effect-canceled'
+  | 'side-effect-mismatch'
+  | 'side-effect-unverified';
+
+export type TaskTraceOutcome =
+  | 'verified'
+  | 'uploaded'
+  | 'page-switched'
+  | 'navigated'
+  | 'history-navigated'
+  | 'dialog-handled'
+  | 'target-created'
+  | 'target-closed'
+  | 'failed'
+  | 'exception'
+  | 'asserted'
+  | 'assertion-failed'
+  | 'branch-then'
+  | 'branch-else'
+  | 'wait-satisfied'
+  | 'wait-timeout'
+  | 'completed'
+  | 'completion-condition-failed'
+  | 'policy-blocked'
+  | 'commitment-confirmed'
+  | 'commitment-pending'
+  | 'commitment-declined'
+  | 'commitment-canceled'
+  | 'commitment-mismatch'
+  | 'commitment-unverified';
 
 export interface TaskTraceEntry {
   index: number;
@@ -57,10 +101,13 @@ export interface TaskTraceEntry {
   nextStepId?: string;
   targetId?: string;
   actionStatus?: string;
-  /** Non-sensitive commitment classification only; amount/counterparty remain in approval context. */
+  /** Non-sensitive pre-commit classification only. */
   commitmentStatus?: BrowserCommitmentStatus;
   commitmentKind?: BrowserCommitmentKind;
   commitmentConfidence?: BrowserCommitmentConfidence;
+  /** Non-sensitive post-commit classification only. */
+  commitmentVerificationStatus?: BrowserCommitmentVerificationStatus;
+  commitmentMismatchedFields?: BrowserCommitmentMaterialField[];
   beforeFingerprint: string;
   afterFingerprint: string;
   browserStateChanged: boolean;
@@ -77,6 +124,16 @@ export interface TaskApprovalContext {
   commitment?: BrowserCommitmentSummary;
 }
 
+export interface TaskCommitmentVerificationContext {
+  programName?: string;
+  stepId: string;
+  kind: 'activate' | 'press-key';
+  visit: number;
+  commitment: BrowserCommitmentSummary;
+  /** Explicit callback channel for detailed observed terms; ordinary traces omit those values. */
+  verification: BrowserCommitmentVerificationSummary;
+}
+
 export interface TaskRuntimeOptions {
   maxSteps?: number;
   maxVisitsPerStep?: number;
@@ -85,7 +142,12 @@ export interface TaskRuntimeOptions {
   maxRisk?: TaskRisk;
   /** Defaults to `auto`. `off` restores declaration-only risk gating. */
   commitmentDetection?: 'auto' | 'off';
+  /** Defaults to `auto`. `off` skips specialized post-commit verification. */
+  commitmentVerification?: 'auto' | 'off';
+  commitmentVerificationMaxPolls?: number;
+  commitmentVerificationPollIntervalMs?: number;
   approve?: (context: TaskApprovalContext) => boolean | Promise<boolean>;
+  onCommitmentVerification?: (context: TaskCommitmentVerificationContext) => void | Promise<void>;
   onTrace?: (entry: TaskTraceEntry) => void | Promise<void>;
   waitPollIntervalMs?: number;
   waitMaxPolls?: number;

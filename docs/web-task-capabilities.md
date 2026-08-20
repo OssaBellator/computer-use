@@ -34,7 +34,7 @@ Missing profile entries are treated as unsupported. This keeps assessment fail-c
 
 `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` remains the historical version-0.35 snapshot. It is not mutated when later slices land.
 
-`CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` describes the current stack. At version 0.40 it adds bounded document reading, partial native rich-text editing, and partial page-grounded commitment detection while keeping incomplete capabilities explicitly partial or unsupported.
+`CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` describes the current stack. At version 0.41 it includes bounded document reading, partial native rich-text editing, partial page-grounded commitment detection, and partial commitment-bound external-side-effect verification while keeping incomplete capabilities explicitly partial or unsupported.
 
 ### Strong current foundations
 
@@ -58,7 +58,8 @@ Missing profile entries are treated as unsupported. This keeps assessment fail-c
 - uploads require upload-controller configuration
 - rich-text editing has bounded caret/selection observation plus exact native insertion/replacement/select-all/delete, but formatting, rich clipboard, drag/drop, and editor-specific verification are incomplete
 - commitment detection covers strong and context-corroborated purchase/booking/transfer/subscription/publish/destructive/security/process actions, but it is heuristic and site-specific semantics remain incomplete
-- generic action verification exists for some remote side effects, but transaction/publishing semantics are not specialized enough to be fully supported
+- approved detected commitments receive bounded frame-scoped post-action verification for explicit confirmed/pending/declined/canceled states plus material-term mismatches; provider-specific receipts and durable result identity remain incomplete
+- process-trigger verification recognizes explicit queued/started/completed/failed/canceled result text without redispatching, but provider/process identity is not first-class
 - generic semantic activation can operate some media controls, but playback/fullscreen state is not first-class
 - ordinary UI interaction can reach some sign-in/MFA pages, but user-handoff/passkey/authentication state is not first-class
 
@@ -69,23 +70,25 @@ Missing profile entries are treated as unsupported. This keeps assessment fail-c
 - first-class media playback/fullscreen controls
 - browser permission and camera/microphone state
 - credential/passkey control and explicit user-mediated authentication state
-- specialized post-commit external-side-effect/process-trigger verification bound to the intended commitment
+- durable provider/result identity across redirects, popups, and multi-provider commitment handoffs
 - long-running task checkpoints/replay
 
 The capability model intentionally exposes these gaps. A broad category should not appear complete merely because generic clicking and typing are available.
 
-## Transaction/commerce status at 0.40
+## Transaction/commerce status at 0.41
 
 `transactions-commerce` requires navigation, semantic interaction, activation, text entry, select controls, browser state observation, commitment detection, an explicit confirmation gate, and external-side-effect verification.
 
-At 0.40 no required transaction capability is completely unsupported, so the category is mechanically **runnable** under the model. It is **not fully supported**:
+At 0.41 no required transaction capability is completely unsupported, so the category is mechanically **runnable** under the model. It is **not fully supported**:
 
 - `commitment-detection` is partial because the detector is bounded and heuristic rather than site-semantic;
-- `external-side-effect-verification` is partial because generic DOM/action verification does not yet prove that the intended order, booking, payment, transfer, or subscription actually completed with the expected terms.
+- `external-side-effect-verification` is partial because the new result verifier depends on explicit result language and visible material terms rather than durable provider schemas/identifiers.
+
+The runtime nevertheless has a stronger safety property than generic action verification: after an approved detected commitment is dispatched, only an explicit `confirmed` result advances normally. Pending, declined, canceled, mismatched, and unknown results terminate distinctly and do not traverse the commitment action's `onFailure` edge, preventing automatic duplicate dispatch.
 
 This distinction is intentional. Runnable means a planner can attempt a constrained workflow with explicit policy handling; it does not mean arbitrary financial workflows should proceed unattended.
 
-See [`commitment-safety.md`](commitment-safety.md) for the dynamic pre-commit gate and its fail-closed boundaries.
+See [`commitment-safety.md`](commitment-safety.md) for the pre/post commitment boundary, trace privacy rules, and fail-closed semantics.
 
 ## Program requirement inference
 
@@ -103,7 +106,7 @@ Examples:
 
 The returned capability set is stable-sorted in taxonomy order, and the analysis also surfaces side-effecting/approval step IDs.
 
-The analysis is deliberately mechanical. Dynamic commitment detection is a **runtime** observation immediately before a commit-capable action. A program does not need to contain the literal phrase `Place order` for the browser state to reveal that the resolved target has that accessible name.
+The analysis is deliberately mechanical. Dynamic commitment detection and result verification are **runtime** observations around a commit-capable action. A program does not need to contain the literal phrase `Place order` for browser state to reveal that the resolved target has that accessible name, nor does it need to hard-code a receipt phrase for the runtime to classify a bounded result.
 
 ## Commitment classes
 
@@ -119,19 +122,17 @@ The analysis is deliberately mechanical. Dynamic commitment detection is a **run
 
 The default helper marks remote publishing, financial, identity/security, and process-trigger commitments as requiring explicit approval. More restrictive callers can require approval for reversible remote changes as well.
 
-The 0.40 detector reports a page-grounded commitment kind/class into `TaskApprovalContext.commitment`. The task trace retains only status/kind/confidence so amount/counterparty/schedule details do not become ordinary telemetry.
+The current detector reports a page-grounded commitment kind/class into `TaskApprovalContext.commitment`. The post-action verifier reports detailed observed result terms only through `onCommitmentVerification`. Ordinary task traces retain classification state plus names of mismatched fields so amount/counterparty/schedule values do not become routine telemetry.
 
 This model complements `TaskRuntime`'s `interaction` / `external-side-effect` declaration handling; it does not weaken it. An inferred commitment can require explicit approval even when a caller has otherwise raised `maxRisk` to allow declared external side effects.
 
 ## Next high-leverage capability work
 
-The highest-leverage transaction follow-up is specialized post-side-effect verification. The runtime should bind the state after a commit to the pre-commit summary and distinguish:
+The next transaction-safety refinement is **durable result identity** across page/provider boundaries:
 
-- completed versus pending;
-- succeeded versus declined/failed/canceled;
-- expected versus changed amount/currency;
-- expected versus changed recipient/merchant/service;
-- one-time versus recurring terms;
-- intended publication/process identity versus an unrelated state change.
+- bind explicit order/booking/transfer/publication/process identifiers when available;
+- preserve intended identity across redirects, popups, and payment/provider handoffs;
+- distinguish a matching result page from unrelated success text in another provider surface;
+- carry safe, non-secret identifiers through checkpoint/replay without copying sensitive page content into ordinary telemetry.
 
 For content creation/collaboration, clipboard-rich read/write, formatting runs, drag/drop, and editor-specific model verification remain major blockers. Identity flows still need first-class user-mediated authentication/passkey handoff, and long-running automation still needs durable checkpoint/replay semantics.

@@ -88,6 +88,7 @@ test('approval receives bounded financial commitment summary before activation',
   };
 
   const result = await new TaskRuntime(engine).run(activateProgram('Place order'), {}, {
+    commitmentVerification: 'off',
     approve: async (context) => {
       assert.equal(context.risk, 'external-side-effect');
       assert.equal(context.commitment?.kind, 'purchase');

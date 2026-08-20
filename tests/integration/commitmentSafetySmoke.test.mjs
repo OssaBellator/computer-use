@@ -23,7 +23,7 @@ async function commitCount(page) {
   return state.result.value;
 }
 
-test('standalone TaskRuntime gates a synthetic checkout commitment before browser input', {
+test('standalone TaskRuntime gates and verifies a synthetic checkout commitment around native browser input', {
   skip: !(await chromiumAvailable()),
 }, async () => {
   const agent = await launchStandaloneBrowserAgent({
@@ -84,10 +84,14 @@ test('standalone TaskRuntime gates a synthetic checkout commitment before browse
     assert.equal(blocked.trace[0]?.commitmentKind, 'purchase');
 
     let approval;
+    let verification;
     const allowed = await new TaskRuntime(agent.taskEngine).run(program, {}, {
       approve: async (context) => {
         approval = context.commitment;
         return true;
+      },
+      onCommitmentVerification: async (context) => {
+        verification = context.verification;
       },
     });
     assert.equal(allowed.status, 'completed');
@@ -96,6 +100,10 @@ test('standalone TaskRuntime gates a synthetic checkout commitment before browse
     assert.equal(approval?.amount?.currency, 'AUD');
     assert.equal(approval?.amount?.value, '25.00');
     assert.equal(approval?.counterparty, 'synthetic store');
+    assert.equal(verification?.status, 'confirmed');
+    assert.equal(verification?.observed?.amount?.value, '25.00');
+    assert.equal(allowed.trace[0]?.outcome, 'commitment-confirmed');
+    assert.equal(allowed.trace[0]?.commitmentVerificationStatus, 'confirmed');
 
     const traceText = JSON.stringify(allowed.trace);
     assert.equal(traceText.includes('25.00'), false);

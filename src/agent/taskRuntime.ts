@@ -1,4 +1,5 @@
 import type { BrowserCommitmentSummary } from '../browser/commitmentDetector.js';
+import type { BrowserCommitmentVerificationSummary } from '../browser/commitmentVerifier.js';
 import type { BrowserDialogHandleResult } from '../browser/dialogController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryResult } from '../browser/historyController.js';
@@ -6,6 +7,11 @@ import type { BrowserNavigationResult } from '../browser/navigationController.js
 import type { BrowserSelectResult } from '../browser/selectController.js';
 import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import { detectTaskStepCommitment } from './commitmentGate.js';
+import {
+  captureTaskStepCommitmentVerificationBaseline,
+  verifyTaskStepCommitment,
+  type TaskCommitmentVerificationBaseline,
+} from './commitmentVerification.js';
 import {
   validateTaskProgram,
   type ActivateTaskStep,
@@ -53,6 +59,9 @@ function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefin
 function successOutcome(step: ActionStep): TaskTraceOutcome { switch (step.kind) { case 'upload': return 'uploaded'; case 'switch-page': return 'page-switched'; case 'navigate': return 'navigated'; case 'history': return 'history-navigated'; case 'handle-dialog': return 'dialog-handled'; case 'open-tab': return 'target-created'; case 'close-latest-tab': return 'target-closed'; default: return 'verified'; } }
 function isCommitmentCapableStep(step: ActionStep): step is ActivateTaskStep | PressKeyTaskStep { return step.kind === 'activate' || step.kind === 'press-key'; }
 function commitmentTraceFields(commitment: BrowserCommitmentSummary | undefined) { if (!commitment) return {}; return { commitmentStatus: commitment.status, ...(commitment.kind ? { commitmentKind: commitment.kind } : {}), commitmentConfidence: commitment.confidence }; }
+function verificationTraceFields(verification: BrowserCommitmentVerificationSummary | undefined) { if (!verification) return {}; return { commitmentVerificationStatus: verification.status, ...(verification.mismatchedFields.length ? { commitmentMismatchedFields: verification.mismatchedFields } : {}) }; }
+function verificationOutcome(verification: BrowserCommitmentVerificationSummary): TaskTraceOutcome { switch (verification.status) { case 'confirmed': return 'commitment-confirmed'; case 'pending': return 'commitment-pending'; case 'declined': return 'commitment-declined'; case 'canceled': return 'commitment-canceled'; case 'mismatch': return 'commitment-mismatch'; case 'unknown': return 'commitment-unverified'; } }
+function verificationFailureStatus(verification: BrowserCommitmentVerificationSummary): TaskRunStatus | undefined { switch (verification.status) { case 'confirmed': return undefined; case 'pending': return 'side-effect-pending'; case 'declined': return 'side-effect-declined'; case 'canceled': return 'side-effect-canceled'; case 'mismatch': return 'side-effect-mismatch'; case 'unknown': return 'side-effect-unverified'; } }
 
 function predicateUsesDocument(predicate: TaskPredicate): boolean {
   switch (predicate.kind) {
@@ -134,14 +143,51 @@ export class TaskRuntime {
         if (needsApproval && options.approve) { try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk: approvalRisk, visit, ...(commitment ? { commitment } : {}) }); } catch { approved = false; } }
         if (!approved) { await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); return failed('policy-blocked', index + 1); }
 
+        let verificationBaseline: TaskCommitmentVerificationBaseline | undefined;
+        if (commitment && isCommitmentCapableStep(step) && (options.commitmentVerification ?? 'auto') === 'auto') {
+          if (!commitment.kind) {
+            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
+            return failed('policy-blocked', index + 1);
+          }
+          verificationBaseline = await captureTaskStepCommitmentVerificationBaseline(this.engine, commitment, step, before);
+          if (!verificationBaseline || verificationBaseline.verification.status !== 'unknown' || verificationBaseline.verification.documentContext !== 'available') {
+            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), ...verificationTraceFields(verificationBaseline?.verification), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
+            return failed('policy-blocked', index + 1);
+          }
+        }
+
         let action: RuntimeActionResult | undefined, threw = false;
         try { action = await performAction(this.engine, step, inputs, options); } catch { threw = true; }
         let after = before; try { after = await observe(); } catch {}
         const changed = before.fingerprint !== after.fingerprint;
-        const succeeded = actionSucceeded(step, action), nextId = succeeded ? step.next : step.onFailure;
+        const succeeded = actionSucceeded(step, action);
+        const targetId = action && 'target' in action ? action.target?.id : action && 'targetId' in action ? action.targetId : undefined;
+
+        if (commitment && verificationBaseline && isCommitmentCapableStep(step) && (options.commitmentVerification ?? 'auto') === 'auto') {
+          let verification: BrowserCommitmentVerificationSummary;
+          try {
+            verification = await verifyTaskStepCommitment(this.engine, commitment, verificationBaseline, {
+              maxPolls: options.commitmentVerificationMaxPolls,
+              pollIntervalMs: options.commitmentVerificationPollIntervalMs,
+            });
+          } catch {
+            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'commitment-unverified', ...commitmentTraceFields(commitment), commitmentVerificationStatus: 'unknown', ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
+            return failed('side-effect-unverified', index + 1);
+          }
+
+          try { await options.onCommitmentVerification?.({ programName: program.name, stepId: step.id, kind: step.kind, visit, commitment, verification }); } catch {}
+          const verificationStatus = verificationFailureStatus(verification);
+          const confirmed = verification.status === 'confirmed';
+          await emit({ index, stepId: step.id, kind: step.kind, outcome: verificationOutcome(verification), ...(confirmed ? { nextStepId: step.next } : {}), ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), ...commitmentTraceFields(commitment), ...verificationTraceFields(verification), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
+          if (verificationStatus) return failed(verificationStatus, index + 1);
+          consecutiveNoProgress = 0;
+          currentId = step.next;
+          continue;
+        }
+
+        const nextId = succeeded ? step.next : step.onFailure;
         const madeProgress = changed || ((step.kind === 'scroll-viewport' || step.kind === 'select-option') && succeeded);
         consecutiveNoProgress = madeProgress ? 0 : consecutiveNoProgress + 1;
-        const targetId = action && 'target' in action ? action.target?.id : action && 'targetId' in action ? action.targetId : undefined;
         await emit({ index, stepId: step.id, kind: step.kind, outcome: threw ? 'exception' : succeeded ? successOutcome(step) : 'failed', ...(nextId ? { nextStepId: nextId } : {}), ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
         if (consecutiveNoProgress >= maxNoProgress) return failed('stalled', index + 1);
         if (!nextId) return failed('failed', index + 1);
