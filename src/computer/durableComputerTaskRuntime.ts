@@ -73,13 +73,8 @@ class WriteAheadComputerEnvironmentRegistry extends ComputerEnvironmentRegistry 
     super();
   }
 
-  enterReconciliationAssessment(): void {
-    this.reconciliationAssessmentDepth += 1;
-  }
-
-  leaveReconciliationAssessment(): void {
-    this.reconciliationAssessmentDepth = Math.max(0, this.reconciliationAssessmentDepth - 1);
-  }
+  enterReconciliationAssessment(): void { this.reconciliationAssessmentDepth += 1; }
+  leaveReconciliationAssessment(): void { this.reconciliationAssessmentDepth = Math.max(0, this.reconciliationAssessmentDepth - 1); }
 
   register(adapter: ComputerEnvironmentAdapter): void { this.inner.register(adapter); }
   unregister(adapterId: string): boolean { return this.inner.unregister(adapterId); }
@@ -104,7 +99,8 @@ class WriteAheadComputerEnvironmentRegistry extends ComputerEnvironmentRegistry 
  */
 export class DurableComputerTaskRuntime {
   private writeAheadArmed = false;
-  private runTail: Promise<void> = Promise.resolve();
+  private operationTail: Promise<void> = Promise.resolve();
+  private pendingOperations = 0;
 
   private constructor(
     private readonly runtime: ComputerTaskRuntime,
@@ -164,10 +160,21 @@ export class DurableComputerTaskRuntime {
     return coordinator;
   }
 
-  checkpoint(): ComputerTaskCheckpoint { return this.runtime.checkpoint(); }
-  pendingReconciliations(): readonly ComputerTaskReconciliationCase[] { return this.runtime.pendingReconciliations(); }
+  private assertIdle(operation: string): void {
+    if (this.pendingOperations > 0) throw new Error(`cannot ${operation} while durable runtime operation is pending`);
+  }
 
-  async assessReconciliation(stepId: string): Promise<ComputerTaskReconciliationAssessment> {
+  checkpoint(): ComputerTaskCheckpoint {
+    this.assertIdle('read checkpoint');
+    return this.runtime.checkpoint();
+  }
+
+  pendingReconciliations(): readonly ComputerTaskReconciliationCase[] {
+    this.assertIdle('read reconciliation state');
+    return this.runtime.pendingReconciliations();
+  }
+
+  private async assessReconciliationNow(stepId: string): Promise<ComputerTaskReconciliationAssessment> {
     this.guardedRegistry.enterReconciliationAssessment();
     try {
       return await this.runtime.assessReconciliation(stepId);
@@ -176,26 +183,39 @@ export class DurableComputerTaskRuntime {
     }
   }
 
+  assessReconciliation(stepId: string): Promise<ComputerTaskReconciliationAssessment> {
+    return this.enqueueOperation(() => this.assessReconciliationNow(stepId));
+  }
+
   resolveReconciliation(stepId: string, resolution: ComputerTaskReconciliationResolution): void {
+    this.assertIdle('resolve reconciliation');
     this.runtime.resolveReconciliation(stepId, resolution);
   }
 
-  async persistCheckpoint(): Promise<void> {
+  private async persistCheckpointNow(): Promise<void> {
     await this.persistence.save(this.runtime.checkpoint(), this.binding);
     this.writeAheadArmed = false;
   }
 
-  private enqueueRun<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.runTail;
+  persistCheckpoint(): Promise<void> {
+    return this.enqueueOperation(() => this.persistCheckpointNow());
+  }
+
+  private enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.pendingOperations += 1;
+    const previous = this.operationTail;
     let release!: () => void;
-    this.runTail = new Promise<void>((resolve) => { release = resolve; });
-    return previous.then(operation).finally(release);
+    this.operationTail = new Promise<void>((resolve) => { release = resolve; });
+    return previous.then(operation).finally(() => {
+      this.pendingOperations -= 1;
+      release();
+    });
   }
 
   private async runOnce(): Promise<ComputerTaskRunResult> {
     const result = await this.runtime.run();
     try {
-      await this.persistCheckpoint();
+      await this.persistCheckpointNow();
       return result;
     } catch {
       const failed = addResultEvidence(result, PERSISTENCE_FAILURE);
@@ -207,6 +227,6 @@ export class DurableComputerTaskRuntime {
   }
 
   run(): Promise<ComputerTaskRunResult> {
-    return this.enqueueRun(() => this.runOnce());
+    return this.enqueueOperation(() => this.runOnce());
   }
 }
