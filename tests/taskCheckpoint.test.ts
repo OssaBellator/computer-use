@@ -15,6 +15,9 @@ import {
   type TaskCheckpoint,
 } from '../src/agent/taskCheckpoint.js';
 
+const BROWSER_FINGERPRINT = 'd'.repeat(64);
+const STALE_BROWSER_FINGERPRINT = 'c'.repeat(64);
+
 const program: CheckpointableTaskProgram = {
   version: 1,
   name: 'checkout-fixture',
@@ -36,7 +39,7 @@ function checkpoint(overrides: Partial<Parameters<typeof createTaskCheckpoint>[0
     visits: { 'type-secret': 1 },
     consecutiveNoProgress: 0,
     budgets: { maxSteps: 64, maxVisitsPerStep: 8, maxConsecutiveNoProgress: 4 },
-    browserStateFingerprint: 'deadbeef',
+    browserStateFingerprint: BROWSER_FINGERPRINT,
     ...overrides,
   });
 }
@@ -89,7 +92,7 @@ test('program hashing covers the full program and is independent of object key i
 
 test('codec rejects corruption and unsupported checkpoint versions', () => {
   const encoded = serializeTaskCheckpoint(checkpoint());
-  const corrupted = encoded.replace('deadbeef', 'feedbeef');
+  const corrupted = encoded.replace(BROWSER_FINGERPRINT, `${'e'.repeat(63)}f`);
   assert.throws(
     () => deserializeTaskCheckpoint(corrupted),
     (error: unknown) => error instanceof TaskCheckpointCodecError && error.code === 'integrity-mismatch',
@@ -124,7 +127,7 @@ test('compatibility rejects wrong and modified programs', () => {
   const wrong = checkTaskCheckpointCompatibility(value, {
     programId: 'fixture/other',
     program,
-    currentBrowserStateFingerprint: 'deadbeef',
+    currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   });
   assert.ok(issueCodes(wrong).includes('wrong-program'));
 
@@ -135,7 +138,7 @@ test('compatibility rejects wrong and modified programs', () => {
   const changed = checkTaskCheckpointCompatibility(value, {
     programId: 'fixture/checkout',
     program: modified,
-    currentBrowserStateFingerprint: 'deadbeef',
+    currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   });
   assert.ok(issueCodes(changed).includes('modified-program'));
   assert.notEqual(hashTaskProgram(modified), value.program.hash);
@@ -144,12 +147,12 @@ test('compatibility rejects wrong and modified programs', () => {
 test('compatibility rejects impossible steps, malformed counters, exhausted budgets, and stale browser state', () => {
   const impossible = mutatedCheckpoint((value) => ({ ...value, cursor: { ...value.cursor, stepId: 'missing' } }));
   assert.ok(issueCodes(checkTaskCheckpointCompatibility(impossible, {
-    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: 'deadbeef',
+    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   })).includes('impossible-step'));
 
   const malformed = mutatedCheckpoint((value) => ({ ...value, cursor: { ...value.cursor, stepsExecuted: 7 } }));
   assert.ok(issueCodes(checkTaskCheckpointCompatibility(malformed, {
-    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: 'deadbeef',
+    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   })).includes('malformed-counters'));
 
   const duplicate = mutatedCheckpoint((value) => ({
@@ -157,7 +160,7 @@ test('compatibility rejects impossible steps, malformed counters, exhausted budg
     cursor: { ...value.cursor, stepsExecuted: 2, visits: [{ stepId: 'type-secret', count: 1 }, { stepId: 'type-secret', count: 1 }] },
   }));
   assert.ok(issueCodes(checkTaskCheckpointCompatibility(duplicate, {
-    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: 'deadbeef',
+    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   })).includes('malformed-counters'));
 
   const exhausted = mutatedCheckpoint((value) => ({
@@ -165,11 +168,11 @@ test('compatibility rejects impossible steps, malformed counters, exhausted budg
     cursor: { ...value.cursor, stepId: 'type-secret', stepsExecuted: 8, visits: [{ stepId: 'type-secret', count: 8 }] },
   }));
   assert.ok(issueCodes(checkTaskCheckpointCompatibility(exhausted, {
-    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: 'deadbeef',
+    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   })).includes('exhausted-budget'));
 
   const stale = checkTaskCheckpointCompatibility(checkpoint(), {
-    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: 'cafebabe',
+    programId: 'fixture/checkout', program, currentBrowserStateFingerprint: STALE_BROWSER_FINGERPRINT,
   });
   assert.ok(issueCodes(stale).includes('browser-state-mismatch'));
 
@@ -182,7 +185,7 @@ test('compatibility rejects impossible steps, malformed counters, exhausted budg
 test('compatibility rejects an invalid current program even before runtime integration', () => {
   const invalidProgram = { ...program, version: 2 } as unknown as CheckpointableTaskProgram;
   const result = checkTaskCheckpointCompatibility(checkpoint(), {
-    programId: 'fixture/checkout', program: invalidProgram, currentBrowserStateFingerprint: 'deadbeef',
+    programId: 'fixture/checkout', program: invalidProgram, currentBrowserStateFingerprint: BROWSER_FINGERPRINT,
   });
   assert.ok(issueCodes(result).includes('invalid-program'));
 });
@@ -235,7 +238,7 @@ test('serialized checkpoints stay bounded at maximum visit cardinality and rejec
     visits,
     consecutiveNoProgress: 0,
     budgets: { maxSteps: 500, maxVisitsPerStep: 8, maxConsecutiveNoProgress: 4 },
-    browserStateFingerprint: '0123456789abcdef',
+    browserStateFingerprint: BROWSER_FINGERPRINT,
   });
   const encoded = serializeTaskCheckpoint(maximum);
   assert.ok(Buffer.byteLength(encoded, 'utf8') <= TASK_CHECKPOINT_MAX_BYTES);
@@ -252,7 +255,7 @@ test('serialized checkpoints stay bounded at maximum visit cardinality and rejec
       visits: overflowVisits,
       consecutiveNoProgress: 0,
       budgets: { maxSteps: 500, maxVisitsPerStep: 8, maxConsecutiveNoProgress: 4 },
-      browserStateFingerprint: '0123456789abcdef',
+      browserStateFingerprint: BROWSER_FINGERPRINT,
     }),
     (error: unknown) => error instanceof TaskCheckpointCodecError && error.code === 'invalid-schema',
   );
