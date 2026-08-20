@@ -84,15 +84,15 @@ function snapshotKnownRecord(value: unknown, allowed: readonly string[], require
 }
 function snapshotDescriptorRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  let proto: object | null, descriptors: PropertyDescriptorMap;
-  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value); } catch { return undefined; }
+  let proto: object | null, descriptors: Record<PropertyKey, PropertyDescriptor>;
+  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value) as unknown as Record<PropertyKey, PropertyDescriptor>; } catch { return undefined; }
   if (proto !== Object.prototype && proto !== null) return undefined;
   const keys = Reflect.ownKeys(descriptors);
   if (!keys.every((key) => typeof key === 'string' && allowed.includes(key)) || !required.every((key) => Object.prototype.hasOwnProperty.call(descriptors, key))) return undefined;
   const out: Record<string, unknown> = {};
   for (const key of keys) {
     if (typeof key !== 'string') return undefined;
-    const descriptor = (descriptors as Record<string, PropertyDescriptor>)[key];
+    const descriptor = descriptors[key];
     if (!descriptor || !('value' in descriptor)) return undefined;
     out[key] = descriptor.value;
   }
@@ -207,17 +207,17 @@ function snapshotVisualInput(value: unknown): Readonly<RemoteVisualInput> | unde
 }
 function snapshotMetadataBatch(value: unknown): readonly Readonly<RemoteMetadataItem>[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  let proto: object | null, descriptors: PropertyDescriptorMap;
-  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value); } catch { return undefined; }
+  let proto: object | null, descriptors: Record<PropertyKey, PropertyDescriptor>;
+  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value) as unknown as Record<PropertyKey, PropertyDescriptor>; } catch { return undefined; }
   if (proto !== Array.prototype) return undefined;
-  const lengthDescriptor = (descriptors as Record<string, PropertyDescriptor>).length;
+  const lengthDescriptor = descriptors.length;
   if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_METADATA_RESULT_ITEMS) return undefined;
   const length = lengthDescriptor.value as number, allowed = new Set(['length', ...Array.from({length}, (_,i)=>String(i))]);
   const keys = Reflect.ownKeys(descriptors);
   if (!keys.every((key) => typeof key === 'string' && allowed.has(key)) || keys.length !== length + 1) return undefined;
   const out: Readonly<RemoteMetadataItem>[] = [];
   for (let i=0;i<length;i++) {
-    const descriptor = (descriptors as Record<string, PropertyDescriptor>)[String(i)];
+    const descriptor = descriptors[String(i)];
     if (!descriptor || !('value' in descriptor)) return undefined;
     const item = snapshotDescriptorRecord(descriptor.value,['key','value'],['key','value']);
     if (!item || typeof item.key !== 'string' || typeof item.value !== 'string') return undefined;
