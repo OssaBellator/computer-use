@@ -221,6 +221,7 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
   readonly filePath: string;
   readonly tempPath: string;
   readonly anchorPath: string;
+  readonly lockPath: string;
   private readonly key: Uint8Array;
   private readonly maxBytes: number;
 
@@ -233,6 +234,7 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
     this.filePath = options.filePath;
     this.tempPath = `${options.filePath}.tmp`;
     this.anchorPath = `${options.filePath}.anchor`;
+    this.lockPath = `${options.filePath}.lock`;
     this.key = key;
     this.maxBytes = options.maxBytes ?? COMPUTER_TASK_PERSISTED_CHECKPOINT_MAX_BYTES;
     if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes < 1024 || this.maxBytes > 1024 * 1024) {
@@ -326,39 +328,56 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
       executionId: bindingSnapshot.executionId,
       requireRuntimeProvenance: true,
     });
-    const existing = await readBounded(this.filePath, this.maxBytes);
-    const existingEnvelope = existing === undefined ? undefined : this.parseCheckpoint(existing, expectedBinding);
-    const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
-    const anchor = anchorEncoded === undefined ? undefined : this.parseAnchor(anchorEncoded, expectedBinding);
-    if (!existingEnvelope && anchor) {
-      throw new Error('persisted computer task checkpoint rollback detected: primary checkpoint is missing behind authenticated anchor');
+
+    await mkdir(dirname(this.filePath), { recursive: true });
+    let lock;
+    try {
+      lock = await open(this.lockPath, 'wx', 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new Error('computer task checkpoint persistence save is busy or a stale lock requires explicit operator recovery');
+      }
+      throw error;
     }
-    if (existingEnvelope && anchor && anchor.generation > existingEnvelope.generation) {
-      throw new Error('persisted computer task checkpoint rollback detected');
+
+    try {
+      const existing = await readBounded(this.filePath, this.maxBytes);
+      const existingEnvelope = existing === undefined ? undefined : this.parseCheckpoint(existing, expectedBinding);
+      const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
+      const anchor = anchorEncoded === undefined ? undefined : this.parseAnchor(anchorEncoded, expectedBinding);
+      if (!existingEnvelope && anchor) {
+        throw new Error('persisted computer task checkpoint rollback detected: primary checkpoint is missing behind authenticated anchor');
+      }
+      if (existingEnvelope && anchor && anchor.generation > existingEnvelope.generation) {
+        throw new Error('persisted computer task checkpoint rollback detected');
+      }
+      if (existingEnvelope && anchor && anchor.generation === existingEnvelope.generation && anchor.envelopeDigest !== sha256(existing!)) {
+        throw new Error('persisted computer task checkpoint stale replacement detected');
+      }
+      if (existingEnvelope) {
+        const existingCheckpoint = decodeComputerTaskCheckpoint(existingEnvelope.checkpoint);
+        validateComputerTaskCheckpoint(existingCheckpoint, {
+          program: bindingSnapshot.program,
+          executionId: bindingSnapshot.executionId,
+          requireRuntimeProvenance: true,
+        });
+        assertSafeCheckpointProgression(existingCheckpoint, checkpointSnapshot);
+      }
+      const generation = Math.max(existingEnvelope?.generation ?? 0, anchor?.generation ?? 0) + 1;
+      const unsigned: PersistedCheckpointUnsignedEnvelope = {
+        format: COMPUTER_TASK_PERSISTED_CHECKPOINT_FORMAT,
+        version: COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION,
+        generation,
+        binding: expectedBinding,
+        checkpoint: encodeComputerTaskCheckpoint(checkpointSnapshot),
+      };
+      const encoded = canonicalJson(authenticated(this.key, unsigned));
+      if (Buffer.byteLength(encoded, 'utf8') > this.maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
+      await atomicReplace(this.filePath, encoded);
+      await this.writeAnchor(generation, sha256(encoded), expectedBinding);
+    } finally {
+      await lock.close();
+      await rm(this.lockPath, { force: true });
     }
-    if (existingEnvelope && anchor && anchor.generation === existingEnvelope.generation && anchor.envelopeDigest !== sha256(existing!)) {
-      throw new Error('persisted computer task checkpoint stale replacement detected');
-    }
-    if (existingEnvelope) {
-      const existingCheckpoint = decodeComputerTaskCheckpoint(existingEnvelope.checkpoint);
-      validateComputerTaskCheckpoint(existingCheckpoint, {
-        program: bindingSnapshot.program,
-        executionId: bindingSnapshot.executionId,
-        requireRuntimeProvenance: true,
-      });
-      assertSafeCheckpointProgression(existingCheckpoint, checkpointSnapshot);
-    }
-    const generation = Math.max(existingEnvelope?.generation ?? 0, anchor?.generation ?? 0) + 1;
-    const unsigned: PersistedCheckpointUnsignedEnvelope = {
-      format: COMPUTER_TASK_PERSISTED_CHECKPOINT_FORMAT,
-      version: COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION,
-      generation,
-      binding: expectedBinding,
-      checkpoint: encodeComputerTaskCheckpoint(checkpointSnapshot),
-    };
-    const encoded = canonicalJson(authenticated(this.key, unsigned));
-    if (Buffer.byteLength(encoded, 'utf8') > this.maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
-    await atomicReplace(this.filePath, encoded);
-    await this.writeAnchor(generation, sha256(encoded), expectedBinding);
   }
 }
