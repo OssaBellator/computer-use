@@ -2,34 +2,37 @@
 
 The interaction engine is deliberately strong at **grounding and execution**: it resolves semantic targets, plans across keyboard/pointer/scroll modalities, dispatches browser input, observes the result, and replans when the browser diverges.
 
-The task runtime adds the layer above that: a bounded, typed control-flow graph for multi-step browser work, including first-class browser navigation and browser-state predicates.
+The task runtime adds the layer above that: a bounded, typed control-flow graph for multi-step browser work, including browser navigation/state predicates, declared side-effect policy, and a page-grounded commitment gate immediately before commit-capable actions.
 
 ## Why this shape
 
-Long-horizon browser agents fail for two recurring reasons:
+Long-horizon browser agents fail for recurring reasons:
 
-1. the controller can keep inventing new actions after every page observation, which makes recovery hard to audit and lets untrusted page content influence control flow; and
-2. retries and recovery loops often lack explicit budgets or semantic progress checks.
+1. the controller can keep inventing actions after every page observation, making recovery hard to audit and allowing untrusted page content to influence control flow;
+2. retries and recovery loops often lack explicit budgets or semantic progress checks; and
+3. a program author can accidentally describe a high-consequence page action as an ordinary `activate`, even though the resolved browser control says **Place order**, **Publish**, **Delete account**, or similar.
 
-`TaskProgram` addresses both. A program is compiled **before execution**. Runtime browser state may satisfy a predicate or choose between predeclared branches, but it cannot create new actions, selectors, typed text, or destinations.
+`TaskProgram` addresses the first two structurally. A program is compiled **before execution**. Runtime browser state may satisfy a predicate or choose between predeclared branches, but it cannot create new actions, selectors, typed text, or destinations.
 
-The runtime is intentionally model-agnostic: an LLM, rules engine, planner, or human can produce a `TaskProgram`, but execution is deterministic once the program and trusted inputs are fixed.
+Version 0.40 addresses the third conservatively: `TaskRuntime` can infer a bounded commitment from the exact resolved activation target plus structured document context and require approval before dispatching browser input.
 
 ## Core guarantees
 
-- **Static action graph.** `activate`, `type`, and `navigate` actions, branch destinations, recovery edges, and completion conditions are declared before execution.
-- **Trusted data flow.** Typed text and navigation destinations can come only from literals in the program or named task inputs. Browser-derived text is not accepted as an action payload or destination.
+- **Static action graph.** Actions, branch destinations, recovery edges, and completion conditions are declared before execution.
+- **Trusted data flow.** Typed text and navigation destinations can come only from program literals or named task inputs. Browser-derived text is not accepted as an action payload or destination.
 - **Fail-closed targeting.** Semantic actions require unambiguous targets by default.
 - **Observed success.** Semantic actions advance only on `verified` evidence. Navigation advances only after CDP reports no protocol error and a new document/URL state reaches the requested readiness level.
 - **Navigation identity.** Browser state includes URL, origin, title, document readiness, history length, and `performance.timeOrigin`; the latter prevents an already-complete old document from being mistaken for a completed reload/navigation.
 - **Bounded recovery.** Global step budgets, per-step visit budgets, bounded waits, and no-progress detection stop runaway loops.
 - **Declared side-effect policy.** Steps marked `external-side-effect` are blocked by default unless the caller raises the risk budget or supplies an approval callback.
-- **Auditable traces.** Trace entries record step IDs, outcomes, target IDs, action status, and compact state fingerprints without logging typed task inputs, navigation URLs, or page text.
+- **Dynamic commitment policy.** `activate`, plus Enter/Space on a focused activation control, can be upgraded to a commitment from bounded browser state even when the program did not declare one.
+- **Explicit approval for inferred commitments.** Raising `maxRisk` does not silently bypass a page-grounded commitment. Inferred commitments require the approval callback unless `commitmentDetection: 'off'` is explicitly selected.
+- **Auditable traces with data minimization.** Trace entries record step IDs, outcomes, target IDs, action status, fingerprints, and only commitment status/kind/confidence. Amount, counterparty, schedule, typed inputs, URLs, and page excerpts are not copied into ordinary traces.
 - **Fixed recovery paths.** Failures may follow only `onFailure` / `onTimeout` edges already present in the program.
 
 ## CDP browser-agent facade
 
-For Chromium/CDP usage, `createCdpBrowserAgentEngine()` composes the semantic interaction engine and browser-level navigation/state on the same CDP session:
+For Chromium/CDP usage, `createCdpBrowserAgentEngine()` composes semantic interaction, structured document observation, and browser-level navigation/state on the same CDP session:
 
 ```ts
 import {
@@ -42,9 +45,9 @@ const engine = createCdpBrowserAgentEngine(page, cdpSession);
 const runtime = new TaskRuntime(engine);
 ```
 
-You can still access lower-level interaction capabilities through `engine.interaction` when a task needs explicit planning or acquisition diagnostics.
+The standalone `launchStandaloneBrowserAgent()` path provides the same task runtime without requiring Playwright, Puppeteer, Selenium/WebDriver, or an external CDP websocket client.
 
-## Example: navigate, fill, verify, save
+## Example: declared profile update
 
 ```ts
 const program: TaskProgram = {
@@ -58,16 +61,6 @@ const program: TaskProgram = {
       kind: 'navigate',
       url: { input: 'profileUrl' },
       waitUntil: 'complete',
-      next: 'verify-location',
-      onFailure: 'failed',
-    },
-    {
-      id: 'verify-location',
-      kind: 'assert',
-      condition: {
-        kind: 'browser',
-        state: { url: { input: 'profileUrl' }, readyState: 'complete' },
-      },
       next: 'type-name',
       onFailure: 'failed',
     },
@@ -85,56 +78,77 @@ const program: TaskProgram = {
       kind: 'activate',
       target: { role: 'button', name: 'Save' },
       risk: 'external-side-effect',
-      next: 'wait-saved',
-      onFailure: 'failed',
-    },
-    {
-      id: 'wait-saved',
-      kind: 'wait',
-      condition: { kind: 'exists', target: { role: 'status', name: 'Saved' } },
-      maxPolls: 20,
-      pollIntervalMs: 100,
       next: 'done',
-      onTimeout: 'failed',
+      onFailure: 'failed',
     },
     { id: 'done', kind: 'complete' },
     { id: 'failed', kind: 'fail' },
   ],
 };
 
-const result = await runtime.run(
-  program,
-  { profileUrl: 'https://example.test/profile', displayName: 'Ada' },
-  {
-    approve: async ({ risk, stepId }) => {
-      return risk === 'external-side-effect' && stepId === 'save';
-    },
-  },
-);
+const result = await runtime.run(program, {
+  profileUrl: 'https://example.test/profile',
+  displayName: 'Ada',
+}, {
+  approve: async ({ risk, stepId }) =>
+    risk === 'external-side-effect' && stepId === 'save',
+});
 ```
+
+## Example: inferred checkout commitment
+
+The program below does **not** declare a side effect. If the resolved button is named `Confirm` on a page whose bounded document snapshot contains checkout evidence such as `Review your order`, `Order total AUD 25.00`, and `Payment method`, the runtime infers a purchase commitment before activation.
+
+```ts
+const checkout: TaskProgram = {
+  version: 1,
+  entry: 'confirm',
+  steps: [
+    {
+      id: 'confirm',
+      kind: 'activate',
+      target: { role: 'button', name: 'Confirm' },
+      next: 'done',
+    },
+    { id: 'done', kind: 'complete' },
+  ],
+};
+
+await runtime.run(checkout, {}, {
+  approve: async ({ commitment }) => {
+    if (commitment?.kind !== 'purchase') return false;
+    return commitment.amount?.currency === 'AUD';
+  },
+});
+```
+
+The approval callback may inspect the bounded commitment summary. The ordinary trace does not receive the amount/counterparty fields.
+
+## Commitment detection behavior
+
+Strong labels such as `Place order`, `Pay now`, `Confirm transfer`, `Publish`, `Change password`, `Delete account`, and `Run workflow` are sufficient to trigger a commitment gate from the semantic target alone.
+
+Generic labels such as `Confirm`, `Submit`, `Continue`, and `Delete` are ambiguous. When `documentContent()` is available, the runtime requests one bounded document snapshot and looks for corroborating transaction/publication/security/process context. If that available document channel fails or is too incomplete to rule out the commitment safely, approval is required rather than treating extraction failure as evidence of safety.
+
+Custom engines that expose no structured document channel retain compatibility for generic ambiguous buttons; the capability is therefore reported as **partial**, not complete. `commitmentDetection: 'off'` explicitly restores declaration-only risk gating.
+
+See [`commitment-safety.md`](commitment-safety.md) for evidence classes, limits, and fail-closed details.
 
 ## Step kinds
 
-- `navigate`: navigate to a literal/trusted-input absolute URL and wait for `commit`, `interactive`, or `complete`.
-- `activate`: acquire and semantically activate a target.
-- `type`: acquire an editable target and type literal/trusted-input text.
-- `assert`: require a semantic or browser-level predicate or route to a fixed recovery edge.
-- `branch`: choose one of two predeclared destinations from observed state.
-- `wait`: poll a predicate with a bounded observation budget.
-- `complete`: terminate successfully, optionally behind a final condition.
-- `fail`: terminate explicitly as a failed task.
+The runtime supports semantic activation/hover/type/select/upload, keyboard and viewport-scroll actions, navigation/history, page switching/open/close, dialogs, bounded network-idle waits, assertions, branches, waits, completion, and explicit failure.
 
-Predicates compose with `all`, `any`, and `not`. Semantic predicates can test target existence or node state such as focus, disabled/expanded/checked/selected/pressed state and input value. Browser predicates can test exact/partial URL, origin, exact/partial title, ready state, and history length.
+Predicates compose with `all`, `any`, and `not`. Semantic predicates can test target existence or node state. Browser predicates can test URL/origin/title/readiness/history. Document predicates can test bounded structured content such as headings, paragraphs, links, and tables without pretending non-interactive text is an interactive node.
 
 ## Navigation safety boundary
 
 `CdpNavigationController` accepts absolute `http:`, `https:`, `about:`, and `data:` URLs. It rejects schemes such as `javascript:` and does not enable `file:` navigation by default. Navigation destinations remain subject to the same trusted-input rule as typed text.
 
-For production agents, add an origin allowlist in the surrounding session/policy layer and mark sensitive navigation or submission actions as `external-side-effect` when they can trigger irreversible state.
+For deployed agents, add origin policy in the surrounding session layer and keep credentials/secrets outside browser-readable state.
 
-## Local and live validation
+## Local and browser validation
 
-The project intentionally does not rely on GitHub Actions. Run local regressions with:
+The project intentionally does not rely on GitHub Actions. Run locally:
 
 ```bash
 npm run typecheck
@@ -142,15 +156,9 @@ npm test
 npm run test:chromium
 ```
 
-`test:chromium` includes deterministic browser-level navigation coverage that uses real Chromium/CDP without requiring internet access.
+`test:chromium` uses local deterministic fixtures and does not require internet access. The commitment-safety smoke test creates a synthetic checkout page, proves the unapproved action is blocked before browser input, then approves the same bounded summary and verifies one native browser activation. It does not make a real purchase or contact a merchant.
 
-A separate opt-in test exercises a real public website when the machine has unrestricted network access:
-
-```bash
-npm run test:live
-```
-
-The live test is skipped during ordinary `test:chromium` runs unless `RUN_LIVE_WEB=1` is set.
+A separate opt-in live website test remains behind `RUN_LIVE_WEB=1`; it is unrelated to transaction testing.
 
 ## Security boundary
 
@@ -161,14 +169,18 @@ user goal / trusted inputs
  planner / compiler
           |
           v
-   typed TaskProgram   <---- review / policy / approval
+   typed TaskProgram  <------ static policy
           |
           v
       TaskRuntime
           |
-          +---- semantic/browser state may satisfy predicates
-          +---- semantic/browser state may choose declared branches
-          X---- browser state cannot synthesize actions or destinations
+          +---- browser state may satisfy declared predicates
+          +---- browser state may choose declared branches
+          X---- browser state cannot synthesize actions/destinations
+          |
+          +---- pre-action semantic target
+          +---- bounded commitment detector
+          +---- explicit approval when required
           |
           +---- semantic actions -> InteractionEngine
           +---- navigation -------> CDP navigation controller
@@ -177,14 +189,12 @@ user goal / trusted inputs
  verified browser effects
 ```
 
-For higher-risk deployments, keep credentials and secrets outside browser-readable state, restrict allowed origins in the surrounding browser/session layer, and require explicit approval for transactions or other irreversible operations.
+The dynamic detector is a safety interlock, not authorization to perform financial or identity actions unattended. Higher-risk deployments should impose narrower origin/action policy and stronger approval requirements.
 
 ## Next frontier slices
 
-1. first-class tab/window lifecycle and popup ownership;
-2. download and file-transfer verification with explicit filesystem policy;
-3. JavaScript dialog detection/handling and dialog-aware task predicates;
-4. typed form-submit/navigation outcomes rather than treating submission as generic activation;
-5. benchmark adapters that emit BrowserGym/WebArena-style trajectories and task metrics;
-6. persistent cross-task semantic memory with origin-scoped invalidation;
-7. incremental observation so task loops refresh only browser regions affected by the previous action.
+1. bind post-action verification to the pre-commit summary so completed/pending/declined/canceled and changed amount/recipient/terms are first-class;
+2. rich clipboard, formatting-run, drag/drop, and editor-specific verification for collaboration/publishing;
+3. user-mediated authentication/passkey handoff and permission state;
+4. durable long-running task checkpoint/replay;
+5. incremental observation and targeted invalidation for lower-latency long-horizon loops.
