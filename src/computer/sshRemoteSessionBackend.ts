@@ -1,8 +1,8 @@
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type {
   RemoteCommandInvocation,
   RemoteCommandResult,
@@ -20,26 +20,10 @@ export interface SshCredentialMaterial {
   readonly certificateFile?: string;
   readonly agentSocket?: string;
 }
-
-export interface SshCredentialResolver {
-  resolve(handle: RemoteSecretHandle): Promise<SshCredentialMaterial>;
-}
-
-export interface SshProviderConnectRequest {
-  readonly endpoint: RemoteEndpointIdentity;
-  readonly credential?: SshCredentialMaterial;
-}
-
-export interface SshProviderSession {
-  readonly providerSessionId: string;
-  readonly remoteHostId: string;
-}
-
-export interface SshProviderExecLimits {
-  readonly maxStdoutBytes: number;
-  readonly maxStderrBytes: number;
-}
-
+export interface SshCredentialResolver { resolve(handle: RemoteSecretHandle): Promise<SshCredentialMaterial>; }
+export interface SshProviderConnectRequest { readonly endpoint: RemoteEndpointIdentity; readonly credential?: SshCredentialMaterial; }
+export interface SshProviderSession { readonly providerSessionId: string; readonly remoteHostId: string; }
+export interface SshProviderExecLimits { readonly maxStdoutBytes: number; readonly maxStderrBytes: number; }
 export interface SshTransportProvider {
   connect(request: SshProviderConnectRequest): Promise<SshProviderSession>;
   disconnect(session: SshProviderSession): Promise<void>;
@@ -57,99 +41,117 @@ const MAX_COMMAND_ARGS = 128;
 const MAX_COMMAND_ARG_BYTES = 4096;
 const MAX_COMMAND_TOTAL_BYTES = 65_536;
 
-function byteLength(value: string): number { return Buffer.byteLength(value, 'utf8'); }
+function bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
 function finiteString(value: unknown, max: number): value is string {
-  return typeof value === 'string' && value.length > 0 && byteLength(value) <= max && !/[\0\r\n]/.test(value);
+  return typeof value === 'string' && value.length > 0 && bytes(value) <= max && !/[\0\r\n]/.test(value);
 }
-function safePath(value: unknown): value is string { return finiteString(value, MAX_PATH_BYTES); }
-function snapshotCredentialMaterial(value: unknown): Readonly<SshCredentialMaterial> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+function ownData(record: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return undefined;
-  const record = value as Record<string, unknown>;
-  const out: SshCredentialMaterial = {};
+  return proto === Object.prototype || proto === null;
+}
+function snapshotCredentialMaterial(value: unknown): Readonly<SshCredentialMaterial> | undefined {
+  if (!plainRecord(value)) return undefined;
+  const out: { identityFile?: string; certificateFile?: string; agentSocket?: string } = {};
   for (const key of ['identityFile', 'certificateFile', 'agentSocket'] as const) {
-    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (!descriptor) continue;
-    if (!('value' in descriptor) || !safePath(descriptor.value)) return undefined;
+    if (!('value' in descriptor) || !finiteString(descriptor.value, MAX_PATH_BYTES)) return undefined;
     out[key] = descriptor.value;
   }
   return Object.freeze(out);
 }
-function snapshotInvocation(value: RemoteCommandInvocation): Readonly<RemoteCommandInvocation> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const commandDescriptor = Object.getOwnPropertyDescriptor(value, 'command');
-  const argsDescriptor = Object.getOwnPropertyDescriptor(value, 'args');
-  if (!commandDescriptor || !('value' in commandDescriptor) || !finiteString(commandDescriptor.value, MAX_COMMAND_BYTES)) return undefined;
-  const command = commandDescriptor.value;
-  const argsValue = argsDescriptor && 'value' in argsDescriptor ? argsDescriptor.value : undefined;
-  if (argsValue !== undefined && !Array.isArray(argsValue)) return undefined;
-  const args: string[] = [];
-  if (argsValue !== undefined) {
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(argsValue, 'length');
-    if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_COMMAND_ARGS) return undefined;
-    for (let index = 0; index < lengthDescriptor.value; index++) {
-      const descriptor = Object.getOwnPropertyDescriptor(argsValue, String(index));
-      if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string' || byteLength(descriptor.value) > MAX_COMMAND_ARG_BYTES || descriptor.value.includes('\0')) return undefined;
-      args.push(descriptor.value);
-    }
+function snapshotStringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const length = ownData(value, 'length');
+  if (!Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > MAX_COMMAND_ARGS) return undefined;
+  const out: string[] = [];
+  for (let index = 0; index < (length as number); index++) {
+    const item = ownData(value, String(index));
+    if (typeof item !== 'string' || bytes(item) > MAX_COMMAND_ARG_BYTES || item.includes('\0')) return undefined;
+    out.push(item);
   }
-  let total = byteLength(command);
-  for (const arg of args) total += byteLength(arg);
+  return Object.freeze(out);
+}
+function snapshotInvocation(value: unknown): Readonly<RemoteCommandInvocation> | undefined {
+  if (!plainRecord(value)) return undefined;
+  const command = ownData(value, 'command');
+  const rawArgs = ownData(value, 'args');
+  if (!finiteString(command, MAX_COMMAND_BYTES)) return undefined;
+  const args = rawArgs === undefined ? Object.freeze([] as string[]) : snapshotStringArray(rawArgs);
+  if (!args) return undefined;
+  let total = bytes(command);
+  for (const arg of args) total += bytes(arg);
   if (total > MAX_COMMAND_TOTAL_BYTES) return undefined;
-  return Object.freeze({ command, args: Object.freeze(args) });
+  return Object.freeze({ command, args });
 }
 function snapshotProviderSession(value: unknown): Readonly<SshProviderSession> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const providerSessionId = Object.getOwnPropertyDescriptor(value, 'providerSessionId');
-  const remoteHostId = Object.getOwnPropertyDescriptor(value, 'remoteHostId');
-  if (!providerSessionId || !remoteHostId || !('value' in providerSessionId) || !('value' in remoteHostId)) return undefined;
-  if (!finiteString(providerSessionId.value, MAX_PROVIDER_ID_BYTES) || !finiteString(remoteHostId.value, MAX_PROVIDER_ID_BYTES)) return undefined;
-  return Object.freeze({ providerSessionId: providerSessionId.value, remoteHostId: remoteHostId.value });
+  if (!plainRecord(value)) return undefined;
+  const providerSessionId = ownData(value, 'providerSessionId');
+  const remoteHostId = ownData(value, 'remoteHostId');
+  if (!finiteString(providerSessionId, MAX_PROVIDER_ID_BYTES) || !finiteString(remoteHostId, MAX_PROVIDER_ID_BYTES)) return undefined;
+  return Object.freeze({ providerSessionId, remoteHostId });
 }
 function snapshotOutcome(value: unknown): RemoteDispatchOutcome<RemoteCommandResult> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const dispatch = Object.getOwnPropertyDescriptor(record, 'dispatch');
-  const status = Object.getOwnPropertyDescriptor(record, 'status');
-  const evidence = Object.getOwnPropertyDescriptor(record, 'evidence');
-  const result = Object.getOwnPropertyDescriptor(record, 'value');
-  if (!dispatch || !status || !('value' in dispatch) || !('value' in status)) return undefined;
-  if (dispatch.value === 'not-dispatched' && status.value === 'failed' && evidence && 'value' in evidence && finiteString(evidence.value, 128)) {
-    return Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: evidence.value });
+  if (!plainRecord(value)) return undefined;
+  const dispatch = ownData(value, 'dispatch');
+  const status = ownData(value, 'status');
+  const evidence = ownData(value, 'evidence');
+  if (dispatch === 'not-dispatched' && status === 'failed' && finiteString(evidence, 128)) {
+    return Object.freeze({ dispatch, status, evidence });
   }
-  if (dispatch.value === 'unknown' && status.value === 'unknown' && evidence && 'value' in evidence && finiteString(evidence.value, 128)) {
-    return Object.freeze({ dispatch: 'unknown', status: 'unknown', evidence: evidence.value });
+  if (dispatch === 'unknown' && status === 'unknown' && finiteString(evidence, 128)) {
+    return Object.freeze({ dispatch, status, evidence });
   }
-  if (dispatch.value !== 'dispatched-once' || status.value !== 'completed') return undefined;
-  if (!result || !('value' in result) || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) return undefined;
-  const resultRecord = result.value as Record<string, unknown>;
-  const exitCode = Object.getOwnPropertyDescriptor(resultRecord, 'exitCode');
-  const stdout = Object.getOwnPropertyDescriptor(resultRecord, 'stdout');
-  const stderr = Object.getOwnPropertyDescriptor(resultRecord, 'stderr');
-  const stdoutTruncated = Object.getOwnPropertyDescriptor(resultRecord, 'stdoutTruncated');
-  const stderrTruncated = Object.getOwnPropertyDescriptor(resultRecord, 'stderrTruncated');
-  if (!exitCode || !('value' in exitCode) || !(exitCode.value === null || (Number.isSafeInteger(exitCode.value) && (exitCode.value as number) >= 0 && (exitCode.value as number) <= 255))) return undefined;
-  if (stdout && (!('value' in stdout) || typeof stdout.value !== 'string' || byteLength(stdout.value) > MAX_OUTPUT_BYTES)) return undefined;
-  if (stderr && (!('value' in stderr) || typeof stderr.value !== 'string' || byteLength(stderr.value) > MAX_OUTPUT_BYTES)) return undefined;
-  if (stdoutTruncated && (!('value' in stdoutTruncated) || typeof stdoutTruncated.value !== 'boolean')) return undefined;
-  if (stderrTruncated && (!('value' in stderrTruncated) || typeof stderrTruncated.value !== 'boolean')) return undefined;
+  if (dispatch !== 'dispatched-once' || status !== 'completed') return undefined;
+  const result = ownData(value, 'value');
+  if (!plainRecord(result)) return undefined;
+  const exitCode = ownData(result, 'exitCode');
+  const stdout = ownData(result, 'stdout');
+  const stderr = ownData(result, 'stderr');
+  const stdoutTruncated = ownData(result, 'stdoutTruncated');
+  const stderrTruncated = ownData(result, 'stderrTruncated');
+  if (!(exitCode === null || (Number.isSafeInteger(exitCode) && (exitCode as number) >= 0 && (exitCode as number) <= 255))) return undefined;
+  if (stdout !== undefined && (typeof stdout !== 'string' || bytes(stdout) > MAX_OUTPUT_BYTES)) return undefined;
+  if (stderr !== undefined && (typeof stderr !== 'string' || bytes(stderr) > MAX_OUTPUT_BYTES)) return undefined;
+  if (stdoutTruncated !== undefined && typeof stdoutTruncated !== 'boolean') return undefined;
+  if (stderrTruncated !== undefined && typeof stderrTruncated !== 'boolean') return undefined;
   return Object.freeze({
-    dispatch: 'dispatched-once', status: 'completed',
+    dispatch,
+    status,
     value: Object.freeze({
-      exitCode: exitCode.value as number | null,
-      ...(stdout ? { stdout: stdout.value as string } : {}),
-      ...(stderr ? { stderr: stderr.value as string } : {}),
-      ...(stdoutTruncated ? { stdoutTruncated: stdoutTruncated.value as boolean } : {}),
-      ...(stderrTruncated ? { stderrTruncated: stderrTruncated.value as boolean } : {}),
+      exitCode: exitCode as number | null,
+      ...(stdout !== undefined ? { stdout } : {}),
+      ...(stderr !== undefined ? { stderr } : {}),
+      ...(stdoutTruncated !== undefined ? { stdoutTruncated } : {}),
+      ...(stderrTruncated !== undefined ? { stderrTruncated } : {}),
     }),
-  });
+  }) as RemoteDispatchOutcome<RemoteCommandResult>;
+}
+function snapshotMetadata(value: unknown, limits: { readonly maxItems: number; readonly maxTextBytes: number }): readonly Readonly<RemoteMetadataItem>[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const length = ownData(value, 'length');
+  if (!Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > limits.maxItems) return undefined;
+  let total = 0;
+  const out: Readonly<RemoteMetadataItem>[] = [];
+  for (let index = 0; index < (length as number); index++) {
+    const item = ownData(value, String(index));
+    if (!plainRecord(item)) return undefined;
+    const key = ownData(item, 'key');
+    const itemValue = ownData(item, 'value');
+    if (typeof key !== 'string' || typeof itemValue !== 'string') return undefined;
+    total += bytes(key) + bytes(itemValue);
+    if (total > limits.maxTextBytes) return undefined;
+    out.push(Object.freeze({ key, value: itemValue }));
+  }
+  return Object.freeze(out);
 }
 
-interface OwnedSession {
-  readonly connection: Readonly<RemoteSessionConnection>;
-  readonly providerSession: Readonly<SshProviderSession>;
-}
+interface OwnedSession { readonly connection: Readonly<RemoteSessionConnection>; readonly providerSession: Readonly<SshProviderSession>; }
 
 export class SshRemoteSessionBackend implements RemoteSessionBackend {
   readonly protocol = 'ssh' as const;
@@ -168,11 +170,16 @@ export class SshRemoteSessionBackend implements RemoteSessionBackend {
     const providerCandidate = await this.provider.connect(Object.freeze({ endpoint, ...(material ? { credential: material } : {}) }));
     const providerSession = snapshotProviderSession(providerCandidate);
     if (!providerSession) {
-      try { await this.provider.disconnect(providerCandidate as SshProviderSession); } catch { throw new Error('invalid ssh provider session; cleanup failed'); }
+      try { await this.provider.disconnect(providerCandidate); }
+      catch { throw new Error('invalid ssh provider session; cleanup failed'); }
       throw new Error('invalid ssh provider session');
     }
     const sessionId = `ssh-${randomUUID()}`;
-    const connection = Object.freeze({ sessionId, remoteHostId: providerSession.remoteHostId, capabilities: Object.freeze(['remote.session.observe', 'remote.metadata.observe', 'remote.ssh.execute']) });
+    const connection = Object.freeze({
+      sessionId,
+      remoteHostId: providerSession.remoteHostId,
+      capabilities: Object.freeze(['remote.session.observe', 'remote.metadata.observe', 'remote.ssh.execute']),
+    });
     const owned = Object.freeze({ connection, providerSession });
     this.owned.set(sessionId, owned);
     this.rawCandidates.set(connection, owned);
@@ -188,34 +195,26 @@ export class SshRemoteSessionBackend implements RemoteSessionBackend {
   }
 
   async disconnect(connection: RemoteSessionConnection): Promise<void> {
-    const owned = this.owned.get(connection.sessionId);
-    if (!owned) throw new Error('unknown ssh session');
+    const owned = this.requireOwned(connection);
     this.owned.delete(connection.sessionId);
     await this.provider.disconnect(owned.providerSession);
   }
 
   async observeMetadata(connection: RemoteSessionConnection, limits: { maxItems: number; maxTextBytes: number }): Promise<readonly RemoteMetadataItem[]> {
     const owned = this.requireOwned(connection);
-    const boundedLimits = Object.freeze({ maxItems: Math.min(limits.maxItems, MAX_METADATA_ITEMS), maxTextBytes: Math.min(limits.maxTextBytes, MAX_METADATA_TEXT_BYTES) });
-    if (!this.provider.observeMetadata) return Object.freeze([
-      Object.freeze({ key: 'transport', value: 'ssh' }),
-      Object.freeze({ key: 'remoteHostId', value: owned.providerSession.remoteHostId }),
-    ].slice(0, boundedLimits.maxItems));
-    const result = await this.provider.observeMetadata(owned.providerSession, boundedLimits);
-    if (!Array.isArray(result) || result.length > boundedLimits.maxItems) throw new Error('invalid ssh metadata result');
-    let bytes = 0;
-    const out: Readonly<RemoteMetadataItem>[] = [];
-    for (let index = 0; index < result.length; index++) {
-      const item = result[index];
-      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('invalid ssh metadata result');
-      const key = Object.getOwnPropertyDescriptor(item, 'key');
-      const value = Object.getOwnPropertyDescriptor(item, 'value');
-      if (!key || !value || !('value' in key) || !('value' in value) || typeof key.value !== 'string' || typeof value.value !== 'string') throw new Error('invalid ssh metadata result');
-      bytes += byteLength(key.value) + byteLength(value.value);
-      if (bytes > boundedLimits.maxTextBytes) throw new Error('ssh metadata acquisition bound exceeded');
-      out.push(Object.freeze({ key: key.value, value: value.value }));
+    const boundedLimits = Object.freeze({
+      maxItems: Math.min(limits.maxItems, MAX_METADATA_ITEMS),
+      maxTextBytes: Math.min(limits.maxTextBytes, MAX_METADATA_TEXT_BYTES),
+    });
+    if (!this.provider.observeMetadata) {
+      return Object.freeze([
+        Object.freeze({ key: 'transport', value: 'ssh' }),
+        Object.freeze({ key: 'remoteHostId', value: owned.providerSession.remoteHostId }),
+      ].slice(0, boundedLimits.maxItems));
     }
-    return Object.freeze(out);
+    const result = snapshotMetadata(await this.provider.observeMetadata(owned.providerSession, boundedLimits), boundedLimits);
+    if (!result) throw new Error('ssh metadata acquisition bound exceeded');
+    return result;
   }
 
   async executeRemoteCommand(connection: RemoteSessionConnection, invocation: RemoteCommandInvocation): Promise<RemoteDispatchOutcome<RemoteCommandResult>> {
@@ -224,7 +223,11 @@ export class SshRemoteSessionBackend implements RemoteSessionBackend {
     if (!safeInvocation) return Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: 'ssh.invalid-argv' });
     let raw: unknown;
     try {
-      raw = await this.provider.executeArgv(owned.providerSession, safeInvocation, Object.freeze({ maxStdoutBytes: MAX_OUTPUT_BYTES, maxStderrBytes: MAX_OUTPUT_BYTES }));
+      raw = await this.provider.executeArgv(
+        owned.providerSession,
+        safeInvocation,
+        Object.freeze({ maxStdoutBytes: MAX_OUTPUT_BYTES, maxStderrBytes: MAX_OUTPUT_BYTES }),
+      );
     } catch (error) {
       if (error instanceof RemoteDispatchError) throw error;
       throw new RemoteDispatchError('unknown', 'ssh.provider-exception');
@@ -248,14 +251,12 @@ export interface OpenSshProcessProviderOptions {
   readonly knownHostsFile?: string;
   readonly strictHostKeyChecking?: 'yes' | 'accept-new';
 }
-
 interface OpenSshOwnedSession extends SshProviderSession {
   readonly endpoint: RemoteEndpointIdentity;
   readonly controlDirectory: string;
   readonly controlPath: string;
   readonly credential?: Readonly<SshCredentialMaterial>;
 }
-
 function shellQuote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
 function remoteArgvCommand(invocation: RemoteCommandInvocation): string {
   return [invocation.command, ...(invocation.args ?? [])].map(shellQuote).join(' ');
@@ -279,18 +280,23 @@ export class OpenSshProcessProvider implements SshTransportProvider {
 
   async connect(request: SshProviderConnectRequest): Promise<SshProviderSession> {
     const controlDirectory = await mkdtemp(join(tmpdir(), 'computer-use-ssh-'));
-    const controlPath = join(controlDirectory, 'control.sock');
-    const providerSessionId = randomUUID();
-    const owned: OpenSshOwnedSession = Object.freeze({ providerSessionId, remoteHostId: request.endpoint.endpointId, endpoint: request.endpoint, controlDirectory, controlPath, credential: request.credential });
+    const owned: OpenSshOwnedSession = Object.freeze({
+      providerSessionId: randomUUID(),
+      remoteHostId: request.endpoint.endpointId,
+      endpoint: request.endpoint,
+      controlDirectory,
+      controlPath: join(controlDirectory, 'control.sock'),
+      credential: request.credential,
+    });
+    const argv = [...this.baseArgs(owned), '-o', 'ControlMaster=yes', '-o', 'ControlPersist=no', '-S', owned.controlPath, '-N', '-f', '--', owned.endpoint.host];
     try {
-      const argv = [...this.baseArgs(owned), '-o', 'ControlMaster=yes', '-o', 'ControlPersist=no', '-S', controlPath, '-N', '-f', '--', request.endpoint.host];
-      const result = await runBoundedProcess(this.executable, argv, this.connectTimeoutMs, 4096, 4096);
-      if (!result.spawned || result.error) throw new Error('ssh connect launch failed');
-      if (result.timedOut || result.exitCode !== 0) throw new Error('ssh connect failed');
-      this.sessions.set(providerSessionId, owned);
-      return Object.freeze({ providerSessionId, remoteHostId: owned.remoteHostId });
+      const result = await runBoundedProcess(this.executable, argv, this.connectTimeoutMs, 4096, 4096, this.environment(owned));
+      if (!result.spawned || result.error || result.timedOut || result.exitCode !== 0) throw new Error('ssh connect ambiguous');
+      this.sessions.set(owned.providerSessionId, owned);
+      return Object.freeze({ providerSessionId: owned.providerSessionId, remoteHostId: owned.remoteHostId });
     } catch (error) {
-      await rm(controlDirectory, { recursive: true, force: true });
+      await this.bestEffortControlExit(owned);
+      await rm(owned.controlDirectory, { recursive: true, force: true });
       throw error;
     }
   }
@@ -301,8 +307,7 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     this.sessions.delete(session.providerSessionId);
     let ambiguous = false;
     try {
-      const argv = [...this.baseArgs(owned), '-S', owned.controlPath, '-O', 'exit', '--', owned.endpoint.host];
-      const result = await runBoundedProcess(this.executable, argv, this.connectTimeoutMs, 4096, 4096);
+      const result = await this.controlExit(owned);
       ambiguous = !result.spawned || Boolean(result.error) || result.timedOut || result.exitCode !== 0;
     } finally {
       await rm(owned.controlDirectory, { recursive: true, force: true });
@@ -314,12 +319,20 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     const owned = this.sessions.get(session.providerSessionId);
     if (!owned) return Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: 'ssh.session-not-owned' });
     const argv = [...this.baseArgs(owned), '-S', owned.controlPath, '--', owned.endpoint.host, remoteArgvCommand(invocation)];
-    const result = await runBoundedProcess(this.executable, argv, this.commandTimeoutMs, limits.maxStdoutBytes, limits.maxStderrBytes);
+    const result = await runBoundedProcess(this.executable, argv, this.commandTimeoutMs, limits.maxStdoutBytes, limits.maxStderrBytes, this.environment(owned));
     if (!result.spawned) return Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: 'ssh.spawn-failed' });
     if (result.error || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.exitCode === null) {
-      return Object.freeze({ dispatch: 'unknown', status: 'unknown', evidence: result.timedOut ? 'ssh.command-timeout' : (result.stdoutExceeded || result.stderrExceeded) ? 'ssh.output-bound' : 'ssh.command-ambiguous' });
+      return Object.freeze({
+        dispatch: 'unknown',
+        status: 'unknown',
+        evidence: result.timedOut ? 'ssh.command-timeout' : (result.stdoutExceeded || result.stderrExceeded) ? 'ssh.output-bound' : 'ssh.command-ambiguous',
+      });
     }
-    return Object.freeze({ dispatch: 'dispatched-once', status: 'completed', value: Object.freeze({ exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }) });
+    return Object.freeze({
+      dispatch: 'dispatched-once',
+      status: 'completed',
+      value: Object.freeze({ exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr }),
+    });
   }
 
   private baseArgs(session: OpenSshOwnedSession): string[] {
@@ -328,6 +341,22 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     if (session.credential?.identityFile) args.push('-i', session.credential.identityFile);
     if (session.credential?.certificateFile) args.push('-o', `CertificateFile=${session.credential.certificateFile}`);
     return args;
+  }
+  private environment(session: OpenSshOwnedSession): Readonly<Record<string, string>> | undefined {
+    return session.credential?.agentSocket ? Object.freeze({ SSH_AUTH_SOCK: session.credential.agentSocket }) : undefined;
+  }
+  private controlExit(session: OpenSshOwnedSession): Promise<ProcessResult> {
+    return runBoundedProcess(
+      this.executable,
+      [...this.baseArgs(session), '-S', session.controlPath, '-O', 'exit', '--', session.endpoint.host],
+      this.connectTimeoutMs,
+      4096,
+      4096,
+      this.environment(session),
+    );
+  }
+  private async bestEffortControlExit(session: OpenSshOwnedSession): Promise<void> {
+    try { await this.controlExit(session); } catch {}
   }
 }
 
@@ -341,36 +370,64 @@ interface ProcessResult {
   readonly timedOut: boolean;
   readonly error?: Error;
 }
-
-function runBoundedProcess(executable: string, argv: readonly string[], timeoutMs: number, maxStdoutBytes: number, maxStderrBytes: number): Promise<ProcessResult> {
+function runBoundedProcess(
+  executable: string,
+  argv: readonly string[],
+  timeoutMs: number,
+  maxStdoutBytes: number,
+  maxStderrBytes: number,
+  environment?: Readonly<Record<string, string>>,
+): Promise<ProcessResult> {
   return new Promise(resolve => {
-    let child: ChildProcessWithoutNullStreams;
-    try { child = spawn(executable, argv, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams; }
-    catch (error) { resolve({ spawned: false, exitCode: null, stdout: '', stderr: '', stdoutExceeded: false, stderrExceeded: false, timedOut: false, error: error as Error }); return; }
-    let spawned = false, settled = false, timedOut = false, stdoutExceeded = false, stderrExceeded = false;
-    const stdout: Buffer[] = [], stderr: Buffer[] = [];
-    let stdoutBytes = 0, stderrBytes = 0, processError: Error | undefined;
+    let child;
+    try {
+      child = spawn(executable, argv, {
+        shell: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: environment ? { ...process.env, ...environment } : process.env,
+      });
+    } catch (error) {
+      resolve({ spawned: false, exitCode: null, stdout: '', stderr: '', stdoutExceeded: false, stderrExceeded: false, timedOut: false, error: error as Error });
+      return;
+    }
+    let spawned = false;
+    let timedOut = false;
+    let stdoutExceeded = false;
+    let stderrExceeded = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let processError: Error | undefined;
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
     const kill = () => { try { child.kill('SIGKILL'); } catch {} };
     const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
     child.once('spawn', () => { spawned = true; });
     child.once('error', error => { processError = error; });
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       if (stdoutExceeded) return;
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > maxStdoutBytes) { stdoutExceeded = true; kill(); return; }
       stdout.push(Buffer.from(chunk));
     });
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       if (stderrExceeded) return;
       stderrBytes += chunk.byteLength;
       if (stderrBytes > maxStderrBytes) { stderrExceeded = true; kill(); return; }
       stderr.push(Buffer.from(chunk));
     });
     child.once('close', code => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timer);
-      resolve({ spawned, exitCode: typeof code === 'number' ? code : null, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), stdoutExceeded, stderrExceeded, timedOut, ...(processError ? { error: processError } : {}) });
+      resolve({
+        spawned,
+        exitCode: typeof code === 'number' ? code : null,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdoutExceeded,
+        stderrExceeded,
+        timedOut,
+        ...(processError ? { error: processError } : {}),
+      });
     });
   });
 }
