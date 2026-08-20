@@ -103,6 +103,65 @@ test('surfaces frame-level refresh hints for extraction failures and truncation'
 
   assert.ok(diff.refreshHints.some((hint) => hint.frameId === 'frame-1' && hint.reason === 'frame-error' && hint.scope === 'frame'));
   assert.ok(diff.refreshHints.some((hint) => hint.frameId === 'main' && hint.reason === 'truncated-extraction'));
+  assert.equal(diff.truncated, true);
+});
+
+test('does not report removals when a previously readable frame becomes unreadable', () => {
+  const frameId = 'frame-1';
+  const oldId = `${frameId}:body:nth-of-type(1) > article:nth-of-type(1) > p:nth-of-type(1)`;
+  const previous = snapshot([block(oldId, 'Previously readable article content.', { frameId })], {
+    frames: [{ frameId, title: 'Child', includedBlocks: 1, browserExtractionTruncated: false }],
+  });
+  const current = snapshot([], {
+    frames: [],
+    frameErrors: [{ frameId, message: 'frame detached during extraction' }],
+  });
+
+  const diff = diffDocumentContent(previous, current);
+  assert.deepEqual(diff.removedBlockIds, []);
+  assert.deepEqual(diff.addedBlockIds, []);
+  assert.deepEqual(diff.changedBlocks, []);
+  assert.deepEqual(diff.relocatedBlocks, []);
+  assert.deepEqual(diff.likelyContentUpdates, []);
+  assert.deepEqual(diff.removedFrameIds, []);
+  assert.equal(diff.truncated, true);
+  assert.ok(diff.refreshHints.some((hint) => hint.frameId === frameId && hint.reason === 'frame-error'));
+});
+
+test('does not report additions when a previously unreadable frame becomes readable', () => {
+  const frameId = 'frame-1';
+  const newId = `${frameId}:body:nth-of-type(1) > article:nth-of-type(1) > p:nth-of-type(1)`;
+  const previous = snapshot([], {
+    frames: [],
+    frameErrors: [{ frameId, message: 'frame unavailable' }],
+  });
+  const current = snapshot([block(newId, 'Now readable article content.', { frameId })], {
+    frames: [{ frameId, title: 'Child', includedBlocks: 1, browserExtractionTruncated: false }],
+  });
+
+  const diff = diffDocumentContent(previous, current);
+  assert.deepEqual(diff.addedBlockIds, []);
+  assert.deepEqual(diff.removedBlockIds, []);
+  assert.deepEqual(diff.changedBlocks, []);
+  assert.deepEqual(diff.relocatedBlocks, []);
+  assert.deepEqual(diff.likelyContentUpdates, []);
+  assert.deepEqual(diff.addedFrameIds, []);
+  assert.equal(diff.truncated, true);
+  assert.ok(diff.refreshHints.some((hint) => hint.frameId === frameId && hint.reason === 'frame-error'));
+});
+
+test('orders equal-priority refresh hints by locale-independent code units', () => {
+  const previous = snapshot([], { frames: [] });
+  const current = snapshot([], {
+    frames: [],
+    frameErrors: [
+      { frameId: 'a-frame', message: 'unreadable' },
+      { frameId: 'Z-frame', message: 'unreadable' },
+    ],
+  });
+
+  const diff = diffDocumentContent(previous, current);
+  assert.deepEqual(diff.refreshHints.map((hint) => hint.frameId), ['Z-frame', 'a-frame']);
 });
 
 test('bounds exact change output and marks the derived diff truncated', () => {
