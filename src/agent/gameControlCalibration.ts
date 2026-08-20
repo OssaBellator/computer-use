@@ -94,6 +94,7 @@ export type GameControlProbeReason =
   | 'incompatible-visual-observations'
   | 'insufficient-observations'
   | 'realtime-context-inactive'
+  | 'key-probe-not-safe'
   | 'unsupported-control'
   | 'action-budget-exhausted'
   | 'time-budget-exhausted'
@@ -143,6 +144,15 @@ export interface GameControlCalibrationOptions {
   observe(): Promise<GameControlObservation>;
   /** Explicit caller gate proving the acquired region is in a realtime-control context. */
   isRealtimeContextActive(observation: GameControlObservation): boolean | Promise<boolean>;
+  /**
+   * Required approval for key probes. It must prove both that the candidate key is safe to
+   * dispatch in this context and that keyboard focus is owned by the intended realtime surface.
+   * Missing, false, or throwing gates fail closed without native key dispatch.
+   */
+  isKeyProbeSafe?(
+    control: Extract<GameControlCandidate, { kind: 'key' }>,
+    observation: GameControlObservation,
+  ): boolean | Promise<boolean>;
   /** Optional caller-owned, known-safe reset/rebaseline hook run only between distinct probes. */
   resetBetweenProbes?(previous: GameControlCandidate, next: GameControlCandidate): Promise<void>;
   maxProbes?: number;
@@ -400,6 +410,10 @@ export class GameControlCalibrator {
         continue;
       }
       if (expired()) { relationships.push(this.inconclusive(control, 'time-budget-exhausted', baseline.metrics.length, 0, baseline.regionGeneration, baseline.perceptionGeneration)); status = 'time-budget-exhausted'; break; }
+      if (!await this.keyProbeSafe(control, latest)) {
+        relationships.push(this.inconclusive(control, 'key-probe-not-safe', baseline.metrics.length, 0, baseline.regionGeneration, baseline.perceptionGeneration));
+        continue;
+      }
 
       const dispatchReason = await this.dispatch(control, startedAt);
       if (dispatchReason) {
@@ -430,6 +444,13 @@ export class GameControlCalibrator {
 
   private async contextActive(observation: GameControlObservation): Promise<boolean> {
     try { return await this.options.isRealtimeContextActive(observation); }
+    catch { return false; }
+  }
+
+  private async keyProbeSafe(control: GameControlCandidate, observation: GameControlObservation): Promise<boolean> {
+    if (control.kind !== 'key') return true;
+    if (!this.options.isKeyProbeSafe) return false;
+    try { return await this.options.isKeyProbeSafe(control, observation); }
     catch { return false; }
   }
 
