@@ -24,6 +24,7 @@ test('Playwright adapter maps BrowserInput operations onto page mouse and keyboa
 
   const adapter = new PlaywrightInputAdapter(page);
   await adapter.movePointer({ x: 10, y: 20 });
+  await adapter.movePointerBy({ x: 3, y: -4 });
   await adapter.pointerDown('right');
   await adapter.pointerUp('right');
   await adapter.pressKey('Tab');
@@ -34,6 +35,7 @@ test('Playwright adapter maps BrowserInput operations onto page mouse and keyboa
 
   assert.deepEqual(calls, [
     ['move', 10, 20],
+    ['move', 13, 16],
     ['down', { button: 'right' }],
     ['up', { button: 'right' }],
     ['press', 'Tab'],
@@ -42,4 +44,26 @@ test('Playwright adapter maps BrowserInput operations onto page mouse and keyboa
     ['type', 'abc', { delay: 0 }],
     ['wheel', 2, 300],
   ]);
+});
+
+test('Playwright adapter rejects non-finite relative pointer coordinates before mouse dispatch', async () => {
+  const calls: unknown[] = [];
+  const page: PlaywrightPageInputLike = {
+    mouse: {
+      async move(x, y) { calls.push(['move', x, y]); },
+      async down() {},
+      async up() {},
+      async wheel() {},
+    },
+    keyboard: {
+      async press() {},
+      async down() {},
+      async up() {},
+      async type() {},
+    },
+  };
+
+  const adapter = new PlaywrightInputAdapter(page);
+  await assert.rejects(adapter.movePointerBy({ x: Number.POSITIVE_INFINITY, y: 0 }), /must be finite/);
+  assert.deepEqual(calls, []);
 });
