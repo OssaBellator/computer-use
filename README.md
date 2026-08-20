@@ -1,207 +1,447 @@
-# Semantic Browser Interaction Engine
+# Bounded Computer-Use Runtime and Semantic Browser Engine
 
-A TypeScript foundation for a standalone, closed-loop browser agent that is now being generalized into a bounded **computer-use core with environment adapters**. Chromium remains the first high-fidelity adapter: it launches directly from Node, speaks CDP over `--remote-debugging-pipe`, observes structured/semantic/visual state, dispatches browser-native input, and verifies important effects without requiring Playwright, Puppeteer, Selenium/WebDriver, or a third-party CDP client.
+A private TypeScript research/runtime repository for building **bounded, verifiable computer-use agents** from the safety properties first developed in the browser stack.
 
-The long-term architecture is not “browser automation plus desktop special cases.” Browser, desktop UI, filesystem, terminal/process, remote-session, and device integrations are intended to be peer adapters beneath shared identity, observation, effect-policy, dispatch, verification, and recovery contracts.
+The project is no longer only a browser automation engine. Chromium remains the most complete environment, but `main` now also contains the environment-neutral computer-use core, a neutral task/checkpoint runtime, and concrete or backend-neutral foundations for filesystem, process, terminal, desktop UI, remote sessions, system/device state, local compute, realtime/game/media control, and application/document semantic models.
 
-## Scope and safety boundary
+The central design rule is that these environments are peers. A filesystem adapter is not a special case of browser automation; a desktop accessibility adapter is not a fake DOM; terminal execution is not “local compute”; and a successful transport dispatch is not proof that a higher-level side effect succeeded.
 
-The project targets browser testing, HCI/accessibility tooling, reproducible workflows, permitted interactive-page/game use, and eventually bounded local computer tasks. It uses native browser/protocol operations rather than page-side synthetic `dispatchEvent()` interaction where a browser-native path exists.
+## Current repository state
 
-It does **not** claim hardware provenance, anti-bot/CAPTCHA bypass, fingerprint spoofing, stealth patches, or abuse-control evasion. The new computer-use core also does not imply that native OS capabilities already exist: direct filesystem, terminal, process, desktop accessibility, remote desktop/SSH, system settings, and hardware/device adapters are still future work.
+- Package: `semantic-browser-interaction-engine`
+- Version: **0.43.0**
+- Runtime: **Node.js >= 20**
+- Language/tooling: TypeScript 5.9+, ESM
+- Repository package status: **private**
+- Current browser capability profile: **standalone Chromium 0.43**
+- Test model: local TypeScript/Node tests plus synthetic/local Chromium integration tests; GitHub Actions is intentionally not used
+- Public surface: the historical browser API and the neutral computer contracts are exported from `src/index.ts`; many newly integrated concrete computer adapters/runtimes are implemented source modules but are **not yet all re-exported through the top-level package index**
 
-## Web-task scope
+## What is implemented today
 
-The browser capability model continues to target seven broad web-task categories:
+| Area | Current state | Important boundary |
+| --- | --- | --- |
+| Chromium/browser | **Implemented, highest fidelity** | Direct Node → Chromium CDP runtime; semantic/document/visual/media observation; native browser input; commitment approval and result verification |
+| Browser as computer adapter | **Implemented** | `BrowserComputerEnvironmentAdapter` maps Chromium surfaces/entities/actions into neutral computer contracts without weakening browser commitment safety |
+| Neutral computer core | **Implemented** | Adapter registry, generation-aware surfaces/entities, bounded observation channels, effect classes, dispatch/verification states, conservative retry rules |
+| Neutral task runtime | **Implemented foundation** | Cross-adapter program execution, approval hooks, target revalidation, verification hooks, bounded trace retention, checkpoint/recovery state |
+| Filesystem | **Implemented read-only host adapter** | One explicitly scoped root; metadata/directory observation and bounded UTF-8 reads only; no write/move/delete yet |
+| Process | **Implemented read-only host adapter** | Linux `/proc` process observation; bounded metadata only; no broad process lifecycle mutation |
+| Terminal | **Implemented host execution adapter** | Explicit argv and explicit-shell modes, bounded output/time/env/argv, executable/cwd identity revalidation, conservative effect policy |
+| Local compute | **Implemented trusted in-process adapter** | Registered operations only; pure/read-only or local-artifact creation; cooperative limits, not hard isolation |
+| Desktop UI | **Implemented neutral adapter foundation** | Semantic accessibility/system/visual contracts plus keyboard/pointer seams; current repo has a deterministic synthetic backend, not production OS backends |
+| Remote session | **Implemented backend-neutral foundation** | SSH/RDP/VNC lifecycle/identity/bounds; SSH command or RDP/VNC display/input when supplied by a backend; no production transport provider in this repo yet |
+| System/device | **Implemented backend-neutral foundation** | Bounded device/volume/system observation; mutations only when an approval verifier and exactly-once ledger are explicitly supplied; no production privileged OS backend yet |
+| Realtime/game/media | **Implemented neutral runtime foundation** | Surface/capture generations, ownership leases, bounded temporal visual capture, native-input uncertainty, media/fullscreen contracts and calibration |
+| Document/editor semantic models | **Implemented neutral model layer** | Generation-aware document/structured identities, bounded observations, semantic edit intents, model-state verification; UI/backend mechanisms remain separate |
 
-1. **Information Retrieval & Research** — search, factual/news/weather lookup, guides, academic/market/product research, and synthesis.
-2. **Communication & Collaboration** — messaging/email, shared documents, whiteboards, conferencing controls, and team workflows.
-3. **Transactions & Commerce** — shopping, permitted banking/bill workflows, bookings/reservations, travel, and subscriptions.
-4. **Content Consumption & Entertainment** — articles/forums/ebooks, media controls, and browser games.
-5. **Content Creation & Publishing** — writing/posting, media upload, design/editing tools, and browser coding environments.
-6. **Identity & Account Management** — forms, profiles/privacy/password settings, and user-mediated identity steps.
-7. **Automation & Process Triggering** — submitting workflows, triggering web-app automations, and scheduling through browser interfaces.
+“Implemented foundation” does not mean every operating system/provider/backend exists. The repository intentionally separates neutral safety contracts from platform-specific authority.
 
-`WEB_TASK_CATEGORY_DEFINITIONS`, `WEB_TASK_CATEGORY_CAPABILITY_TARGETS`, and the standalone Chromium profiles keep `supported`, `partial`, and `unsupported` mechanically distinct.
+## Core computer-use contract
 
-## Computer-use direction
+`src/computer/environmentAdapter.ts` defines the lowest neutral layer.
 
-The environment-neutral core adds a second, broader seven-category model:
+### Environment kinds
 
-1. **Document Creation & Media Production** — office documents, spreadsheets, presentations, media/design/3D tools, IDE editing/build/debug workflows.
-2. **Data Processing & Analytics** — calculations, statistical/financial analysis, local model execution, CAD, and scientific simulation.
-3. **File & Storage Management** — directory organization, compression, backups, storage management, and synchronization.
-4. **System Administration & Security** — OS/peripheral settings, software installation/updates, security controls, diagnostics, and resource monitoring.
-5. **Communication & Remote Access** — desktop messaging/conferencing, VoIP, RDP/VNC, and SSH sessions.
-6. **Gaming & Digital Entertainment** — locally installed games/emulators/VR and offline media playback.
-7. **Process Automation** — shell scripts, macros, batch conversion, and local processing pipelines.
+- `browser`
+- `desktop-ui`
+- `filesystem`
+- `terminal`
+- `process`
+- `remote-session`
+- `device`
+- `local-compute`
 
-`ComputerEnvironmentRegistry` routes explicit adapter IDs across environment-neutral contracts. Surfaces/entities are adapter-scoped and generation-aware; observations are channelized rather than flattened into a universal “computer DOM”; side-effecting adapter exceptions become `dispatch: 'unknown'` rather than retry-safe failures; and generic evidence is restricted to bounded machine codes.
+### Observation channels
 
-The current browser-to-computer capability bridge is deliberately conservative. Browser upload/download does not become local filesystem control, browser network observation does not become general network-session control, Chromium launch plumbing does not become OS process control, and browser pages do not become SSH/RDP/VNC capability.
+- `semantic-ui`
+- `document`
+- `visual`
+- `selection`
+- `filesystem`
+- `terminal`
+- `process`
+- `network`
+- `media`
+- `device`
+- `compute`
+- `system`
 
-See [`docs/computer-use-architecture.md`](docs/computer-use-architecture.md).
+### Entity kinds
 
-## Current standalone Chromium profile: 0.43
+The neutral identity layer covers surfaces, UI controls, documents/selections, files/directories, terminal sessions, processes, remote hosts, media, devices/peripherals/volumes, system/security setting scopes, visual regions, compute jobs, and compute artifacts.
 
-The historical `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` remains the immutable 0.35 snapshot. `CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` now describes the 0.43 browser stack.
+Every adapter owns its identities. Surfaces and entities use opaque adapter-scoped IDs and may carry a **generation** that changes when the underlying resource is replaced or recreated. A generation-bearing reference is an authority/freshness claim, not a display label.
 
-### Strong browser foundations
+## Safety invariants
 
-- Node → Chromium `--remote-debugging-pipe` → in-repo CDP framing/session routing.
-- Semantic/spatial interaction graph, modality-aware planning, verification, and closed-loop replanning.
-- Bounded `TaskProgram` / `TaskRuntime` execution.
-- Multi-page lifecycle, navigation/history, dialogs, select/range controls, downloads/uploads, and optional network-idle observation.
-- Structured document reading across frames/open Shadow DOM plus derived main-content ranking, boilerplate classification, table relationships, deterministic document diffs, and targeted refresh hints.
-- Browser state, screenshots, visual differencing, motion regions, temporal tracks, and game visual pipeline.
-- Browser-native keyboard/pointer/wheel/text/select input, relative pointer input, pointer-lock lifecycle, and bounded realtime control.
-- Game-region/renderer lifecycle plus bounded control/effect calibration with explicit key-probe safety attestation.
-- Explicit risk/approval gates and retry-safe commitment-result handling.
+The computer-use work deliberately preserves the browser runtime’s strongest safety properties.
 
-### Partial browser foundations
+### Bounded acquisition, not only bounded output
 
-- **Rich-document editing:** frame-scoped selection/caret, formatting-run observation, native insertion/replacement/select-all/delete, and verified bold/italic/underline. Rich clipboard/editor-model synchronization and collaborative-editor-specific verification remain incomplete.
-- **Clipboard:** explicit bounded `text/plain` / `text/html` reads and writes with normal browser permission/user-activation policy. Passive clipboard observation and general rich-editor integration remain incomplete.
-- **Drag/drop:** Chromium-native intercepted `DragData` transfer, bounded privacy-preserving metadata, file-bearing drops blocked by default, and explicit `dragCancel` on rejected transfers. Semantic target acceptance and task-policy integration remain incomplete.
-- **Media/fullscreen/permissions:** first-class HTML media observation/control, page/browser-window fullscreen state, and page-visible permission/policy observation. Browser activation rules are not bypassed and sensitive permissions are not auto-granted.
-- **Commitment detection and result verification:** strong/context-corroborated commitments are approval-gated; approved actions receive fresh target/material/result-neutral preflight, exactly one dispatch, bounded outcome polling, material mismatch checks, and provider-neutral labeled result identity. Provider/site semantics remain incomplete.
-- **Checkpointing:** a versioned deterministic, integrity-checked, execution-bound, deeply frozen checkpoint codec exists, but durable persistence and `TaskRuntime` resume integration are not yet wired.
-- Upload/download observation and network monitoring remain configuration-dependent where documented.
+A caller-visible `maxItems` or `maxTextBytes` is not enough if a backend first materializes an unbounded result. Adapter seams therefore increasingly require producer-side acquisition budgets and finite schema snapshots before retaining or iterating untrusted backend data.
 
-### Web-category status
+### Immutable authority across awaits
 
-`information-retrieval-research` is mechanically strong on the current browser profile. `transactions-commerce` is mechanically **runnable but not fully supported** because commitment detection/result verification remain partial. `content-creation-publishing` is also now **runnable but not fully supported**: rich editing, file upload, clipboard, and side-effect verification are partial rather than absent, while drag/drop remains a preferred partial capability.
+Caller requests, trusted policy/configuration, backend identity records, approval material, and result envelopes are snapshotted or rebuilt before later awaits can create time-of-check/time-of-use drift. Getter/proxy/accessor-backed authority is rejected or normalized conservatively at critical boundaries.
 
-“Runnable” is a capability-model statement, not permission for unattended high-consequence actions. The dynamic commitment gate still requires approval for inferred commitments by default, and a potentially consequential browser action cannot silently advance after an uncertain result.
+### Generation-aware target freshness
 
-## Commitment safety and durable result identity
+Actions bind exact adapter/environment/entity identity and, where available, exact generation. Browser document/frame generations, desktop windows/controls, filesystem objects, process generations, remote-session authority, device targets, and compute jobs all use environment-specific freshness rules.
 
-Detected commitments follow a bounded chain:
+### Approval before consequential effects
+
+The neutral default requires approval for every effect except:
+
+- `observe-only`
+- `local-reversible`
+
+Effect classes include `process-execution`, `local-destructive`, `system-configuration`, `external-communication`, `external-transaction`, `security-sensitive`, `process-trigger`, `remote-execution`, and `hardware-affecting`.
+
+An adapter may impose a stricter policy. For example, arbitrary terminal commands default to a conservative `security-sensitive` effect unless a trusted resolver explicitly narrows them.
+
+### Dispatch uncertainty is sticky
+
+Neutral action results distinguish:
+
+- `not-dispatched`
+- `dispatched-once`
+- `unknown`
+
+For side-effecting work, automatic retry is permitted only after a result that is definitely `not-dispatched`. A transport exception, malformed post-dispatch backend result, or otherwise uncertain invocation cannot be converted into an ordinary retry-safe failure.
+
+### Verification is separate from dispatch
+
+Verification states are explicit:
+
+- `not-applicable`
+- `verified`
+- `pending`
+- `rejected`
+- `mismatch`
+- `unverified`
+
+Low-level native input, process launch, remote transport success, or command exit status does not automatically prove a higher-level transaction, publication, security change, or application-model mutation.
+
+## Architecture
+
+```text
+planner / task program / policy
+              |
+              v
+      ComputerTaskRuntime
+  approval + freshness + retry
+  verification + checkpoints
+              |
+              v
+ ComputerEnvironmentRegistry
+              |
+  +-----------+-----------+-----------+-----------+
+  |           |           |           |           |
+  v           v           v           v           v
+browser   filesystem   terminal    process    local-compute
+adapter    adapter      adapter     adapter       adapter
+  |
+  +-----------+-----------+-----------+
+              |           |           |
+              v           v           v
+         desktop UI   remote      system/device
+          backend     backend        backend
+        foundations  foundation     foundation
+
+Application/document semantic models and realtime/media control
+sit above/beside these adapters rather than pretending every app is a DOM.
+```
+
+Direct/native state adapters and UI/visual adapters are peers. A future planner should prefer the most semantic bounded interface available for the task, then fall back to accessibility/visual/native input where no stronger interface exists.
+
+## Neutral task runtime and checkpoints
+
+`ComputerTaskRuntime` executes immutable `ComputerTaskProgram` snapshots through `ComputerEnvironmentRegistry`.
+
+Current behavior includes:
+
+- adapter/environment/capability preflight;
+- target generation/freshness checks before approval and immediately before dispatch;
+- default approval for consequential effects;
+- conservative dispatch state recorded before verifier awaits;
+- no unsafe replay after `unknown` dispatch or known-but-unverified dispatch;
+- named domain verifier hooks that cannot rewrite recorded dispatch authority;
+- bounded metadata-only retained observation records; raw adapter observation `data` is not retained in normal task history;
+- bounded machine-readable evidence codes;
+- checkpoint creation/resume with explicit per-action dispatch state and reconciliation requirements.
+
+The computer checkpoint codec is integrity-checked and execution/program-bound. It intentionally avoids persisting arbitrary payload contents, secrets, page excerpts, terminal output, file contents, or device telemetry. Payload-bearing steps need an explicit trusted non-secret checkpoint binding/revision.
+
+A checkpoint is **not** proof that an external store is authentic. Durable storage/authentication remains the caller’s responsibility.
+
+## Browser runtime
+
+Chromium is still the most complete end-to-end environment in the repository.
+
+```text
+Node.js
+  |
+  | child_process + --remote-debugging-pipe
+  v
+CdpPipeConnection
+  |
+  v
+CdpTargetSessionRouter
+  |
+  +---------------- page sessions ----------------+
+  |                                               |
+  v                                               v
+MultiPageCdpAgent / MultiPageTaskEngine     browser observers
+  |                                        semantic/document/
+  |                                        visual/media/state
+  v
+TaskRuntime
+  |
+  | commitment detection / approval /
+  | fresh target+material revalidation /
+  | neutral result baseline
+  v
+browser-native CDP input
+  |
+  v
+bounded post-action verification
+```
+
+The standalone path does not require Playwright, Puppeteer, Selenium/WebDriver, or a third-party CDP client at runtime.
+
+### Browser observation and interaction
+
+The current browser stack includes:
+
+- multi-page target lifecycle and generation-aware target identity;
+- bounded semantic interaction snapshots and target resolution;
+- structured document reading across frames and open Shadow DOM;
+- derived research/main-content ranking, table relationships, deterministic diffs, and targeted refresh hints;
+- visual snapshots, visual differencing, motion tracking, game-region/renderer leases, and realtime capture primitives;
+- browser state, history/navigation, dialogs, downloads/uploads, select/range controls, and optional network-idle observation;
+- browser-native keyboard, pointer, wheel, text/select, hover, activation, scroll, relative pointer, and pointer-lock flows;
+- HTML media/fullscreen state and control;
+- clipboard read/write under normal browser permission/user-activation rules;
+- native intercepted drag/drop data transfer with file-bearing transfers blocked by default;
+- rich-document selection/caret, formatting observation, native insertion/replacement, select-all/delete, and verified basic formatting operations.
+
+### Browser as a neutral computer adapter
+
+`BrowserComputerEnvironmentAdapter` exposes:
+
+- `browser.semantic-ui.observe`
+- `browser.document.observe`
+- `browser.visual.observe`
+- `browser.media.observe`
+- `browser.activate`
+- `browser.hover`
+- `browser.type`
+- `browser.press-key`
+- `browser.scroll-viewport`
+
+Browser surfaces are CDP targets with target-generation identity. Semantic entities are additionally bound to top-level and child-frame document generations, so iframe/document replacement invalidates stale refs even when structural IDs are reused.
+
+Commitment-capable activation/key paths delegate into the existing browser `TaskRuntime` rather than implementing a weaker second safety path.
+
+## Browser commitment safety
+
+Detected commitments follow this chain:
 
 **detect → approval → fresh target/material revalidation → complete neutral result baseline → exactly one dispatch → explicit result verification**
 
-Key properties:
+Important consequences:
 
-- Strong target labels can trigger commitment approval directly; ambiguous labels can request bounded frame-scoped structured-document context.
-- Approval-time target/material state is revalidated immediately before browser input.
-- A stale or incomplete result baseline blocks dispatch rather than permitting old receipt text to prove a new action.
-- After dispatch, explicit outcomes are classified as `confirmed`, `pending`, `declined`, `canceled`, `mismatch`, or `unknown`; non-confirmed side effects are not automatically retried.
-- Labeled bounded non-secret order/booking/transfer/subscription/publication/process/reference identifiers can strengthen result binding.
-- Identifier conflict is a mismatch; unrelated pre-existing tabs cannot verify an action; cross-origin positive confirmation requires appropriate durable identity binding.
-- Ordinary traces keep classification/evidence enums, not amount/counterparty/result identifier/page excerpts. Detailed bounded evidence is available only through explicit verification callbacks.
+- stale targets or incomplete pre-action result baselines block dispatch;
+- approved target/material state is refreshed immediately before native input;
+- a possibly dispatched high-risk action is never automatically replayed as an ordinary retry;
+- post-action outcomes distinguish confirmed/pending/declined/canceled/mismatch/unknown;
+- bounded non-secret order/booking/transfer/subscription/publication/process/reference identifiers can strengthen result binding;
+- unrelated pre-existing page state is not allowed to prove a new commitment;
+- ordinary traces retain bounded machine evidence/classification rather than sensitive transaction content.
 
-See [`docs/commitment-safety.md`](docs/commitment-safety.md) and [`docs/commitment-result-identity.md`](docs/commitment-result-identity.md).
+“Runnable” browser capability is not permission for unattended high-consequence actions.
 
-## Browser architecture today
+## Filesystem adapter
 
-```text
-Node
- |
- | child_process + --remote-debugging-pipe
- v
-CdpPipeConnection
- |
- v
-CdpTargetSessionRouter ---------------- browser-root lifecycle
- |
- +-------------------+-------------------+
- |                   |                   |
- v                   v                   v
-page session      page session       page session
- |                   |                   |
- +---------- MultiPageCdpAgent ---------+
-                     |
-              MultiPageTaskEngine
-                     |
-       +-------------+--------------+
-       |             |              |
-       v             v              v
- structured       semantic      visual/game
- document read    interaction    perception
-       |             |              |
-       +-------------+--------------+
-                     |
-               TaskRuntime
-                     |
-         commitment/effect policy
-                     |
-          browser-native CDP input
-                     |
-          bounded result observation
-                     |
-                     v
-                 web page
-```
+`FilesystemComputerEnvironmentAdapter` is a real Node filesystem adapter scoped to one configured root.
 
-## Target computer-use architecture
+Implemented:
 
-```text
-Task / planner / policy
-        |
-        v
-computer-use core
-  identity + channel routing
-  effect classification / approval
-  dispatch-state tracking
-  verification / retry policy
-  checkpoint & recovery contracts
-        |
-   +----+-------------+-------------+-------------+-------------+
-   |                  |             |             |             |
- browser          desktop UI    filesystem   terminal/process  remote/device
- adapter           adapter        adapter        adapters       adapters
- (CDP today)       (future)       (future)       (future)       (future)
-```
+- root and file/directory identity based on host filesystem identity metadata plus generation fallback;
+- bounded non-recursive directory observation;
+- metadata-only generic file observation;
+- explicit bounded UTF-8 file reads;
+- deterministic truncation and text/item budgets;
+- hardlink-aware identity/locator handling;
+- symlink non-traversal;
+- root/mount-device boundary enforcement;
+- pre/post file-handle and directory identity/race validation.
 
-Direct state adapters and UI/visual adapters are peers. The intended planner should prefer a filesystem adapter for bounded file operations, a process adapter for process state, or a terminal adapter for command execution when those interfaces are available, while retaining accessibility/visual/pointer interaction for applications that expose no better semantic channel.
+Not implemented:
 
-## Rich-document and clipboard/drag foundations
+- write/create;
+- rename/move/copy;
+- delete;
+- recursive mutation;
+- binary-content API;
+- arbitrary mount discovery outside the configured root.
 
-The browser editing stack currently provides:
+A generic observation text budget never grants permission to read file contents.
 
-- frame-scoped DOM/contenteditable and focused text-control selection state;
-- open-shadow structural paths and editing-host identity;
-- bounded selected text/geometry;
-- formatting-run and block/list/link context observation;
-- native `Input.insertText` for exact insertion/replacement;
-- verified select-all/delete and bold/italic/underline operations;
-- explicit bounded clipboard reads/writes without permission mutation or synthetic user activation;
-- native intercepted drag transfer without page-side synthetic `DragEvent` construction;
-- default blocking/canceling of file-bearing drag payloads unless explicitly enabled.
+## Process and terminal adapters
 
-A successful low-level `drop` dispatch is not treated as semantic application acceptance; higher-level editor/task verification still needs to prove the intended document/model change.
+### Process
 
-See [`docs/rich-document-selection.md`](docs/rich-document-selection.md), [`docs/rich-document-formatting.md`](docs/rich-document-formatting.md), and [`docs/clipboard-dragdrop-foundations.md`](docs/clipboard-dragdrop-foundations.md).
+`HostProcessAdapter` provides bounded process observation. The host source uses Linux `/proc` and generation derives from process start ticks.
 
-## Research and document state
+It retains only bounded decision-useful metadata such as PID/parent PID, basename/name, state, CPU ticks, and RSS. It does not expose full command lines or process environments through the neutral observation path. Process lifecycle mutation is currently unsupported.
 
-The structured reader and interactive semantic observer remain separate. The reader captures bounded headings, paragraphs, lists, definitions, tables, code, quotes, captions, links, images/alt text, landmarks, and metadata across readable frames/open Shadow DOM. The derived research layer ranks likely primary content, identifies generic boilerplate, preserves block identities, relates table headers to rows/columns, computes bounded deterministic snapshot diffs, and emits targeted refresh hints.
+### Terminal
 
-Frame extraction failure is uncertainty, not evidence that content was deleted: unreadable frames do not generate exact add/remove claims.
+`HostTerminalAdapter` provides two explicit execution capabilities:
 
-See [`docs/document-content-observation.md`](docs/document-content-observation.md) and [`docs/document-research-ranking.md`](docs/document-research-ranking.md).
+- `terminal.execute.argv`
+- `terminal.execute.shell`
 
-## Media, permissions, and realtime interaction
+The argv path always launches an explicit executable with `shell: false`. The shell path is still explicit: callers provide the shell executable, shell arguments, and command, and the adapter invokes that executable with `shell: false` rather than passing an opaque string to Node’s shell option.
 
-HTML media state includes playback/mute/volume/time/duration/rate plus active media identity; native media/fullscreen operations are verified and normal activation rejection is preserved. Retained media identity deliberately omits source URLs so signed/query-bearing media URLs are not persisted. Permission observation separates page-visible policy/API state from browser/profile state when the latter cannot be passively read.
+The adapter bounds argv/env/output/time, revalidates executable and working-directory identity immediately before spawn, records uncertain launch as `dispatch: unknown`, and only treats exit status as domain verification for a trusted `process-execution` classification. Stronger effects require separate domain verification.
 
-For permitted realtime browser games and interactive canvases, the stack includes held key/button state, relative pointer deltas, pointer-lock acquisition/loss/recovery, independent perception/control cadence, game-region acquisition, renderer leases/generations, cropped/downscaled screenshots, local motion differencing/tracking, and bounded control/effect calibration.
+## Local compute adapter
 
-Semantic object understanding, camera/global-motion separation, and general locally installed game/device control remain future work.
+`LocalComputeAdapter` is intentionally **not a generic shell/process escape hatch**.
 
-See [`docs/media-permission-state.md`](docs/media-permission-state.md), [`docs/pointer-lock-lifecycle.md`](docs/pointer-lock-lifecycle.md), and [`docs/game-control-calibration.md`](docs/game-control-calibration.md).
+It accepts only pre-registered operation IDs. The adapter currently allows registrations classified as:
 
-## Checkpoint foundation
+- `pure-read-only`
+- `local-artifact-creation`
 
-`src/agent/taskCheckpoint.ts` provides a pure versioned checkpoint codec with deterministic canonical encoding, SHA-256 integrity checks, program/execution binding, bounded counters/budgets, structural history validation, immutable decoded state, and trusted-input re-binding only after compatibility checks. It deliberately excludes secrets, typed values, page excerpts, financial/counterparty data, cookies/tokens, DOM snapshots, and arbitrary browser content.
+Definitions that declare process execution, external network effects, or system modification are rejected by this adapter.
 
-The codec is not yet a durable multi-adapter recovery runtime. The next checkpoint work must incorporate adapter/surface generation continuity without persisting arbitrary filesystem paths, terminal transcripts, command secrets, file contents, or device telemetry.
+Inputs/outputs are bounded canonical JSON. Compute jobs and artifacts have generation/content identity, and a bounded execution ledger prevents a previously accepted non-idempotent job generation from being redispatched just because detailed retained state was evicted.
 
-See [`docs/task-checkpoints.md`](docs/task-checkpoints.md).
+Execution is `trusted-in-process-cooperative`: `AbortSignal` and deadlines are cooperative. A blocking or cancellation-ignoring callback is not hard-isolated. Worker/isolate/process isolation is required before claiming hard CPU/time/memory termination.
 
-## Local validation
+## Desktop UI foundation
 
-GitHub Actions is intentionally disabled. Run locally:
+`DesktopUiEnvironmentAdapter` provides neutral contracts for:
+
+- system/window observation;
+- accessibility/semantic UI observation;
+- bounded visual capture references;
+- window/control focus;
+- keyboard input;
+- absolute pointer input;
+- optional relative pointer input.
+
+Control/window generations and stable control-instance identity are part of the freshness model. Backend results and accessibility trees are defensively rebuilt through bounded schemas.
+
+The repository currently includes `SyntheticDesktopUiBackend` for deterministic testing. It does **not** yet include production Windows UI Automation, macOS Accessibility, Linux AT-SPI, or native production capture/input backends.
+
+## Remote-session foundation
+
+`RemoteSessionAdapter` models SSH, RDP, and VNC without embedding provider-specific transport types into the neutral computer contracts.
+
+Current foundation includes:
+
+- connection/reconnection/disconnection lifecycle serialization;
+- endpoint/session/remote-host generation authority;
+- secret handles rather than secret material in neutral request objects;
+- bounded metadata observation;
+- bounded display acquisition for RDP/VNC-style backends;
+- bounded visual input for RDP/VNC-style backends;
+- bounded argv-style remote command execution for SSH-style backends;
+- conservative transport-dispatch mapping;
+- fail-closed cleanup when a connected backend candidate cannot be safely snapshotted;
+- observation leases that fail when lifecycle authority changes during an await.
+
+No production SSH/RDP/VNC transport implementation is supplied in this repository yet. A backend must implement the transport and its own credential/resource ownership.
+
+## System/device foundation
+
+`SystemDeviceEnvironmentAdapter` covers bounded system/device state and the mutation safety seam.
+
+Current observation model includes:
+
+- system/platform summary;
+- devices/peripherals;
+- volumes;
+- typed system-setting observation helper;
+- coarse security-setting observation helper;
+- explicit unsupported-platform / unsupported-privilege / permission-denied states.
+
+Mutation capabilities are advertised only when all of the following are supplied:
+
+1. mutation enablement;
+2. a trusted approval verifier;
+3. an external exactly-once action ledger.
+
+A mutation then requires exact target/effect binding, approval tied to configuration revision, a fresh pre-dispatch baseline, atomic action-ID claim, exactly one backend dispatch, and post-action verification.
+
+Dangerous operations such as disk partitioning, destructive storage operations, firmware flashing, firewall modification, antivirus policy modification, and privileged account/security modification are explicitly unsupported in this foundation.
+
+There is no production privileged OS backend in this repository yet.
+
+## Realtime/game/media runtime
+
+The environment-neutral realtime layer models:
+
+- generation-aware surfaces and capture generations;
+- focus/input/capture/session/renderer/device ownership;
+- relative-pointer capture ownership;
+- keyboard, pointer, relative pointer, wheel, and controller-like input;
+- bounded pixel/byte temporal capture;
+- dropped/truncated sample accounting;
+- native-input dispatch uncertainty;
+- bounded control calibration;
+- local media playback/volume/mute and fullscreen ownership.
+
+The runtime snapshots leases/requests/input across awaits and terminates calibration when dispatch becomes uncertain. Media-control success is explicitly local; it cannot be used as proof of external publication/streaming.
+
+## Application/document semantic models
+
+`src/computer/documentModels.ts` is a mechanism-neutral model layer for document/editor work. It currently covers generation-aware document and structured-object identities, bounded semantic observations, edit intents, and model-state verification across concepts such as text ranges, tables/spreadsheets, presentations, code buffers, media timelines, and generic structured objects.
+
+These models deliberately contain no DOM selectors, accessibility paths, click coordinates, OS-native handles, or vendor-specific automation. A future Office/LibreOffice/IDE/CAD/media backend can implement the same semantic model using native APIs, accessibility/UI interaction, structured file access, or a hybrid strategy.
+
+## Capability model: browser vs computer
+
+The browser stack retains its seven web-task categories:
+
+1. information retrieval & research;
+2. communication & collaboration;
+3. transactions & commerce;
+4. content consumption & entertainment;
+5. content creation & publishing;
+6. identity & account management;
+7. automation & process triggering.
+
+The computer-use architecture uses a broader seven-category model:
+
+1. document/media production;
+2. data processing/analytics;
+3. file/storage management;
+4. system administration/security;
+5. communication/remote access;
+6. gaming/entertainment;
+7. process automation.
+
+The browser-to-computer capability bridge is intentionally conservative. Browser upload/download does not imply arbitrary filesystem authority; Chromium process plumbing does not imply terminal/process authority; browser network observation does not imply general remote-session/network control.
+
+## Top-level exports
+
+`src/index.ts` currently exports the historical browser runtime plus the neutral computer contract modules:
+
+- `computer/environmentAdapter`
+- `computer/environmentRegistry`
+- `computer/computerCapabilities`
+- `computer/browserCapabilityBridge`
+- `computer/profileComposition`
+
+The newly integrated concrete computer adapters, `ComputerTaskRuntime`, document semantic models, and realtime computer runtime are not yet all part of the top-level export barrel. Until that API surface is deliberately designed, treat them as internal source modules rather than a stable package API.
+
+## Installation and local validation
 
 ```bash
 npm install
@@ -210,36 +450,98 @@ npm test
 npm run test:chromium
 ```
 
-Set `CHROMIUM_BIN=/path/to/chromium` if Chromium is not `/usr/bin/chromium`.
+Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not available at the expected default location.
 
-Repository integration work in constrained environments may use focused strict TypeScript seams and deterministic synthetic fixtures when a full checkout is unavailable; such work must not be described as a full-suite pass. Browser integration fixtures use local synthetic pages and do not execute real purchases, payments, transfers, bookings, publications, security changes, deployments, or external device/system mutations.
+`npm test` performs a clean TypeScript build and runs compiled `dist/tests/*.test.js` tests.
 
-`npm run test:live` remains a separate opt-in live-site smoke path behind `RUN_LIVE_WEB=1`; it is not used for transaction testing.
+`npm run test:chromium` builds first and runs local Chromium integration fixtures.
 
-## Key documentation
+A separate opt-in live-site smoke path exists:
 
-- [`docs/computer-use-architecture.md`](docs/computer-use-architecture.md) — environment-neutral computer-use model and migration plan
-- [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) — framework-independent Chromium process/CDP path
-- [`docs/task-program-runtime.md`](docs/task-program-runtime.md) — bounded browser task runtime and policy boundary
-- [`docs/task-checkpoints.md`](docs/task-checkpoints.md) — deterministic recovery-state codec foundation
-- [`docs/document-content-observation.md`](docs/document-content-observation.md) and [`docs/document-research-ranking.md`](docs/document-research-ranking.md) — structured reading/research layer
-- [`docs/rich-document-selection.md`](docs/rich-document-selection.md), [`docs/rich-document-formatting.md`](docs/rich-document-formatting.md), and [`docs/clipboard-dragdrop-foundations.md`](docs/clipboard-dragdrop-foundations.md) — editing/clipboard/drag foundations
-- [`docs/commitment-safety.md`](docs/commitment-safety.md) and [`docs/commitment-result-identity.md`](docs/commitment-result-identity.md) — pre/post commitment safety and durable result identity
-- [`docs/media-permission-state.md`](docs/media-permission-state.md) — media/fullscreen/permission primitives
-- [`docs/pointer-lock-lifecycle.md`](docs/pointer-lock-lifecycle.md), [`docs/game-control-calibration.md`](docs/game-control-calibration.md), and the realtime/game documents — interactive control stack
-- [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md) — web capability model
+```bash
+RUN_LIVE_WEB=1 npm run test:live
+```
 
-## Current frontier
+The live path is not used for purchases, payments, transfers, bookings, publication, account-security changes, deployments, or other high-consequence side effects.
 
-The highest-leverage path now follows the computer-use architecture rather than only adding browser primitives:
+GitHub Actions is intentionally disabled. A focused reconstructed TypeScript/synthetic harness may be used in constrained review environments, but it must never be represented as a full repository test-suite pass.
 
-1. **Extract browser runtime behind neutral computer-use ports** — make the existing browser stack a real `ComputerEnvironmentAdapter` without changing browser behavior.
-2. **Read-only filesystem and process adapters** — bounded enumeration/stat/read and process/resource observation with explicit roots/identity/privacy limits; no mutation yet.
-3. **Generalize checkpoint continuity** — adapter/surface/entity generations and safe multi-adapter restart without replaying uncertain side effects.
-4. **Desktop accessibility observation** — separate Windows UI Automation, macOS Accessibility, and Linux AT-SPI adapters rather than introducing a mandatory automation framework.
-5. **Bounded filesystem mutation** — typed create/write/move/copy/delete operations with fresh-state preflight, explicit approval where destructive, and exact post-operation verification.
-6. **Terminal/process execution** — command/session/process identity, bounded output, exit verification, and no automatic retry after uncertain dispatch.
-7. **Native application controllers** — office/spreadsheet/presentation, IDE/build/debug, media/design/CAD workflows layered over direct state plus accessibility/visual fallback.
-8. **Remote-session and hardware/device adapters** — SSH/RDP/VNC and peripheral/VR/device control only after local identity, approval, verification, and recovery semantics are mature.
+## Repository layout
 
-Browser-engine portability remains valuable, but it now sits alongside—not above—the broader goal of turning the browser stack into one rigorously bounded adapter in a general computer-use system.
+```text
+src/
+  agent/        browser task runtime, commitment verification, browser checkpoints, realtime loops
+  browser/      CDP/browser observation, document/media/visual/state primitives
+  capabilities/ browser/web capability profiles
+  computer/     neutral computer core, adapters, task runtime, document/realtime models
+  controller/   semantic/native browser action controllers
+  engine/       standalone and multi-page browser engines
+  input/        browser/CDP input adapters
+  model/        interaction/performance models
+  planner/      action planning
+  runtime/      Chromium process/CDP transport
+  verification/ browser action/result verification helpers
+
+tests/          unit/synthetic regression suite
+tests/integration/ local Chromium and opt-in live smoke fixtures
+docs/           design notes and architecture records
+```
+
+## Non-goals and explicit exclusions
+
+This repository does not provide or claim:
+
+- CAPTCHA bypass, fingerprint spoofing, stealth patches, anti-bot evasion, or abuse-control bypass;
+- hardware provenance or proof of a “human” input source;
+- automatic approval of consequential transactions/security/system mutations;
+- retry of possibly dispatched high-risk work as if nothing happened;
+- a production Windows/macOS/Linux desktop automation backend yet;
+- a production SSH/RDP/VNC backend yet;
+- a production privileged system/device mutation backend yet;
+- hard resource isolation for in-process local compute;
+- arbitrary filesystem mutation yet;
+- broad process termination/lifecycle control yet;
+- a stable public package API for every newly integrated computer module yet.
+
+## Highest-leverage next work
+
+The architecture extraction phase is complete enough that the next work should deepen real adapter quality and composition rather than add more parallel contract variants.
+
+1. **Deliberately export/composition-wire the integrated computer modules** — design a stable top-level API and runtime composition path instead of exposing every source file ad hoc.
+2. **Production desktop backends** — Windows UI Automation, macOS Accessibility, and Linux AT-SPI/capture/native-input implementations behind the existing neutral desktop contract.
+3. **Filesystem mutation** — typed create/write/copy/move/delete with scoped-root authority, immutable source/material snapshots, destructive approval, dispatch certainty, and exact post-operation verification.
+4. **Remote transports** — production SSH plus RDP/VNC providers with credential handles, bounded acquisition, lifecycle cleanup, and transport/domain verification separation.
+5. **System/device backends** — read-first production OS inventory/settings implementations before enabling narrowly scoped mutations.
+6. **Hard-isolated local compute** — worker/isolate/process-backed execution where CPU/time/memory termination can be enforced rather than cooperatively requested.
+7. **Application semantic adapters** — office/spreadsheet/presentation, IDE/build/debug, media/design/CAD controllers built against the neutral document model, with accessibility/visual fallback where needed.
+8. **Cross-adapter composition tests** — synthetic/local scenarios that exercise browser + filesystem + terminal/process + task checkpoints without real high-consequence external side effects.
+9. **Checkpoint persistence/reconciliation** — durable authenticated storage plus explicit reconciliation workflows for unknown or dispatched-unverified actions.
+10. **Capability/profile refresh** — evolve beyond the 0.43 browser-centered release profile once the computer-use API/export surface is intentionally stabilized.
+
+## Parallel development convention
+
+For future parallel work, create **fresh task-named branches from the current `main` head** rather than stacking feature branches on each other. Keep shared neutral-contract edits additive and coordinated, and avoid using one feature branch as another feature branch’s base unless the dependency is intentional.
+
+Completed feature branches should be treated as disposable once their reviewed content is on `main`; closed PRs and merge commits are the historical record. A branch that is retained for reuse should first be reset/rebased to the current `main` head so stale pre-integration history cannot leak into a new PR.
+
+## Design documentation
+
+Useful architecture records include:
+
+- [`docs/computer-use-architecture.md`](docs/computer-use-architecture.md)
+- [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md)
+- [`docs/task-program-runtime.md`](docs/task-program-runtime.md)
+- [`docs/task-checkpoints.md`](docs/task-checkpoints.md)
+- [`docs/commitment-safety.md`](docs/commitment-safety.md)
+- [`docs/commitment-result-identity.md`](docs/commitment-result-identity.md)
+- [`docs/document-content-observation.md`](docs/document-content-observation.md)
+- [`docs/document-research-ranking.md`](docs/document-research-ranking.md)
+- [`docs/rich-document-selection.md`](docs/rich-document-selection.md)
+- [`docs/rich-document-formatting.md`](docs/rich-document-formatting.md)
+- [`docs/clipboard-dragdrop-foundations.md`](docs/clipboard-dragdrop-foundations.md)
+- [`docs/media-permission-state.md`](docs/media-permission-state.md)
+- [`docs/pointer-lock-lifecycle.md`](docs/pointer-lock-lifecycle.md)
+- [`docs/game-control-calibration.md`](docs/game-control-calibration.md)
+- [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md)
+
+Some design documents record earlier extraction stages; this README is the concise source of truth for what is currently integrated on `main`.
