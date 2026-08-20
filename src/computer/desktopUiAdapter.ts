@@ -1,20 +1,24 @@
-import type {
-  ComputerActionRequest,
-  ComputerActionResult,
-  ComputerEntityRef,
-  ComputerEnvironmentAdapter,
-  ComputerEnvironmentAdapterDescriptor,
-  ComputerObservationEnvelope,
-  ComputerObservationLimits,
-  ComputerObservationRequest,
-  ComputerSurfaceRef,
+import {
+  validateComputerActionRequest,
+  validateComputerObservationRequest,
+  type ComputerActionRequest,
+  type ComputerActionResult,
+  type ComputerEntityRef,
+  type ComputerEnvironmentAdapter,
+  type ComputerEnvironmentAdapterDescriptor,
+  type ComputerObservationEnvelope,
+  type ComputerObservationLimits,
+  type ComputerObservationRequest,
+  type ComputerSurfaceRef,
 } from './environmentAdapter.js';
 import type {
+  DesktopAbsolutePointerInput,
   DesktopAccessibilityNode,
   DesktopAccessibilityObservation,
   DesktopBackendActionResult,
   DesktopKeyboardInput,
   DesktopNativeWindowRef,
+  DesktopRelativePointerInput,
   DesktopSystemObservation,
   DesktopVisualArtifactRef,
   NativeDesktopUiBackend,
@@ -26,9 +30,14 @@ const MAX_KEY_BYTES = 128;
 const MAX_TEXT_INPUT_BYTES = 4_096;
 const MAX_VISUAL_TOKEN_BYTES = 256;
 const MAX_MEDIA_TYPE_BYTES = 128;
+const MAX_ABSOLUTE_COORDINATE = 1_000_000;
+const MAX_RELATIVE_DELTA = 100_000;
 const KEY_MODIFIERS = new Set(['alt', 'control', 'meta', 'shift']);
+const POINTER_BUTTONS = new Set(['left', 'middle', 'right']);
+const REASON_CODE_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
 
 type DesktopKeyboardModifier = 'alt'|'control'|'meta'|'shift';
+type DesktopPointerButton = 'left'|'middle'|'right';
 
 export interface DesktopWindowSurface {
   surface: ComputerSurfaceRef;
@@ -91,10 +100,12 @@ function textBytes(value: string | undefined): number {
   return value ? new TextEncoder().encode(value).byteLength : 0;
 }
 
-function validFiniteNumber(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value); }
-
 function validBoundedString(value: unknown, maxBytes: number, allowEmpty = false): value is string {
   return typeof value === 'string' && (allowEmpty || value.length > 0) && textBytes(value) <= maxBytes && !value.includes('\0');
+}
+
+function validReasonCode(value: string | undefined): boolean {
+  return value === undefined || REASON_CODE_PATTERN.test(value);
 }
 
 function validVisualArtifact(value: DesktopVisualArtifactRef | undefined): boolean {
@@ -104,17 +115,20 @@ function validVisualArtifact(value: DesktopVisualArtifactRef | undefined): boole
   return value.byteLength === undefined || (Number.isSafeInteger(value.byteLength) && value.byteLength >= 0);
 }
 
+function exactKeys(value: object, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
 function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undefined {
   if (!payload || typeof payload !== 'object') return undefined;
   const p = payload as { kind?:unknown; key?:unknown; text?:unknown; modifiers?:unknown };
   if (p.kind === 'text') {
-    if (!validBoundedString(p.text, MAX_TEXT_INPUT_BYTES)) return undefined;
-    if (p.key !== undefined || p.modifiers !== undefined) return undefined;
+    if (!exactKeys(p, ['kind', 'text']) || !validBoundedString(p.text, MAX_TEXT_INPUT_BYTES)) return undefined;
     return { kind: 'text', text: p.text };
   }
   if (p.kind !== 'key-down' && p.kind !== 'key-up') return undefined;
+  if (!exactKeys(p, ['kind', 'key', 'modifiers'])) return undefined;
   if (!validBoundedString(p.key, MAX_KEY_BYTES) || /[\r\n]/.test(p.key)) return undefined;
-  if (p.text !== undefined) return undefined;
   if (p.modifiers === undefined) return { kind: p.kind, key: p.key };
   if (!Array.isArray(p.modifiers) || p.modifiers.length > KEY_MODIFIERS.size) return undefined;
   const seen = new Set<DesktopKeyboardModifier>();
@@ -123,6 +137,31 @@ function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undef
     seen.add(modifier as DesktopKeyboardModifier);
   }
   return { kind: p.kind, key: p.key, modifiers: [...seen] };
+}
+
+function boundedCoordinate(value: unknown, maxMagnitude: number): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && Math.abs(value) <= maxMagnitude;
+}
+
+function validateAbsolutePointerPayload(payload: unknown): DesktopAbsolutePointerInput | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const p = payload as {kind?:unknown;x?:unknown;y?:unknown;button?:unknown};
+  if (!boundedCoordinate(p.x, MAX_ABSOLUTE_COORDINATE) || !boundedCoordinate(p.y, MAX_ABSOLUTE_COORDINATE)) return undefined;
+  if (p.kind === 'move') {
+    if (!exactKeys(p, ['kind','x','y']) || p.button !== undefined) return undefined;
+    return { kind:'move', x:p.x, y:p.y };
+  }
+  if (p.kind !== 'down' && p.kind !== 'up' && p.kind !== 'click') return undefined;
+  if (!exactKeys(p, ['kind','x','y','button']) || typeof p.button !== 'string' || !POINTER_BUTTONS.has(p.button)) return undefined;
+  return { kind:p.kind, x:p.x, y:p.y, button:p.button as DesktopPointerButton };
+}
+
+function validateRelativePointerPayload(payload: unknown): DesktopRelativePointerInput | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const p = payload as {dx?:unknown;dy?:unknown};
+  if (!exactKeys(p, ['dx','dy'])) return undefined;
+  if (!boundedCoordinate(p.dx, MAX_RELATIVE_DELTA) || !boundedCoordinate(p.dy, MAX_RELATIVE_DELTA)) return undefined;
+  return { dx:p.dx, dy:p.dy };
 }
 
 export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
@@ -180,21 +219,9 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       if (bytes + controlBytes <= l.maxTextBytes) {
         bytes += controlBytes;
         focusedControl = this.controlRef(focusedWindow, raw.focusedControlId);
-      } else {
-        truncated = true;
-      }
+      } else truncated = true;
     }
-    return {
-      data: {
-        windows: bounded,
-        itemCount: bounded.length,
-        textBytes: bytes,
-        foregroundSurface: byRef(raw.foregroundWindow),
-        focusedSurface: byRef(raw.focusedWindow),
-        focusedControl,
-      },
-      truncated,
-    };
+    return { data:{ windows:bounded, itemCount:bounded.length, textBytes:bytes, foregroundSurface:byRef(raw.foregroundWindow), focusedSurface:byRef(raw.focusedWindow), focusedControl }, truncated };
   }
 
   private requestedWindow(request: ComputerObservationRequest | ComputerActionRequest): DesktopNativeWindowRef | undefined {
@@ -236,7 +263,8 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    if (request.adapterId !== this.descriptor.id) throw new Error('desktop adapter id mismatch');
+    const requestErrors = validateComputerObservationRequest(request, this.descriptor);
+    if (requestErrors.length > 0) throw new Error(`invalid desktop observation request: ${requestErrors.join('; ')}`);
     if (request.channel === 'system') {
       const { raw, windows } = await this.system();
       const bounded = this.boundSystem(raw, windows, limits(request.limits));
@@ -251,12 +279,14 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       const raw = await this.backend.observeVisual(ref);
       if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
       if (!validVisualArtifact(raw.artifact)) throw new Error('desktop visual artifact metadata invalid');
+      if (!validReasonCode(raw.reason)) throw new Error('desktop visual reason code invalid');
       const data:DesktopVisualObservationData = { status:raw.status, window, width:raw.width, height:raw.height, artifact:raw.artifact, reason:raw.reason };
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:request.target, data };
     }
     const l = limits(request.limits);
     const raw:DesktopAccessibilityObservation = await this.backend.observeAccessibility(ref, l);
     if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop accessibility generation mismatch');
+    if (!validReasonCode(raw.reason)) throw new Error('desktop accessibility reason code invalid');
     if (raw.status !== 'available' || !raw.root) {
       const data:DesktopSemanticObservationData = { status:raw.status, window, itemCount:0, textBytes:0, reason:raw.reason };
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, target:request.target, data };
@@ -267,7 +297,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   private async controlExists(window:DesktopWindowSurface, target:ComputerEntityRef): Promise<boolean> {
-    if (target.kind !== 'ui-control' || target.surfaceId !== window.nativeWindowId || target.generation !== window.generation) return false;
+    if (target.adapterId !== this.descriptor.id || target.environment !== 'desktop-ui' || target.kind !== 'ui-control' || target.surfaceId !== window.nativeWindowId || target.generation !== window.generation) return false;
     const raw = await this.backend.observeAccessibility({nativeWindowId:window.nativeWindowId,generation:window.generation}, DEFAULT_LIMITS);
     if (raw.window.nativeWindowId !== window.nativeWindowId || raw.window.generation !== window.generation) return false;
     if (raw.status !== 'available' || !raw.root) return false;
@@ -281,12 +311,21 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     return false;
   }
 
-  private map(result:DesktopBackendActionResult):ComputerActionResult {
-    return { status:result.status, dispatch:result.dispatched?'dispatched-once':'not-dispatched', verification:result.status==='completed' && result.verified?'verified':result.status==='completed'?'not-applicable':'unverified', evidence:result.evidence };
+  private map(result:DesktopBackendActionResult, effect:ComputerActionRequest['effect']):ComputerActionResult {
+    const nativeVerification = effect === 'local-reversible' && result.status === 'completed' && result.verified;
+    return {
+      status:result.status,
+      dispatch:result.dispatched?'dispatched-once':'not-dispatched',
+      // Backend verification can prove low-level delivery for local-reversible input only.
+      // Higher-risk effects require a separate domain verifier.
+      verification:result.status==='completed'?(nativeVerification?'verified':'not-applicable'):'unverified',
+      evidence:result.evidence,
+    };
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    if (request.adapterId !== this.descriptor.id) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['adapter-id-mismatch']};
+    const requestErrors = validateComputerActionRequest(request, this.descriptor);
+    if (requestErrors.length > 0) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-action-request']};
     if (request.effect === 'observe-only') return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-input-effect-invalid']};
     const ref = this.requestedWindow(request);
     if (!ref) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['surface-generation-required']};
@@ -304,26 +343,26 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     }
     try {
       switch (request.capability) {
-        case 'desktop.focus': {
-          return this.map(await this.backend.focus({window:ref,controlId:request.target.kind === 'ui-control' ? request.target.entityId : undefined}, request.effect));
-        }
+        case 'desktop.focus':
+          return this.map(await this.backend.focus({window:ref,controlId:request.target.kind === 'ui-control' ? request.target.entityId : undefined}, request.effect), request.effect);
         case 'desktop.keyboard': {
           const input = validateKeyboardPayload(request.payload);
           if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
-          return this.map(await this.backend.keyboard(ref, input, request.effect));
+          return this.map(await this.backend.keyboard(ref, input, request.effect), request.effect);
         }
         case 'desktop.pointer.absolute': {
-          const p = request.payload as {x?:unknown;y?:unknown;kind?:unknown}|undefined;
-          if (!p || !validFiniteNumber(p.x) || !validFiniteNumber(p.y) || !['move','down','up','click'].includes(String(p.kind))) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
-          return this.map(await this.backend.pointerAbsolute(ref, p as never, request.effect));
+          const input = validateAbsolutePointerPayload(request.payload);
+          if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
+          return this.map(await this.backend.pointerAbsolute(ref, input, request.effect), request.effect);
         }
         case 'desktop.pointer.relative': {
           if (!this.backend.supportsRelativePointer || !this.backend.pointerRelative) return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['relative-pointer-unsupported']};
-          const p = request.payload as {dx?:unknown;dy?:unknown}|undefined;
-          if (!p || !validFiniteNumber(p.dx) || !validFiniteNumber(p.dy)) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
-          return this.map(await this.backend.pointerRelative(ref, p as never, request.effect));
+          const input = validateRelativePointerPayload(request.payload);
+          if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
+          return this.map(await this.backend.pointerRelative(ref, input, request.effect), request.effect);
         }
-        default: return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-capability-unsupported']};
+        default:
+          return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-capability-unsupported']};
       }
     } catch {
       return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['desktop-backend-threw-after-invocation']};
