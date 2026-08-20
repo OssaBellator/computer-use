@@ -97,14 +97,18 @@ function deepFreeze(value: Json): Json {
   return value;
 }
 
-function send(message: unknown): void {
-  if (typeof process.send === 'function') process.send(message);
+function sendAndClose(message: unknown): void {
+  if (typeof process.send !== 'function') return;
+  process.send(message, () => {
+    if (process.connected) process.disconnect();
+  });
 }
 
 process.once('message', async (raw: unknown) => {
   const message = raw as Partial<RunMessage>;
   if (message.type !== 'run' || typeof message.token !== 'string' || typeof message.moduleUrl !== 'string' || typeof message.exportName !== 'string' || typeof message.inputEncoded !== 'string' || !message.limits) {
     process.exitCode = 2;
+    if (process.connected) process.disconnect();
     return;
   }
   const diagnostics: string[] = [];
@@ -135,9 +139,9 @@ process.once('message', async (raw: unknown) => {
     const output = await execute(input, context);
     if (Date.now() >= (message.deadlineEpochMs ?? 0)) throw new Error('deadline-expired');
     const canonical = canonicalize(output, message.limits.maxOutputBytes, message.limits.maxJsonDepth, message.limits.maxJsonItems);
-    send({ type: 'result', token: message.token, outputEncoded: canonical.encoded, outputHash: sha256(canonical.encoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
+    sendAndClose({ type: 'result', token: message.token, outputEncoded: canonical.encoded, outputHash: sha256(canonical.encoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'worker-error';
-    send({ type: 'error', token: message.token, code: code === 'json-byte-limit' ? 'output-limit' : 'execution-failed', diagnostics });
+    sendAndClose({ type: 'error', token: message.token, code: code === 'json-byte-limit' ? 'output-limit' : 'execution-failed', diagnostics });
   }
 });
