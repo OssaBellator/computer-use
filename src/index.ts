@@ -39,6 +39,7 @@ export * from './browser/gameVisualPipeline.js';
 export * from './browser/pointerLockState.js';
 export * from './browser/mediaState.js';
 export * from './browser/mediaController.js';
+export * from './browser/fullscreenController.js';
 export * from './browser/permissionState.js';
 export * from './browser/clipboardController.js';
 export * from './browser/cdpDragDropController.js';
