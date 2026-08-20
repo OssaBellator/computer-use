@@ -273,6 +273,33 @@ function captureActionRequest(value: unknown): {request:ComputerActionRequest; p
   return {request, payload:captured.payload};
 }
 
+function captureBackendActionResult(value: unknown): DesktopBackendActionResult | undefined {
+  const captured = captureOwnDataObject(value, ['status','dispatched','verified','evidence']);
+  if (!captured) return undefined;
+  const status = captured.status;
+  const dispatched = captured.dispatched;
+  const verified = captured.verified;
+  if (status !== 'completed' && status !== 'rejected' && status !== 'unsupported' && status !== 'failed') return undefined;
+  if (typeof dispatched !== 'boolean') return undefined;
+  if (verified !== undefined && typeof verified !== 'boolean') return undefined;
+  let evidence: readonly string[] | undefined;
+  if (captured.evidence !== undefined) {
+    const rawEvidence = capturePlainArray(captured.evidence, MAX_BACKEND_EVIDENCE);
+    if (!rawEvidence) {
+      if (!Array.isArray(captured.evidence)) return undefined;
+      evidence = Object.freeze(['desktop-backend-evidence-invalid']);
+    } else {
+      evidence = sanitizeEvidence(rawEvidence as readonly string[]);
+    }
+  }
+  return Object.freeze({
+    status,
+    dispatched,
+    ...(verified !== undefined ? {verified} : {}),
+    ...(evidence !== undefined ? {evidence} : {}),
+  });
+}
+
 function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undefined {
   const p = captureOwnDataObject(payload, ['kind', 'key', 'text', 'modifiers']);
   if (!p) return undefined;
@@ -538,13 +565,17 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     return false;
   }
 
-  private map(result:DesktopBackendActionResult, effect:ComputerActionRequest['effect']):ComputerActionResult {
-    const nativeVerification = effect === 'local-reversible' && result.status === 'completed' && result.verified;
+  private map(result:unknown, effect:ComputerActionRequest['effect']):ComputerActionResult {
+    const captured = captureBackendActionResult(result);
+    if (!captured) return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['desktop-backend-result-invalid']};
+    const nativeVerification = effect === 'local-reversible' && captured.status === 'completed' && captured.verified === true;
     return {
-      status:result.status,
-      dispatch:result.dispatched?'dispatched-once':'not-dispatched',
-      verification:result.status==='completed'?(nativeVerification?'verified':'not-applicable'):'unverified',
-      evidence:sanitizeEvidence(result.evidence),
+      status:captured.status,
+      dispatch:captured.dispatched?'dispatched-once':'not-dispatched',
+      // Backend verification can prove low-level delivery for local-reversible input only.
+      // Higher-risk effects require a separate domain verifier.
+      verification:captured.status==='completed'?(nativeVerification?'verified':'not-applicable'):'unverified',
+      evidence:captured.evidence,
     };
   }
 
@@ -620,4 +651,5 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['desktop-backend-threw-after-invocation']};
     }
   }
+
 }
