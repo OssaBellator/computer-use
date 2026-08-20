@@ -82,18 +82,17 @@ function snapshotKnownRecord(value: unknown, allowed: readonly string[], require
   for (const key of allowed) if (Object.prototype.hasOwnProperty.call(record, key)) out[key] = ownData(record, key);
   return Object.freeze(out);
 }
-function snapshotDescriptorRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
+function snapshotWhitelistedRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  let proto: object | null, descriptors: Record<PropertyKey, PropertyDescriptor>;
-  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value) as unknown as Record<PropertyKey, PropertyDescriptor>; } catch { return undefined; }
+  let proto: object | null;
+  try { proto = Object.getPrototypeOf(value); } catch { return undefined; }
   if (proto !== Object.prototype && proto !== null) return undefined;
-  const keys = Reflect.ownKeys(descriptors);
-  if (!keys.every((key) => typeof key === 'string' && allowed.includes(key)) || !required.every((key) => Object.prototype.hasOwnProperty.call(descriptors, key))) return undefined;
   const out: Record<string, unknown> = {};
-  for (const key of keys) {
-    if (typeof key !== 'string') return undefined;
-    const descriptor = descriptors[key];
-    if (!descriptor || !('value' in descriptor)) return undefined;
+  for (const key of allowed) {
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(value,key); } catch { return undefined; }
+    if (!descriptor) { if (required.includes(key)) return undefined; continue; }
+    if (!('value' in descriptor)) return undefined;
     out[key] = descriptor.value;
   }
   return Object.freeze(out);
@@ -207,26 +206,22 @@ function snapshotVisualInput(value: unknown): Readonly<RemoteVisualInput> | unde
 }
 function snapshotMetadataBatch(value: unknown): readonly Readonly<RemoteMetadataItem>[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  let proto: object | null, descriptors: Record<PropertyKey, PropertyDescriptor>;
-  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value) as unknown as Record<PropertyKey, PropertyDescriptor>; } catch { return undefined; }
-  if (proto !== Array.prototype) return undefined;
-  const lengthDescriptor = descriptors.length;
-  if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_METADATA_RESULT_ITEMS) return undefined;
-  const length = lengthDescriptor.value as number, allowed = new Set(['length', ...Array.from({length}, (_,i)=>String(i))]);
-  const keys = Reflect.ownKeys(descriptors);
-  if (!keys.every((key) => typeof key === 'string' && allowed.has(key)) || keys.length !== length + 1) return undefined;
-  const out: Readonly<RemoteMetadataItem>[] = [];
+  let proto: object | null, lengthDescriptor: PropertyDescriptor | undefined;
+  try { proto = Object.getPrototypeOf(value); lengthDescriptor = Object.getOwnPropertyDescriptor(value,'length'); } catch { return undefined; }
+  if (proto !== Array.prototype || !lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_METADATA_RESULT_ITEMS) return undefined;
+  const length = lengthDescriptor.value as number, out: Readonly<RemoteMetadataItem>[] = [];
   for (let i=0;i<length;i++) {
-    const descriptor = descriptors[String(i)];
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(value,String(i)); } catch { return undefined; }
     if (!descriptor || !('value' in descriptor)) return undefined;
-    const item = snapshotDescriptorRecord(descriptor.value,['key','value'],['key','value']);
+    const item = snapshotWhitelistedRecord(descriptor.value,['key','value'],['key','value']);
     if (!item || typeof item.key !== 'string' || typeof item.value !== 'string') return undefined;
     out.push(Object.freeze({key:item.key,value:item.value}));
   }
   return Object.freeze(out);
 }
 function snapshotDisplayFrame(value: unknown): Readonly<RemoteDisplayFrame> | undefined {
-  const record = snapshotDescriptorRecord(value,['width','height','format','bytes','frameId','truncated'],['width','height','format']);
+  const record = snapshotWhitelistedRecord(value,['width','height','format','bytes','frameId','truncated'],['width','height','format']);
   if (!record) return undefined;
   const width=record.width,height=record.height,format=record.format,frameId=record.frameId,truncated=record.truncated,rawBytes=record.bytes;
   if (typeof width!=='number'||typeof height!=='number'||(format!=='synthetic-rgba'&&format!=='synthetic-png')||(frameId!==undefined&&typeof frameId!=='string')||(truncated!==undefined&&typeof truncated!=='boolean')) return undefined;
