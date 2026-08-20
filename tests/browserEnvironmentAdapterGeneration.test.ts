@@ -231,6 +231,80 @@ test('validated action authority is immutable while entity resolution awaits', a
   assert.equal(runtime.activateCalls, 0);
 });
 
+test('accessor-backed action authority is rejected before getters can drift effect or target', async () => {
+  const runtime = new GenerationRuntime();
+  let approvals = 0;
+  let effectGetterCalls = 0;
+  let targetGetterCalls = 0;
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime, {
+    runtimeOptions: {
+      maxRisk: 'observe',
+      approve: async () => {
+        approvals += 1;
+        return true;
+      },
+    },
+  });
+  const target = await observedTarget(adapter);
+  const request = {
+    adapterId: adapter.descriptor.id,
+    actionId: 'accessor-authority',
+    capability: 'browser.activate',
+    idempotency: 'non-idempotent',
+    payload: { method: 'pointer' },
+  } as Record<string, unknown>;
+  Object.defineProperty(request, 'effect', {
+    enumerable: true,
+    get() {
+      effectGetterCalls += 1;
+      return effectGetterCalls === 1 ? 'external-transaction' : 'local-reversible';
+    },
+  });
+  Object.defineProperty(request, 'target', {
+    enumerable: true,
+    get() {
+      targetGetterCalls += 1;
+      return targetGetterCalls === 1 ? target : undefined;
+    },
+  });
+
+  const result = await adapter.act(request as unknown as ComputerActionRequest);
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.equal(effectGetterCalls, 0);
+  assert.equal(targetGetterCalls, 0);
+  assert.equal(approvals, 0);
+  assert.equal(runtime.activateCalls, 0);
+});
+
+test('accessor-backed action payload is rejected without invoking payload getters', async () => {
+  const runtime = new GenerationRuntime();
+  let methodGetterCalls = 0;
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const target = await observedTarget(adapter);
+  const payload = Object.defineProperty({}, 'method', {
+    enumerable: true,
+    get() {
+      methodGetterCalls += 1;
+      return 'pointer';
+    },
+  });
+
+  const result = await adapter.act({
+    adapterId: adapter.descriptor.id,
+    actionId: 'accessor-payload',
+    capability: 'browser.activate',
+    effect: 'local-reversible',
+    idempotency: 'idempotent',
+    target,
+    payload,
+  });
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.equal(methodGetterCalls, 0);
+  assert.equal(runtime.activateCalls, 0);
+});
+
 test('runtime approval policy is immutable after adapter construction', async () => {
   const runtime = new GenerationRuntime();
   const originalApprovals: string[] = [];
