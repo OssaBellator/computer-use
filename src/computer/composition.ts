@@ -1,6 +1,4 @@
 import type {
-  ComputerActionRequest,
-  ComputerActionResult,
   ComputerEnvironmentAdapter,
   ComputerEnvironmentAdapterDescriptor,
   ComputerObservationEnvelope,
@@ -29,7 +27,14 @@ function snapshotAdapter(
  *
  * Adapters remain peer capabilities and keep their own identity, observation,
  * action, approval, verification, and backend semantics. This helper only owns
- * neutral registration/routing and construction of the neutral task runtime.
+ * neutral registration/read-only observation and construction of the neutral
+ * task runtime.
+ *
+ * Effectful actions deliberately do not have a direct composition convenience.
+ * Callers should execute them through a retained ComputerTaskRuntime so approval,
+ * generation revalidation, dispatch state, verification, and checkpoints remain
+ * on the normal safety path. Advanced low-level routing remains available via
+ * ComputerEnvironmentRegistry as a separate public contract.
  *
  * Task execution deliberately requires callers to retain the returned runtime:
  * checkpoint/reconciliation state is part of the no-replay safety boundary and
@@ -67,10 +72,6 @@ export class ComputerRuntimeComposition {
 
   observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
     return this.registry.observe(request);
-  }
-
-  act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    return this.registry.act(request);
   }
 
   createTaskRuntime(
