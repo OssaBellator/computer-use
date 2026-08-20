@@ -200,3 +200,45 @@ test('cyclic accessibility trees are rejected without retaining backend referenc
   backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root} as any);
   await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface}), /accessibility cycle invalid/);
 });
+
+test('validated action authority cannot drift while asynchronous preflight is in flight', async () => {
+  const {backend,adapter} = fixture();
+  const originalObserveSystem = backend.observeSystem.bind(backend);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const enteredPreflight = new Promise<void>((resolve) => { entered = resolve; });
+  backend.observeSystem = async (limits) => {
+    entered();
+    await gate;
+    return originalObserveSystem(limits);
+  };
+
+  const request:any = {
+    adapterId:'desktop:test',
+    actionId:'stable-authority',
+    capability:'desktop.keyboard',
+    effect:'local-reversible',
+    idempotency:'non-idempotent',
+    target:{...target},
+    payload:{kind:'key-down',key:'A'},
+  };
+  const pending = adapter.act(request);
+  await enteredPreflight;
+  request.capability = 'desktop.pointer.absolute';
+  request.effect = 'external-transaction';
+  request.target.entityId = 'mutated-window';
+  request.payload.key = 'B';
+  request.payload.kind = 'text';
+  request.payload.text = 'mutated';
+  release();
+
+  const result = await pending;
+  assert.equal(result.status,'completed');
+  assert.equal(result.verification,'verified');
+  assert.equal(backend.actions.length,1);
+  assert.equal(backend.actions[0]?.kind,'keyboard');
+  assert.equal(backend.actions[0]?.effect,'local-reversible');
+  assert.deepEqual(backend.actions[0]?.payload,{kind:'key-down',key:'A'});
+  assert.equal(backend.actions[0]?.window.nativeWindowId,'win-1');
+});
