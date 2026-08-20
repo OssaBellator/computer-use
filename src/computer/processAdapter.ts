@@ -81,6 +81,122 @@ function mapLinuxState(value: string): ProcessState {
 }
 function safeGeneration(startTicks: number): number { return Number.isSafeInteger(startTicks) && startTicks >= 0 ? startTicks : 0; }
 const PROCESS_STATES = new Set<ProcessState>(['running', 'sleeping', 'waiting', 'stopped', 'zombie', 'dead', 'unknown']);
+
+function dataDescriptorValue(value: object, key: string): { present: boolean; value?: unknown } | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor) return { present: false };
+  if (!('value' in descriptor)) return undefined;
+  return { present: true, value: descriptor.value };
+}
+
+function snapshotPidBatch(value: unknown, candidateLimit: number): Readonly<BoundedProcessPidBatch> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  const pidsField = dataDescriptorValue(value, 'pids');
+  const truncatedField = dataDescriptorValue(value, 'truncated');
+  if (!pidsField?.present || !truncatedField?.present || typeof truncatedField.value !== 'boolean') return undefined;
+  const sourcePids = pidsField.value;
+  if (!Array.isArray(sourcePids) || Object.getPrototypeOf(sourcePids) !== Array.prototype) return undefined;
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(sourcePids, 'length');
+  if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) return undefined;
+  const sourceLength = lengthDescriptor.value as number;
+  const capturedLength = Math.min(sourceLength, candidateLimit);
+  const pids: number[] = [];
+  for (let index = 0; index < capturedLength; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(sourcePids, String(index));
+    if (!descriptor || !('value' in descriptor)) return undefined;
+    const pid = descriptor.value;
+    if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+    pids.push(pid);
+  }
+  return Object.freeze({ pids: Object.freeze(pids), truncated: truncatedField.value || sourceLength > candidateLimit });
+}
+
+function snapshotEntityRef(value: unknown): ComputerEntityRef | undefined | null {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const keys = ['adapterId', 'environment', 'kind', 'entityId', 'surfaceId', 'generation'] as const;
+  const captured: Record<string, unknown> = {};
+  for (const key of keys) {
+    const field = dataDescriptorValue(value, key);
+    if (!field) return null;
+    if (field.present) captured[key] = field.value;
+  }
+  return Object.freeze({
+    adapterId: captured.adapterId as ComputerEntityRef['adapterId'],
+    environment: captured.environment as ComputerEntityRef['environment'],
+    kind: captured.kind as ComputerEntityRef['kind'],
+    entityId: captured.entityId as ComputerEntityRef['entityId'],
+    ...(Object.prototype.hasOwnProperty.call(captured, 'surfaceId') ? { surfaceId: captured.surfaceId as string } : {}),
+    ...(Object.prototype.hasOwnProperty.call(captured, 'generation') ? { generation: captured.generation as number } : {}),
+  });
+}
+
+function snapshotSurfaceRef(value: unknown): NonNullable<ComputerObservationRequest['surface']> | undefined | null {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const keys = ['adapterId', 'environment', 'surfaceId', 'generation', 'parentSurfaceId'] as const;
+  const captured: Record<string, unknown> = {};
+  for (const key of keys) {
+    const field = dataDescriptorValue(value, key);
+    if (!field) return null;
+    if (field.present) captured[key] = field.value;
+  }
+  return Object.freeze({
+    adapterId: captured.adapterId as string,
+    environment: captured.environment as NonNullable<ComputerObservationRequest['surface']>['environment'],
+    surfaceId: captured.surfaceId as string,
+    ...(Object.prototype.hasOwnProperty.call(captured, 'generation') ? { generation: captured.generation as number } : {}),
+    ...(Object.prototype.hasOwnProperty.call(captured, 'parentSurfaceId') ? { parentSurfaceId: captured.parentSurfaceId as string } : {}),
+  });
+}
+
+function snapshotObservationLimits(value: unknown): ComputerObservationRequest['limits'] | undefined | null {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const captured: Record<string, unknown> = {};
+  for (const key of ['maxItems', 'maxTextBytes', 'maxDepth'] as const) {
+    const field = dataDescriptorValue(value, key);
+    if (!field) return null;
+    if (field.present) captured[key] = field.value;
+  }
+  return Object.freeze({
+    ...(Object.prototype.hasOwnProperty.call(captured, 'maxItems') ? { maxItems: captured.maxItems as number } : {}),
+    ...(Object.prototype.hasOwnProperty.call(captured, 'maxTextBytes') ? { maxTextBytes: captured.maxTextBytes as number } : {}),
+    ...(Object.prototype.hasOwnProperty.call(captured, 'maxDepth') ? { maxDepth: captured.maxDepth as number } : {}),
+  });
+}
+
+function snapshotObservationRequest(value: unknown): ComputerObservationRequest | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  const adapterId = dataDescriptorValue(value, 'adapterId');
+  const channel = dataDescriptorValue(value, 'channel');
+  const targetField = dataDescriptorValue(value, 'target');
+  const limitsField = dataDescriptorValue(value, 'limits');
+  const surfaceField = dataDescriptorValue(value, 'surface');
+  if (!adapterId?.present || !channel?.present || !targetField || !limitsField || !surfaceField) return undefined;
+  const surface = snapshotSurfaceRef(surfaceField.present ? surfaceField.value : undefined);
+  const target = snapshotEntityRef(targetField.present ? targetField.value : undefined);
+  const limits = snapshotObservationLimits(limitsField.present ? limitsField.value : undefined);
+  if (surface === null || target === null || limits === null) return undefined;
+  return Object.freeze({
+    adapterId: adapterId.value as string,
+    channel: channel.value as ComputerObservationRequest['channel'],
+    ...(surface === undefined ? {} : { surface }),
+    ...(target === undefined ? {} : { target }),
+    ...(limits === undefined ? {} : { limits }),
+  });
+}
+
 const PROCESS_RECORD_FIELDS = ['pid', 'parentPid', 'startTicks', 'name', 'executable', 'state', 'cpuTimeTicks', 'rssBytes'] as const;
 function snapshotProcessRecordForPid(value: unknown, requestedPid: number): Readonly<ProcessRecord> | undefined {
   if (!value || typeof value !== 'object') return undefined;
@@ -168,11 +284,8 @@ export class ProcessIdentityStore {
       MAX_PROCESS_CANDIDATES,
       Math.max(limit + 1, limit * PROCESS_CANDIDATE_MULTIPLIER),
     );
-    const acquired = await this.source.listPids(candidateLimit);
-    const batch: BoundedProcessPidBatch = {
-      pids: acquired.pids.slice(0, candidateLimit),
-      truncated: acquired.truncated || acquired.pids.length > candidateLimit,
-    };
+    const batch = snapshotPidBatch(await this.source.listPids(candidateLimit), candidateLimit);
+    if (!batch) return { items: [], truncated: true };
     const items: BoundedProcessSnapshot[] = [];
     let inspected = 0;
     for (const pid of batch.pids) {
@@ -219,16 +332,19 @@ export class HostProcessAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor; private sequence = 0;
   constructor(readonly identities: ProcessIdentityStore, version = '1.0.0') { this.descriptor = { id: identities.adapterId, kind: 'process', version, capabilities: ['process.observe', 'process.inspect'] }; }
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    const sequence = ++this.sequence; const invalid = validateComputerObservationRequest(request, this.descriptor);
-    if (invalid.length > 0 || request.channel !== 'process') return { adapterId: this.descriptor.id, environment: 'process', channel: request.channel, sequence, complete: false, truncated: false, ...(request.target ? { target: request.target } : {}), data: { code: 'process.observation.invalid' } };
-    if (request.target) {
-      const pid = parsePid(request.target);
-      if (pid === undefined) return { adapterId: this.descriptor.id, environment: 'process', channel: 'process', sequence, complete: false, truncated: false, target: request.target, data: { processes: [], identity: 'exited' } satisfies ProcessObservationData };
-      const current = await this.identities.inspect(pid); const identity = current === undefined ? 'exited' : request.target.generation !== undefined && current.ref.generation !== request.target.generation ? 'replaced' : 'current';
-      const textLimit = boundedInt(request.limits?.maxTextBytes, DEFAULT_PROCESS_TEXT_BYTES, MAX_PROCESS_TEXT_BYTES); const textBounded = applyTextBudget(identity === 'current' && current ? [current] : [], textLimit);
-      return { adapterId: this.descriptor.id, environment: 'process', channel: 'process', sequence, complete: !textBounded.truncated, truncated: textBounded.truncated, target: request.target, data: { processes: textBounded.items, identity } satisfies ProcessObservationData };
+    const sequence = ++this.sequence;
+    const snapshot = snapshotObservationRequest(request);
+    if (!snapshot) return { adapterId: this.descriptor.id, environment: 'process', channel: 'process', sequence, complete: false, truncated: false, data: { code: 'process.observation.invalid' } };
+    const invalid = validateComputerObservationRequest(snapshot, this.descriptor);
+    if (invalid.length > 0 || snapshot.channel !== 'process') return { adapterId: this.descriptor.id, environment: 'process', channel: snapshot.channel, sequence, complete: false, truncated: false, ...(snapshot.target ? { target: snapshot.target } : {}), data: { code: 'process.observation.invalid' } };
+    if (snapshot.target) {
+      const pid = parsePid(snapshot.target);
+      if (pid === undefined) return { adapterId: this.descriptor.id, environment: 'process', channel: 'process', sequence, complete: false, truncated: false, target: snapshot.target, data: { processes: [], identity: 'exited' } satisfies ProcessObservationData };
+      const current = await this.identities.inspect(pid); const identity = current === undefined ? 'exited' : snapshot.target.generation !== undefined && current.ref.generation !== snapshot.target.generation ? 'replaced' : 'current';
+      const textLimit = boundedInt(snapshot.limits?.maxTextBytes, DEFAULT_PROCESS_TEXT_BYTES, MAX_PROCESS_TEXT_BYTES); const textBounded = applyTextBudget(identity === 'current' && current ? [current] : [], textLimit);
+      return { adapterId: this.descriptor.id, environment: 'process', channel: 'process', sequence, complete: !textBounded.truncated, truncated: textBounded.truncated, target: snapshot.target, data: { processes: textBounded.items, identity } satisfies ProcessObservationData };
     }
-    const limit = boundedInt(request.limits?.maxItems, DEFAULT_PROCESS_ITEMS, MAX_PROCESS_ITEMS); const textLimit = boundedInt(request.limits?.maxTextBytes, DEFAULT_PROCESS_TEXT_BYTES, MAX_PROCESS_TEXT_BYTES); const observed = await this.identities.list(limit); const textBounded = applyTextBudget(observed.items, textLimit); const truncated = observed.truncated || textBounded.truncated;
+    const limit = boundedInt(snapshot.limits?.maxItems, DEFAULT_PROCESS_ITEMS, MAX_PROCESS_ITEMS); const textLimit = boundedInt(snapshot.limits?.maxTextBytes, DEFAULT_PROCESS_TEXT_BYTES, MAX_PROCESS_TEXT_BYTES); const observed = await this.identities.list(limit); const textBounded = applyTextBudget(observed.items, textLimit); const truncated = observed.truncated || textBounded.truncated;
     return { adapterId: this.descriptor.id, environment: 'process', channel: 'process', sequence, complete: !truncated, truncated, data: { processes: textBounded.items } satisfies ProcessObservationData };
   }
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> { const invalid = validateComputerActionRequest(request, this.descriptor); return { status: invalid.length > 0 ? 'rejected' : 'unsupported', dispatch: 'not-dispatched', verification: invalid.length > 0 ? 'rejected' : 'not-applicable', evidence: [invalid.length > 0 ? 'process.action.invalid' : 'process.lifecycle.unsupported'] }; }
