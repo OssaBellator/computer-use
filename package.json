@@ -1,8 +1,8 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "private": true,
-  "description": "Closed-loop browser interaction engine with automatic game-region acquisition, relative mouse-look input, and efficient spatial visual sampling.",
+  "description": "Closed-loop browser interaction engine with resilient game-region lifecycle, relative mouse-look input, and efficient spatial visual sampling.",
   "type": "module",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
