@@ -1,8 +1,8 @@
 {
   "name": "semantic-browser-interaction-engine",
-  "version": "0.34.0",
+  "version": "0.35.0",
   "private": true,
-  "description": "Closed-loop browser interaction engine with automatic game visual perception, temporal motion tracking, and relative mouse-look input.",
+  "description": "Standalone raw-CDP Chromium interaction engine with semantic task control and realtime game perception.",
   "type": "module",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
