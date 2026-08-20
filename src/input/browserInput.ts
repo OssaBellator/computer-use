@@ -12,5 +12,7 @@ export interface BrowserInput {
   keyDown(key: string): Promise<void>;
   keyUp(key: string): Promise<void>;
   typeText(text: string, delayMs?: number): Promise<void>;
+  /** Optional exact text insertion at the current editable selection/caret. */
+  insertText?(text: string): Promise<void>;
   scroll(delta: Point): Promise<void>;
 }
