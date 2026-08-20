@@ -22,7 +22,7 @@ The eventual goal is a general browser agent capable of completing tasks across 
 6. **Identity & account management** — forms, profiles/privacy settings, password flows, and user-mediated identity/MFA steps.
 7. **Automation & process triggering** — submitting workflows, initiating web-app automations/webhooks, and scheduling tasks through browser interfaces.
 
-Capabilities that have financial, identity, security, or external side effects still need explicit policy/confirmation boundaries at the task layer; broad task coverage is not a reason to weaken fail-closed interaction or navigation rules.
+`WEB_TASK_CATEGORY_DEFINITIONS`, `WEB_TASK_CATEGORY_CAPABILITY_TARGETS`, and `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` make that scope machine-readable. Capabilities with financial, identity, security, publishing, or other external effects still need explicit policy/confirmation boundaries; broad task coverage is not a reason to weaken fail-closed interaction or navigation rules.
 
 ## Current architecture
 
@@ -40,6 +40,17 @@ Capabilities that have financial, identity, security, or external side effects s
 - browser version handshake before the runtime is considered ready
 - direct page target discovery, attachment, activation, creation, and closing
 - one-call `launchStandaloneBrowserAgent()` composition into `MultiPageCdpAgent` and `MultiPageTaskEngine`
+
+### Web-task capability model
+
+- seven stable task-category identifiers matching the long-term project scope
+- primitive browser/runtime capability taxonomy with `supported`, `partial`, and `unsupported` states
+- deliberately high full-category coverage targets, separate from individual-task requirements
+- conservative standalone Chromium profile that keeps optional/configuration-dependent controllers marked partial
+- mechanical `TaskProgram` requirement inference from action steps and observation predicates
+- explicit approval-capability inference for declared side effects and approval-gated steps
+- commitment classes separating browser mechanics from observe/reversible/publish/financial/identity/process consequences
+- `StandaloneBrowserAgent.capabilityProfile` and `assessCategory()` for runtime self-description and preflight
 
 ### Perception and identity
 
@@ -122,7 +133,7 @@ Capabilities that have financial, identity, security, or external side effects s
 - guarded top-level navigation plus history/reload operations
 - page target creation/closing/switching and popup lifecycle tracking
 - dialog handling, selection controls, downloads, uploads, and optional network-activity tracking
-- high-level `InteractionEngine`, `CdpBrowserAgentEngine`, multi-page/task facades, and the new standalone launcher composition
+- high-level `InteractionEngine`, `CdpBrowserAgentEngine`, multi-page/task facades, and standalone launcher composition
 
 ## Local validation
 
@@ -144,7 +155,7 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not at `/usr/bin/chromium`.
 
-The live suite now includes a raw-pipe process fixture that launches Chromium without a websocket/debugging port, verifies `Browser.getVersion`, attaches/creates/closes page targets, and cleans its temporary profile. A second standalone fixture runs that same runtime all the way through `MultiPageCdpAgent`/`MultiPageTaskEngine` and verifies semantic button activation plus text entry.
+The live suite includes a raw-pipe process fixture that launches Chromium without a websocket/debugging port, verifies `Browser.getVersion`, attaches/creates/closes page targets, and cleans its temporary profile. A second standalone fixture runs that runtime through `MultiPageCdpAgent`/`MultiPageTaskEngine` and verifies semantic button activation plus text entry.
 
 The wider Chromium suite also covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation, roving-tabindex ownership, automatic dominant-canvas acquisition, renderer resize/replacement lifecycle, held controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, temporal velocity estimation from real canvas screenshots, the composed visual pipeline across movement/resize/renderer replacement, and downscaled visual-motion sampling.
 
@@ -190,16 +201,16 @@ modality-aware planner            v
 
 ## Regression coverage
 
-The unit/regression suite covers raw CDP pipe framing and flattened-session routing, protocol-error propagation, transport limits/fail-closed behavior, graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, deterministic/bounded game-region ranking, stable game-region refresh/reacquisition generations, composed visual-pipeline baseline generations, connected visual-motion regions, temporal track identity, velocity/projection, confidence decay, temporal coordinate-space/dimension resets, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, browser lifecycle controllers, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
+The unit/regression suite covers raw CDP pipe framing and flattened-session routing, protocol-error propagation, transport limits/fail-closed behavior, the seven-category capability taxonomy, capability assessment, TaskProgram requirement/approval inference, graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, deterministic/bounded game-region ranking, stable game-region refresh/reacquisition generations, composed visual-pipeline baseline generations, connected visual-motion regions, temporal track identity, velocity/projection, confidence decay, temporal coordinate-space/dimension resets, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, browser lifecycle controllers, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
 
-See [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) for the dependency-free Chromium process/CDP path, [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md) for stable renderer refresh/reacquisition semantics, [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md) for bounded motion-region tracking and projection, [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) for the composed observation path, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling and motion differencing.
+See [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md) for the seven-category capability model and gap assessment, [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) for the dependency-free Chromium process/CDP path, [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md) for stable renderer refresh/reacquisition semantics, [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md) for bounded motion-region tracking and projection, [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) for the composed observation path, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling and motion differencing.
 
 ## Current limitations / next slices
 
-1. **Cross-category task capability model:** the seven target task families are now explicit scope, but the runtime needs a machine-readable capability taxonomy and task requirements so planners can fail early when a workflow needs an unsupported primitive.
-2. **Permissions, clipboard, media and user-mediated authentication:** general communication/content/identity workflows need first-class permission state, clipboard operations, media/fullscreen state, and explicit boundaries for MFA/passkeys/identity prompts.
-3. **Document/editor semantics:** content creation and collaboration need selection/range editing, rich-text/contenteditable semantics, drag/drop, clipboard-rich content, and editor-specific verification beyond simple text inputs.
-4. **Transaction safety:** commerce/booking/account flows need stronger commitment detection, amount/recipient/order summaries, and explicit confirmation gates immediately before irreversible side effects.
+1. **General document-content observation:** the interaction snapshot is optimized for controls; broad research/reading still needs bounded structured extraction of headings, paragraphs, lists, tables, code, links, images/alt text, metadata, and non-interactive content across frames/shadow roots.
+2. **Permissions, clipboard, media and user-mediated authentication:** communication/content/identity workflows need first-class permission state, clipboard operations, media/fullscreen state, and explicit MFA/passkey/user-handoff boundaries.
+3. **Document/editor semantics:** creation/collaboration need selection/range editing, rich-text/contenteditable semantics, drag/drop, clipboard-rich content, and editor-specific verification beyond simple text inputs.
+4. **Transaction safety:** commerce/booking/account flows need page-side commitment detection, amount/recipient/order summaries, specialized external-side-effect verification, and explicit confirmation immediately before irreversible effects.
 5. **Pointer capture state:** relative movement is available, but pointer-lock acquisition, loss detection, and recovery are not yet first-class control-loop state.
 6. **Semantic visual understanding and global motion:** temporal tracks follow coarse change regions; camera/scroll motion separation and higher-level appearance/task association are still needed.
 7. **Game-specific control discovery:** input primitives exist, but arbitrary games still need bounded discovery/calibration of which controls affect which observed state variables.
