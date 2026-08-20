@@ -239,7 +239,7 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     for (const [frameId, token] of Object.entries(suppliedFrameTokens ?? {})) {
       if (frameId && boundedDocumentToken(frameId) && boundedDocumentToken(token)) frameTokens[frameId] = token;
     }
-    frameTokens.main ??= topToken;
+    frameTokens.main = topToken;
     const identity = { topToken, frameTokens };
     this.activeDocumentIdentities.set(surface.surfaceId, identity);
     return identity;
@@ -251,13 +251,16 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
   ): ComputerEntityRef {
     const stableId = node.backendNodeId !== undefined ? `backend:${node.backendNodeId}` : `node:${encodeURIComponent(node.id)}`;
     const frameToken = identity?.frameTokens[node.frameId];
+    const boundId = identity && frameToken
+      ? node.frameId === 'main'
+        ? `doc:${identity.topToken}:frame:${encodeURIComponent(node.frameId)}:${stableId}`
+        : `doc:${identity.topToken}:frame:${encodeURIComponent(node.frameId)}:gen:${encodeURIComponent(frameToken)}:${stableId}`
+      : undefined;
     return {
       adapterId: this.descriptor.id,
       environment: 'browser',
       kind: 'ui-control',
-      entityId: identity && frameToken
-        ? `doc:${identity.topToken}:frame:${encodeURIComponent(node.frameId)}:gen:${encodeURIComponent(frameToken)}:${stableId}`
-        : `unbound:frame:${encodeURIComponent(node.frameId)}:${stableId}`,
+      entityId: boundId ?? `unbound:frame:${encodeURIComponent(node.frameId)}:${stableId}`,
       ...(surface ? { surfaceId: surface.surfaceId, generation: surface.generation } : {}),
     };
   }
@@ -266,13 +269,16 @@ export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAda
     const browserTarget = this.targetById(target.surfaceId);
     if (!browserTarget || target.generation !== browserTarget.sequence || this.runtime.activePageTargetId?.() !== target.surfaceId) return undefined;
     const surface = this.surfaceForTarget(browserTarget);
-    const match = /^doc:([^:]+):frame:([^:]+):gen:([^:]+):(backend:(\d+)|node:(.+))$/.exec(target.entityId);
+    const match = /^doc:([^:]+):frame:([^:]+)(?::gen:([^:]+))?:(backend:(\d+)|node:(.+))$/.exec(target.entityId);
     if (!match) return undefined;
-    let frameId: string, expectedFrameToken: string;
+    let frameId: string, explicitFrameToken: string | undefined;
     try {
       frameId = decodeURIComponent(match[2]);
-      expectedFrameToken = decodeURIComponent(match[3]);
+      explicitFrameToken = match[3] === undefined ? undefined : decodeURIComponent(match[3]);
     } catch { return undefined; }
+    if (frameId !== 'main' && explicitFrameToken === undefined) return undefined;
+    if (frameId === 'main' && explicitFrameToken !== undefined) return undefined;
+    const expectedFrameToken = explicitFrameToken ?? match[1];
     const before = await this.activeDocumentIdentity(surface);
     if (!before || before.topToken !== match[1] || before.frameTokens[frameId] !== expectedFrameToken) return undefined;
     const nodes = await this.runtime.refresh();
