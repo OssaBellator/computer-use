@@ -20,16 +20,34 @@ export interface PlaywrightPageInputLike {
   keyboard: PlaywrightKeyboardLike;
 }
 
+function finitePoint(name: string, point: Point): void {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    throw new Error(`${name} coordinates must be finite`);
+  }
+}
+
 /**
  * Adapter for the public mouse/keyboard surface exposed by Playwright Page.
  * Structural typing keeps the interaction core independent of a hard runtime
  * dependency on a particular Playwright package version.
  */
 export class PlaywrightInputAdapter implements BrowserInput {
+  private pointer: Point = { x: 0, y: 0 };
+
   constructor(private readonly page: PlaywrightPageInputLike) {}
 
   async movePointer(point: Point): Promise<void> {
+    finitePoint('pointer', point);
     await this.page.mouse.move(point.x, point.y);
+    this.pointer = { x: point.x, y: point.y };
+  }
+
+  async movePointerBy(delta: Point): Promise<void> {
+    finitePoint('pointer delta', delta);
+    await this.movePointer({
+      x: this.pointer.x + delta.x,
+      y: this.pointer.y + delta.y,
+    });
   }
 
   async pointerDown(button: MouseButton = 'left'): Promise<void> {
