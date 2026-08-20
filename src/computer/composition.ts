@@ -53,9 +53,11 @@ function validateAndSnapshotAdapter(adapter: ComputerEnvironmentAdapter): Comput
  * checkpoint/reconciliation state is part of the no-replay safety boundary and
  * must not be hidden behind a stateless run convenience.
  *
- * Each runtime receives a registry snapshot of the adapters registered when the
- * runtime is constructed. Later composition mutations therefore cannot silently
- * rebind an in-flight task to another adapter instance with the same identity.
+ * Registration installs a descriptor-validated adapter facade with bound methods,
+ * so later mutation of the caller-owned adapter object cannot silently change the
+ * composition's observation route. Each task runtime receives its own registry
+ * snapshot of those facades; later composition registration changes therefore
+ * cannot rebind an in-flight runtime to another adapter instance.
  */
 export class ComputerRuntimeComposition {
   private readonly registry = new ComputerEnvironmentRegistry();
@@ -76,6 +78,10 @@ export class ComputerRuntimeComposition {
     const removed = this.registry.unregister(adapterId);
     if (removed) this.runtimeAdapters.delete(adapterId);
     return removed;
+  }
+
+  descriptor(adapterId: string): ComputerEnvironmentAdapterDescriptor | undefined {
+    return this.registry.descriptor(adapterId);
   }
 
   descriptors(): ComputerEnvironmentAdapterDescriptor[] {
