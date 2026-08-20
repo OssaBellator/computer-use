@@ -123,6 +123,98 @@ function freezeWindow(value:PlatformDesktopWindow):PlatformDesktopWindow {
   });
 }
 
+function ownData(value:object,key:string):{present:boolean;value:unknown} {
+  const property = Object.getOwnPropertyDescriptor(value,key);
+  if (!property) return {present:false,value:undefined};
+  if (!('value' in property)) throw new Error('platform accessibility accessor field rejected');
+  return {present:true,value:property.value};
+}
+function finiteString(value:unknown,maxBytes:number,allowEmpty=false):string {
+  if (typeof value !== 'string' || (!allowEmpty && value.length === 0) || new TextEncoder().encode(value).byteLength > maxBytes) {
+    throw new Error('platform accessibility string invalid');
+  }
+  return value;
+}
+function finiteControlRect(value:unknown):{x:number;y:number;width:number;height:number}|undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('platform accessibility bounds invalid');
+  const x = ownData(value,'x'); const y = ownData(value,'y'); const width = ownData(value,'width'); const height = ownData(value,'height');
+  if (!x.present || !y.present || !width.present || !height.present) throw new Error('platform accessibility bounds invalid');
+  const numbers = [x.value,y.value,width.value,height.value];
+  if (numbers.some((entry)=>typeof entry !== 'number' || !Number.isFinite(entry) || Math.abs(entry) > 1_000_000) ||
+      (width.value as number) < 0 || (height.value as number) < 0) throw new Error('platform accessibility bounds invalid');
+  return Object.freeze({x:x.value as number,y:y.value as number,width:width.value as number,height:height.value as number});
+}
+function captureControlTree(value:unknown,limits:Required<ComputerObservationLimits>):PlatformDesktopControl {
+  let items = 0;
+  let text = 0;
+  const seen = new WeakSet<object>();
+  const addText = (candidate:string) => {
+    text += new TextEncoder().encode(candidate).byteLength;
+    if (text > limits.maxTextBytes) throw new Error('platform bridge exceeded accessibility text budget');
+  };
+  const visit = (candidate:unknown,depth:number):PlatformDesktopControl => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new Error('platform accessibility control invalid');
+    if (depth > limits.maxDepth || items >= limits.maxItems) throw new Error('platform bridge exceeded accessibility acquisition budget');
+    if (seen.has(candidate)) throw new Error('platform accessibility cycle invalid');
+    seen.add(candidate);
+    const nativeIdField = ownData(candidate,'nativeId');
+    const instanceTokenField = ownData(candidate,'instanceToken');
+    if (!nativeIdField.present || !instanceTokenField.present) throw new Error('platform accessibility identity invalid');
+    const nativeId = finiteString(nativeIdField.value,256);
+    const instanceToken = finiteString(instanceTokenField.value,512);
+    addText(nativeId); addText(instanceToken);
+    items += 1;
+
+    const roleField = ownData(candidate,'role');
+    const nameField = ownData(candidate,'name');
+    const valueField = ownData(candidate,'value');
+    const enabledField = ownData(candidate,'enabled');
+    const focusedField = ownData(candidate,'focused');
+    const boundsField = ownData(candidate,'bounds');
+    const childrenField = ownData(candidate,'children');
+    const role = roleField.present && roleField.value !== undefined ? finiteString(roleField.value,256,true) : undefined;
+    const name = nameField.present && nameField.value !== undefined ? finiteString(nameField.value,4_096,true) : undefined;
+    const controlValue = valueField.present && valueField.value !== undefined ? finiteString(valueField.value,4_096,true) : undefined;
+    if (role !== undefined) addText(role); if (name !== undefined) addText(name); if (controlValue !== undefined) addText(controlValue);
+    if (enabledField.present && enabledField.value !== undefined && typeof enabledField.value !== 'boolean') throw new Error('platform accessibility enabled invalid');
+    if (focusedField.present && focusedField.value !== undefined && typeof focusedField.value !== 'boolean') throw new Error('platform accessibility focused invalid');
+    const bounds = boundsField.present ? finiteControlRect(boundsField.value) : undefined;
+
+    let children:readonly PlatformDesktopControl[]|undefined;
+    if (childrenField.present && childrenField.value !== undefined) {
+      const rawChildren = childrenField.value;
+      if (!Array.isArray(rawChildren)) throw new Error('platform accessibility children invalid');
+      const lengthProperty = Object.getOwnPropertyDescriptor(rawChildren,'length');
+      if (!lengthProperty || !('value' in lengthProperty) || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0) {
+        throw new Error('platform accessibility children invalid');
+      }
+      const length = lengthProperty.value as number;
+      if ((depth >= limits.maxDepth && length > 0) || length > limits.maxItems - items) {
+        throw new Error('platform bridge exceeded accessibility acquisition budget');
+      }
+      const copied:PlatformDesktopControl[] = [];
+      for (let index=0;index<length;index+=1) {
+        const child = Object.getOwnPropertyDescriptor(rawChildren,String(index));
+        if (!child || !('value' in child)) throw new Error('platform accessibility child invalid');
+        copied.push(visit(child.value,depth + 1));
+      }
+      children = Object.freeze(copied);
+    }
+    return Object.freeze({
+      nativeId,instanceToken,
+      ...(role !== undefined ? {role} : {}),
+      ...(name !== undefined ? {name} : {}),
+      ...(controlValue !== undefined ? {value:controlValue} : {}),
+      ...(enabledField.present && enabledField.value !== undefined ? {enabled:enabledField.value as boolean} : {}),
+      ...(focusedField.present && focusedField.value !== undefined ? {focused:focusedField.value as boolean} : {}),
+      ...(bounds ? {bounds} : {}),
+      ...(children !== undefined ? {children} : {}),
+    });
+  };
+  return visit(value,0);
+}
+
 /**
  * Generation/identity enforcing implementation shared by real platform bridges.
  * It intentionally exposes only NativeDesktopUiBackend's neutral data model.
@@ -197,15 +289,15 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
     const publicId = previous && previous.instanceToken === raw.instanceToken
       ? previous.publicId
       : opaque('control', `${this.identityNamespace}\0${key}\0${raw.nativeId}\0${serial}\0${raw.instanceToken}`);
-    map.set(raw.nativeId,Object.freeze({publicId,nativeId:String(raw.nativeId),instanceToken:String(raw.instanceToken),serial}));
+    map.set(raw.nativeId,Object.freeze({publicId,nativeId:raw.nativeId,instanceToken:raw.instanceToken,serial}));
     const children = raw.children?.map((child)=>this.leaseControl(window,child));
     return Object.freeze({
       controlId:publicId,
-      ...(raw.role !== undefined ? {role:String(raw.role)} : {}),
-      ...(raw.name !== undefined ? {name:String(raw.name)} : {}),
-      ...(raw.value !== undefined ? {value:String(raw.value)} : {}),
-      ...(raw.enabled !== undefined ? {enabled:raw.enabled === true} : {}),
-      ...(raw.focused !== undefined ? {focused:raw.focused === true} : {}),
+      ...(raw.role !== undefined ? {role:raw.role} : {}),
+      ...(raw.name !== undefined ? {name:raw.name} : {}),
+      ...(raw.value !== undefined ? {value:raw.value} : {}),
+      ...(raw.enabled !== undefined ? {enabled:raw.enabled} : {}),
+      ...(raw.focused !== undefined ? {focused:raw.focused} : {}),
       ...(raw.bounds ? {bounds:cloneRect(raw.bounds)} : {}),
       ...(children ? {children:Object.freeze(children)} : {}),
     });
@@ -217,7 +309,8 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
     const raw = await this.bridge.accessibility(lease.snapshot,Object.freeze({...limits}));
     if (raw.windowInstanceToken !== lease.instanceToken) return Object.freeze({status:'unavailable',window:Object.freeze({...ref}),reason:'window-replaced'});
     if (raw.status !== 'available' || !raw.root) return Object.freeze({status:raw.status,window:Object.freeze({...ref}),...(raw.reason ? {reason:String(raw.reason)} : {})});
-    const root = this.leaseControl(lease,raw.root);
+    const capturedRoot = captureControlTree(raw.root,limits);
+    const root = this.leaseControl(lease,capturedRoot);
     return Object.freeze({status:'available',window:Object.freeze({...ref}),root});
   }
 
