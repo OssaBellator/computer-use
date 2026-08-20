@@ -188,6 +188,48 @@ test('activation remains definitely not-dispatched when child-frame identity cha
   assert.equal(runtime.activateCalls, 0);
 });
 
+test('validated action authority is immutable while entity resolution awaits', async () => {
+  const runtime = new GenerationRuntime();
+  const approvals: Array<{ programName: string; kind: string; risk: string }> = [];
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime, {
+    runtimeOptions: {
+      maxRisk: 'observe',
+      approve: async (context) => {
+        approvals.push({ programName: context.programName, kind: context.kind, risk: context.risk });
+        return false;
+      },
+    },
+  });
+  const target = await observedTarget(adapter);
+  const request: ComputerActionRequest = {
+    adapterId: adapter.descriptor.id,
+    actionId: 'authority-original',
+    capability: 'browser.activate',
+    effect: 'external-transaction',
+    idempotency: 'non-idempotent',
+    target: { ...target },
+    payload: { method: 'keyboard', key: 'Enter' },
+  };
+
+  runtime.refreshMutation = () => {
+    request.actionId = 'authority-mutated';
+    request.capability = 'browser.press-key';
+    request.effect = 'local-reversible';
+    request.idempotency = 'idempotent';
+    if (request.target) request.target.entityId = 'unbound:frame:main:backend:999';
+  };
+
+  const result = await adapter.act(request);
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.deepEqual(approvals, [{
+    programName: 'computer-adapter:authority-original',
+    kind: 'activate',
+    risk: 'external-side-effect',
+  }]);
+  assert.equal(runtime.activateCalls, 0);
+});
+
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
   const runtime = new GenerationRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
