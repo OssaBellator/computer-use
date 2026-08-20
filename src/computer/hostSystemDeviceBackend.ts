@@ -1,6 +1,6 @@
 import { platform } from 'node:os';
 import { type LinuxSystemDeviceBackendOptions } from './linuxSystemDeviceBackend.js';
-import { ScopeBoundTruthfulLinuxSystemDeviceBackend } from './scopeBoundTruthfulLinuxSystemDeviceBackend.js';
+import { PostureTruthfulLinuxSystemDeviceBackend } from './postureTruthfulLinuxSystemDeviceBackend.js';
 import {
   SystemDeviceEnvironmentAdapter,
   type BoundedDeviceMetadata,
@@ -103,7 +103,7 @@ export interface HostSystemDeviceBackendOptions {
 export function createHostSystemDeviceBackend(options: HostSystemDeviceBackendOptions = {}): SystemDeviceBackend {
   const hostPlatform = options.platformFamily ?? platform();
   if (hostPlatform === 'linux') {
-    return new ScopeBoundTruthfulLinuxSystemDeviceBackend({ ...options.linux, platformFamily: 'linux' });
+    return new PostureTruthfulLinuxSystemDeviceBackend({ ...options.linux, platformFamily: 'linux' });
   }
   return new UnsupportedHostSystemDeviceBackend(hostPlatform);
 }
