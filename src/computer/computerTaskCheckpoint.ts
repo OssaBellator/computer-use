@@ -6,7 +6,12 @@ export const COMPUTER_TASK_CHECKPOINT_FORMAT = 'browser-automation/computer-task
 export const COMPUTER_TASK_CHECKPOINT_MAX_BYTES = 64 * 1024;
 export const COMPUTER_TASK_CHECKPOINT_MAX_STEPS_EXECUTED = 1_000_000;
 
-export type ComputerTaskActionCheckpointState = 'not-started' | 'completed' | 'dispatched-unverified' | 'unknown-dispatch';
+export type ComputerTaskActionCheckpointState =
+  | 'not-started'
+  | 'completed'
+  | 'dispatched-unverified'
+  | 'unknown-dispatch'
+  | 'reconciled-not-dispatched';
 export type ComputerTaskCheckpointUncertainty = 'verification-pending' | 'verification-mismatch';
 
 export interface ComputerTaskActionCheckpoint {
@@ -47,6 +52,7 @@ const ACTION_STATES: readonly ComputerTaskActionCheckpointState[] = [
   'completed',
   'dispatched-unverified',
   'unknown-dispatch',
+  'reconciled-not-dispatched',
 ];
 const UNCERTAINTIES: readonly ComputerTaskCheckpointUncertainty[] = ['verification-pending', 'verification-mismatch'];
 const CHECKPOINT_PROVENANCE = Symbol('computer-task-checkpoint-provenance');
@@ -225,11 +231,11 @@ function captureComputerTaskCheckpoint(value: unknown): { checkpoint: ComputerTa
 
   if (!Array.isArray(actionsValue)) throw new Error('invalid computer task checkpoint actions');
   const lengthValue = dataProperty(actionsValue, 'length', 'computer task checkpoint actions');
-  if (!Number.isSafeInteger(lengthValue) || (lengthValue as number) < 0 || (lengthValue as number) > 512) {
+  if (typeof lengthValue !== 'number' || !Number.isSafeInteger(lengthValue) || lengthValue < 0 || lengthValue > 512) {
     throw new Error('invalid computer task checkpoint actions');
   }
   const actions: ComputerTaskActionCheckpoint[] = [];
-  for (let index = 0; index < (lengthValue as number); index += 1) {
+  for (let index = 0; index < lengthValue; index += 1) {
     const actionValue = dataProperty(actionsValue, String(index), 'computer task checkpoint action entry');
     const action = objectValue(actionValue, 'computer task checkpoint action entry');
     const stepId = dataProperty(action, 'stepId', 'computer task checkpoint action entry');

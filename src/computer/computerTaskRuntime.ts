@@ -297,7 +297,7 @@ export class ComputerTaskRuntime {
     if (resolution !== 'completed' && resolution !== 'not-dispatched') {
       throw new Error('invalid computer task reconciliation resolution');
     }
-    this.actionStates.set(stepId, resolution === 'completed' ? 'completed' : 'not-started');
+    this.actionStates.set(stepId, resolution === 'completed' ? 'completed' : 'reconciled-not-dispatched');
     this.actionUncertainties.delete(stepId);
   }
 
@@ -384,7 +384,8 @@ export class ComputerTaskRuntime {
     if (prior === 'unknown-dispatch' || prior === 'dispatched-unverified') {
       return { result: this.result('reconciliation-required', [], ['checkpoint-unresolved-dispatch']) };
     }
-    this.actionStates.set(step.id, 'not-started');
+    const explicitlyReconciledNotDispatched = prior === 'reconciled-not-dispatched';
+    if (!explicitlyReconciledNotDispatched) this.actionStates.set(step.id, 'not-started');
     this.actionUncertainties.delete(step.id);
 
     const firstFresh = await this.targetFresh(step);
@@ -402,6 +403,9 @@ export class ComputerTaskRuntime {
       const predispatch = await this.targetFresh(step);
       if (predispatch.state !== 'fresh') {
         return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
+      }
+      if (this.actionStates.get(step.id) === 'reconciled-not-dispatched') {
+        this.actionStates.set(step.id, 'not-started');
       }
       const registryResult = await this.registry.act(step.request);
       let adapterResult: ComputerActionResult;
@@ -446,6 +450,9 @@ export class ComputerTaskRuntime {
         continue;
       }
 
+      if (adapterResult.dispatch === 'not-dispatched' && explicitlyReconciledNotDispatched) {
+        this.actionStates.set(step.id, 'reconciled-not-dispatched');
+      }
       if (adapterResult.dispatch === 'unknown') {
         return { result: this.result('unknown-dispatch', [], evidence(adapterResult.evidence, verification.evidence)) };
       }

@@ -155,6 +155,9 @@ function assertSafeCheckpointProgression(existing: ComputerTaskCheckpoint, next:
     ) {
       throw new Error('persisted computer task checkpoint semantic rollback detected: uncertain action became replayable');
     }
+    if (previous.state === 'reconciled-not-dispatched' && candidate.state === 'not-started') {
+      throw new Error('persisted computer task checkpoint semantic rollback detected: reconciliation provenance regressed');
+    }
     if (
       previous.state === 'dispatched-unverified' &&
       previous.uncertainty !== undefined &&
