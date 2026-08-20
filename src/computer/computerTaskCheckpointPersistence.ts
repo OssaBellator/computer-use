@@ -6,6 +6,7 @@ import {
   computerTaskProgramHash,
   decodeComputerTaskCheckpoint,
   encodeComputerTaskCheckpoint,
+  snapshotComputerTaskCheckpoint,
   validateComputerTaskCheckpoint,
   type ComputerTaskCheckpoint,
 } from './computerTaskCheckpoint.js';
@@ -292,7 +293,11 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
 
   async save(checkpoint: ComputerTaskCheckpoint, binding: ComputerTaskCheckpointPersistenceBinding): Promise<void> {
     const expectedBinding = bindingIdentity(binding);
-    validateComputerTaskCheckpoint(checkpoint, { program: binding.program, executionId: binding.executionId, requireRuntimeProvenance: true });
+    const checkpointSnapshot = snapshotComputerTaskCheckpoint(checkpoint, {
+      program: binding.program,
+      executionId: binding.executionId,
+      requireRuntimeProvenance: true,
+    });
     const existing = await readBounded(this.filePath, this.maxBytes);
     const existingEnvelope = existing === undefined ? undefined : this.parseCheckpoint(existing, expectedBinding);
     const anchorEncoded = await readBounded(this.anchorPath, this.maxBytes);
@@ -313,7 +318,7 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
         executionId: binding.executionId,
         requireRuntimeProvenance: true,
       });
-      assertSafeCheckpointProgression(existingCheckpoint, checkpoint);
+      assertSafeCheckpointProgression(existingCheckpoint, checkpointSnapshot);
     }
     const generation = Math.max(existingEnvelope?.generation ?? 0, anchor?.generation ?? 0) + 1;
     const unsigned: PersistedCheckpointUnsignedEnvelope = {
@@ -321,7 +326,7 @@ export class LocalFileComputerTaskCheckpointPersistence implements ComputerTaskC
       version: COMPUTER_TASK_PERSISTED_CHECKPOINT_VERSION,
       generation,
       binding: expectedBinding,
-      checkpoint: encodeComputerTaskCheckpoint(checkpoint),
+      checkpoint: encodeComputerTaskCheckpoint(checkpointSnapshot),
     };
     const encoded = canonicalJson(authenticated(this.key, unsigned));
     if (Buffer.byteLength(encoded, 'utf8') > this.maxBytes) throw new Error('persisted computer task checkpoint exceeds size limit');
