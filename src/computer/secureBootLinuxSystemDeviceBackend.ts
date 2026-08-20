@@ -9,7 +9,8 @@ import type {
 } from './systemDeviceAdapter.js';
 
 const MAX_EFIVAR_ENTRIES = 128;
-const SECURE_BOOT_PREFIX = 'SecureBoot-';
+/** UEFI global-variable GUID for the authoritative SecureBoot variable. */
+const SECURE_BOOT_EFIVAR = 'SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c';
 
 function sameScope(left: SecuritySettingScopeIdentity, right: SecuritySettingScopeIdentity): boolean {
   return left.id === right.id && left.kind === right.kind && left.generation === right.generation;
@@ -80,8 +81,8 @@ export class SecureBootLinuxSystemDeviceBackend extends SystemPostureLinuxSystem
       for await (const entry of directory) {
         scanned += 1;
         if (scanned > MAX_EFIVAR_ENTRIES) return observation(scope, 'unknown');
-        if (entry.name.startsWith(SECURE_BOOT_PREFIX)) {
-          secureBootPath = `${efivars}/${entry.name}`;
+        if (entry.name === SECURE_BOOT_EFIVAR) {
+          secureBootPath = `${efivars}/${SECURE_BOOT_EFIVAR}`;
           break;
         }
       }
