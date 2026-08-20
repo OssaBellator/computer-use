@@ -104,3 +104,58 @@ test('registry acquires neutral action result metadata once and snapshots eviden
   assert.equal(Object.isFrozen(result.evidence), true);
   assert.equal(result.details, details, 'opaque action details remain adapter-owned');
 });
+
+test('registry rejects oversized action evidence without acquiring its entries', async () => {
+  let evidenceEntryReads = 0;
+  const evidence = new Array<string>(33);
+  Object.defineProperty(evidence, '0', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      evidenceEntryReads += 1;
+      return 'must-not-be-acquired';
+    },
+  });
+
+  const adapter: ComputerEnvironmentAdapter = {
+    descriptor: {
+      id: 'filesystem:oversized-evidence',
+      kind: 'filesystem',
+      version: '1',
+      capabilities: ['filesystem.write'],
+    },
+    async observe(request): Promise<ComputerObservationEnvelope> {
+      return {
+        adapterId: request.adapterId,
+        environment: 'filesystem',
+        channel: request.channel,
+        sequence: 1,
+        complete: true,
+        truncated: false,
+        data: {},
+      };
+    },
+    async act(): Promise<ComputerActionResult> {
+      return {
+        status: 'completed',
+        dispatch: 'dispatched-once',
+        verification: 'verified',
+        evidence,
+      };
+    },
+  };
+  const registry = new ComputerEnvironmentRegistry();
+  registry.register(adapter);
+
+  const result = await registry.act({
+    adapterId: 'filesystem:oversized-evidence',
+    actionId: 'write',
+    capability: 'filesystem.write',
+    effect: 'local-reversible',
+    idempotency: 'non-idempotent',
+  });
+
+  assert.equal(evidenceEntryReads, 0, 'oversized evidence must be rejected before copying entries');
+  assert.deepEqual(result.evidence, ['adapter-evidence-invalid']);
+  assert.equal(Object.isFrozen(result.evidence), true);
+});
