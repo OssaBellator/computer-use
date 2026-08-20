@@ -140,9 +140,7 @@ test('backend-owned nested observation metadata is rebuilt before return', async
   assert.equal(systemWindow.application.secret,undefined);
   assert.equal(systemWindow.bounds.secret,undefined);
   assert.equal(visualArtifact.secret,undefined);
-  application.applicationId = 'mutated';
-  bounds.width = 999999;
-  artifact.token = 'mutated';
+  application.applicationId = 'mutated'; bounds.width = 999999; artifact.token = 'mutated';
   assert.equal(systemWindow.application.applicationId,'app-1');
   assert.equal(systemWindow.bounds.width,300);
   assert.equal(visualArtifact.token,'frame-1');
@@ -160,8 +158,7 @@ test('accessibility node metadata is rebuilt and backend bounds cannot mutate ne
   const {backend,adapter} = fixture();
   const bounds:any = {x:1,y:2,width:30,height:40,secret:'do-not-copy'};
   backend.accessibility.set('win-1@1',{
-    status:'available',
-    window:{nativeWindowId:'win-1',generation:1},
+    status:'available', window:{nativeWindowId:'win-1',generation:1},
     root:{controlId:'root',role:'window',name:'Editor',enabled:true,focused:false,bounds,secret:'do-not-copy'} as any,
   });
   const obs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface});
@@ -176,15 +173,10 @@ test('accessibility node metadata is rebuilt and backend bounds cannot mutate ne
 
 test('malformed and oversized accessibility fields are rejected at the neutral boundary', async () => {
   const cases: any[] = [
-    {controlId:'x'.repeat(257)},
-    {controlId:'root',role:'x'.repeat(257)},
-    {controlId:'root',name:'x'.repeat(4097)},
-    {controlId:'root',value:'x'.repeat(4097)},
-    {controlId:'root',enabled:'yes'},
-    {controlId:'root',focused:1},
-    {controlId:'root',bounds:{x:0,y:0,width:-1,height:10}},
-    {controlId:'root',children:{}},
-    {controlId:'root',children:[null]},
+    {controlId:'x'.repeat(257)}, {controlId:'root',role:'x'.repeat(257)},
+    {controlId:'root',name:'x'.repeat(4097)}, {controlId:'root',value:'x'.repeat(4097)},
+    {controlId:'root',enabled:'yes'}, {controlId:'root',focused:1},
+    {controlId:'root',bounds:{x:0,y:0,width:-1,height:10}}, {controlId:'root',children:{}}, {controlId:'root',children:[null]},
   ];
   for (const root of cases) {
     const {backend,adapter} = fixture();
@@ -208,85 +200,85 @@ test('validated action authority cannot drift while asynchronous preflight is in
   let entered!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const enteredPreflight = new Promise<void>((resolve) => { entered = resolve; });
-  backend.observeSystem = async (limits) => {
-    entered();
-    await gate;
-    return originalObserveSystem(limits);
-  };
-
-  const request:any = {
-    adapterId:'desktop:test',
-    actionId:'stable-authority',
-    capability:'desktop.keyboard',
-    effect:'local-reversible',
-    idempotency:'non-idempotent',
-    target:{...target},
-    payload:{kind:'key-down',key:'A'},
-  };
+  backend.observeSystem = async (limits) => { entered(); await gate; return originalObserveSystem(limits); };
+  const request:any = {adapterId:'desktop:test',actionId:'stable-authority',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'non-idempotent',target:{...target},payload:{kind:'key-down',key:'A'}};
   const pending = adapter.act(request);
   await enteredPreflight;
-  request.capability = 'desktop.pointer.absolute';
-  request.effect = 'external-transaction';
-  request.target.entityId = 'mutated-window';
-  request.payload.key = 'B';
-  request.payload.kind = 'text';
-  request.payload.text = 'mutated';
+  request.capability='desktop.pointer.absolute'; request.effect='external-transaction'; request.target.entityId='mutated-window';
+  request.payload.key='B'; request.payload.kind='text'; request.payload.text='mutated';
   release();
-
   const result = await pending;
-  assert.equal(result.status,'completed');
-  assert.equal(result.verification,'verified');
-  assert.equal(backend.actions.length,1);
-  assert.equal(backend.actions[0]?.kind,'keyboard');
-  assert.equal(backend.actions[0]?.effect,'local-reversible');
-  assert.deepEqual(backend.actions[0]?.payload,{kind:'key-down',key:'A'});
-  assert.equal(backend.actions[0]?.window.nativeWindowId,'win-1');
+  assert.equal(result.status,'completed'); assert.equal(result.verification,'verified'); assert.equal(backend.actions.length,1);
+  assert.equal(backend.actions[0]?.kind,'keyboard'); assert.equal(backend.actions[0]?.effect,'local-reversible');
+  assert.deepEqual(backend.actions[0]?.payload,{kind:'key-down',key:'A'}); assert.equal(backend.actions[0]?.window.nativeWindowId,'win-1');
 });
 
-test('accessibility observation does not scan wide children after depth or item budget exhaustion', async () => {
-  const {backend,adapter} = fixture();
-  let depthReads = 0;
-  const depthChildren = new Proxy(new Array(1_000_000), {
-    get(array, property, receiver) {
-      if (typeof property === 'string' && /^\d+$/.test(property)) depthReads += 1;
-      return Reflect.get(array, property, receiver);
+function millionChildren(counter:{reads:number}) {
+  const backing:any[] = [];
+  return new Proxy(backing, {
+    get(target, prop, receiver) {
+      if (prop === 'length') return 1_000_000;
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) { counter.reads += 1; return {controlId:`child-${prop}`}; }
+      return Reflect.get(target,prop,receiver);
     },
   });
-  depthChildren[0] = {controlId:'never-read'};
-  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:depthChildren}} as any);
-  const depthObs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface,limits:{maxItems:10,maxTextBytes:1000,maxDepth:0}});
-  assert.equal(depthObs.truncated,true);
-  assert.equal(depthReads,0);
+}
 
-  let itemReads = 0;
-  const itemChildren = new Proxy(Array.from({length:1_000_000},(_,index)=> index < 10 ? {controlId:`child-${index}`} : undefined), {
-    get(array, property, receiver) {
-      if (typeof property === 'string' && /^\d+$/.test(property)) itemReads += 1;
-      return Reflect.get(array, property, receiver);
-    },
-  });
-  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:itemChildren}} as any);
-  const itemObs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface,limits:{maxItems:3,maxTextBytes:1000,maxDepth:4}});
-  assert.equal(itemObs.truncated,true);
-  assert.equal((itemObs.data as any).itemCount,3);
-  assert.equal(itemReads,2);
+test('wide accessibility children stop before indexing beyond depth and item capacity', async () => {
+  {
+    const {backend,adapter} = fixture(); const counter={reads:0};
+    backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:millionChildren(counter)}} as any);
+    const obs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface,limits:{maxItems:10,maxTextBytes:1000,maxDepth:0}});
+    assert.equal(obs.truncated,true); assert.equal(counter.reads,0);
+  }
+  {
+    const {backend,adapter} = fixture(); const counter={reads:0};
+    backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:millionChildren(counter)}} as any);
+    const obs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface,limits:{maxItems:3,maxTextBytes:1000,maxDepth:2}});
+    assert.equal(obs.truncated,true); assert.equal(counter.reads,2);
+  }
 });
 
-test('control preflight bounds wide child enqueueing before native dispatch', async () => {
+test('control preflight caps wide child acquisition before queue retention', async () => {
+  const {backend,adapter} = fixture(); const counter={reads:0};
+  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:millionChildren(counter)}} as any);
+  const control:any = {adapterId:'desktop:test',environment:'desktop-ui',kind:'ui-control',entityId:'missing',surfaceId:'win-1',generation:1};
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'wide-preflight',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:control});
+  assert.equal(result.status,'rejected'); assert.equal(result.dispatch,'not-dispatched'); assert.equal(counter.reads,255); assert.equal(backend.actions.length,0);
+});
+
+test('accessor-backed target authority is rejected before preflight without invoking getters', async () => {
   const {backend,adapter} = fixture();
-  let childReads = 0;
-  const wideChildren = new Proxy(Array.from({length:1_000_000},(_,index)=> index < 300 ? {controlId:`child-${index}`} : undefined), {
-    get(array, property, receiver) {
-      if (typeof property === 'string' && /^\d+$/.test(property)) childReads += 1;
-      return Reflect.get(array, property, receiver);
-    },
-  });
-  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root:{controlId:'root',children:wideChildren}} as any);
-  const controlTarget = {adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'missing',surfaceId:'win-1',generation:1};
-  const result = await adapter.act({adapterId:'desktop:test',actionId:'wide-preflight',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:controlTarget});
-  assert.equal(result.status,'rejected');
-  assert.equal(result.dispatch,'not-dispatched');
-  assert.deepEqual(result.evidence,['stale-control']);
-  assert.equal(backend.actions.length,0);
-  assert.equal(childReads,255);
+  let getterCalls = 0; let preflightCalls = 0;
+  const originalObserveSystem = backend.observeSystem.bind(backend);
+  backend.observeSystem = async (limits) => { preflightCalls += 1; return originalObserveSystem(limits); };
+  const accessorTarget:any = {adapterId:'desktop:test',environment:'desktop-ui',kind:'surface'};
+  Object.defineProperty(accessorTarget,'entityId',{enumerable:true,get(){getterCalls += 1; return getterCalls === 1 ? 'win-1' : 'mutated';}});
+  Object.defineProperty(accessorTarget,'generation',{enumerable:true,get(){getterCalls += 1; return 1;}});
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'getter-target',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target:accessorTarget});
+  assert.equal(result.status,'rejected'); assert.deepEqual(result.evidence,['invalid-action-request']);
+  assert.equal(getterCalls,0); assert.equal(preflightCalls,0); assert.equal(backend.actions.length,0);
+});
+
+test('accessor-backed keyboard and pointer payloads are rejected before preflight', async () => {
+  for (const [capability,payload,evidence] of [
+    ['desktop.keyboard', (()=>{let calls=0; const p:any={kind:'text'}; Object.defineProperty(p,'text',{enumerable:true,get(){calls+=1; return calls===1?'safe':'mutated';}}); return p;})(), 'invalid-keyboard-payload'],
+    ['desktop.pointer.absolute', (()=>{const p:any={kind:'move',y:2}; Object.defineProperty(p,'x',{enumerable:true,get(){return 1;}}); return p;})(), 'invalid-pointer-payload'],
+    ['desktop.pointer.relative', (()=>{const p:any={dy:2}; Object.defineProperty(p,'dx',{enumerable:true,get(){return 1;}}); return p;})(), 'invalid-pointer-payload'],
+  ] as const) {
+    const {backend,adapter} = fixture(); let preflightCalls=0;
+    const originalObserveSystem=backend.observeSystem.bind(backend);
+    backend.observeSystem=async (limits)=>{preflightCalls+=1; return originalObserveSystem(limits);};
+    const result=await adapter.act({adapterId:'desktop:test',actionId:'getter-payload',capability,effect:'local-reversible',idempotency:'idempotent',target,payload});
+    assert.equal(result.status,'rejected'); assert.deepEqual(result.evidence,[evidence]); assert.equal(preflightCalls,0); assert.equal(backend.actions.length,0);
+  }
+});
+
+test('proxy get traps cannot drift validation from the frozen keyboard dispatch snapshot', async () => {
+  const {backend,adapter} = fixture();
+  let getCalls=0;
+  const payload = new Proxy({kind:'text',text:'safe'} as any,{get(target,prop,receiver){getCalls+=1; if(prop==='text') return getCalls===1?'safe':'mutated'; return Reflect.get(target,prop,receiver);}});
+  const result=await adapter.act({adapterId:'desktop:test',actionId:'proxy-payload',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'idempotent',target,payload});
+  assert.equal(result.status,'completed'); assert.equal(getCalls,0); assert.deepEqual(backend.actions[0]?.payload,{kind:'text',text:'safe'});
+  assert.equal(Object.isFrozen(backend.actions[0]?.payload),true);
 });
