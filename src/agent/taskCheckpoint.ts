@@ -9,7 +9,7 @@ export const TASK_CHECKPOINT_MAX_IDENTIFIER_BYTES = 128;
 export const TASK_CHECKPOINT_MAX_BUDGET = 1_000_000;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
-const FINGERPRINT_HEX = /^[0-9a-f]{8,128}$/;
+const FINGERPRINT_HEX = /^[0-9a-f]{64}$/;
 
 /** The exact task-program model is hashed; callers cannot pass an id-only projection by accident. */
 export type CheckpointableTaskProgram = TaskProgram;
@@ -45,7 +45,7 @@ export interface TaskCheckpoint {
   program: TaskCheckpointProgramIdentity;
   cursor: TaskCheckpointCursor;
   budgets: TaskCheckpointBudgets;
-  /** Opaque non-sensitive hash captured from the browser observation channel. */
+  /** Opaque 256-bit lowercase-hex fingerprint derived from non-sensitive browser resume state. */
   browserStateFingerprint: string;
 }
 
@@ -234,7 +234,7 @@ function assertCheckpointSchema(value: unknown): asserts value is TaskCheckpoint
   }
 
   if (typeof value.browserStateFingerprint !== 'string' || !FINGERPRINT_HEX.test(value.browserStateFingerprint)) {
-    codecError('invalid-schema', 'checkpoint browserStateFingerprint must be an opaque lowercase hex fingerprint');
+    codecError('invalid-schema', 'checkpoint browserStateFingerprint must be a 64-character lowercase hex fingerprint');
   }
 }
 
