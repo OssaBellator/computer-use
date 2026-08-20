@@ -42,13 +42,26 @@ export interface DesktopAccessibilityObservation {
 }
 
 export type DesktopVisualStatus = 'available' | 'unavailable' | 'unsupported';
+
+/**
+ * Bounded reference to a backend-owned visual capture. Raw pixel/image payloads
+ * do not cross the neutral computer-use contract in phase 1.
+ */
+export interface DesktopVisualArtifactRef {
+  /** Opaque backend-local token that can identify a capture to a typed caller. */
+  token: string;
+  /** Optional bounded media-type hint, for example image/png. */
+  mediaType?: string;
+  /** Optional size of the backend-owned capture, not inline bytes. */
+  byteLength?: number;
+}
+
 export interface DesktopVisualObservation {
   status: DesktopVisualStatus;
   window: DesktopNativeWindowRef;
   width?: number;
   height?: number;
-  /** Opaque capture token/metadata owned by the backend, not assumed to be pixels. */
-  artifact?: unknown;
+  artifact?: DesktopVisualArtifactRef;
   reason?: string;
 }
 
@@ -59,12 +72,9 @@ export interface DesktopSystemObservation {
   focusedControlId?: string;
 }
 
-export interface DesktopKeyboardInput {
-  kind: 'key-down' | 'key-up' | 'text';
-  key?: string;
-  text?: string;
-  modifiers?: readonly ('alt'|'control'|'meta'|'shift')[];
-}
+export type DesktopKeyboardInput =
+  | { kind: 'key-down' | 'key-up'; key: string; modifiers?: readonly ('alt'|'control'|'meta'|'shift')[] }
+  | { kind: 'text'; text: string };
 
 export interface DesktopAbsolutePointerInput {
   x: number;
