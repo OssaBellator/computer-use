@@ -192,13 +192,17 @@ export function validateComputerTaskCheckpoint(
     if (expectedActionIds.length !== actualActionIds.length || expectedActionIds.some((id, index) => id !== actualActionIds[index])) {
       throw new Error('computer task checkpoint must include explicit state for every action step');
     }
+    if (checkpoint.cursor.stepsExecuted === 0 && checkpoint.cursor.nextStepId !== options.program.entry) {
+      throw new Error('computer task checkpoint zero-step cursor must remain at program entry');
+    }
     const cursor = checkpoint.cursor.nextStepId ? stepById.get(checkpoint.cursor.nextStepId) : undefined;
     if (cursor?.kind === 'action') {
       const cursorState = checkpoint.actions.find((action) => action.stepId === cursor.id)?.state;
       if (!cursorState) throw new Error('computer task checkpoint cursor action is missing history state');
-      if (cursorState === 'unknown-dispatch' || cursorState === 'dispatched-unverified') {
-        return;
+      if (cursorState === 'not-started' && checkpoint.cursor.stepsExecuted > 0) {
+        throw new Error('computer task checkpoint cursor/action history is inconsistent');
       }
+      if (cursorState === 'unknown-dispatch' || cursorState === 'dispatched-unverified') return;
     }
   }
 }
