@@ -88,6 +88,16 @@ test('unsupported runtime format names are rejected before any browser input', a
   assert.deepEqual(input.events, []);
 });
 
+test('invalid runtime modifier names are rejected before any formatting input', async () => {
+  const input = new Input();
+  const controller = new RichTextController(input, selectionObserver([selection()]), formattingObserver([formatting('off')]));
+  await assert.rejects(
+    () => controller.setBold(true, { primaryModifier: 'AltGraph' as 'Control' }),
+    /Control or Meta/,
+  );
+  assert.deepEqual(input.events, []);
+});
+
 test('multiple formatting states are treated as ambiguous', async () => {
   const input=new Input();
   const ambiguous=formatting('off');
