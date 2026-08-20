@@ -1,4 +1,11 @@
 import {
+  STANDALONE_CHROMIUM_CAPABILITY_PROFILE,
+  assessWebTaskCategory,
+  type BrowserCapabilityProfile,
+  type CapabilityAssessment,
+  type WebTaskCategory,
+} from '../capabilities/webTaskCapabilities.js';
+import {
   launchStandaloneChromium,
   type StandaloneChromium,
   type StandaloneChromiumLaunchOptions,
@@ -31,6 +38,8 @@ export interface StandaloneBrowserAgentLaunchOptions {
 export class StandaloneBrowserAgent {
   readonly pages: MultiPageCdpAgent;
   readonly taskEngine: MultiPageTaskEngine;
+  readonly capabilityProfile: BrowserCapabilityProfile =
+    STANDALONE_CHROMIUM_CAPABILITY_PROFILE;
   private shutdownPromise?: Promise<void>;
 
   constructor(
@@ -43,6 +52,10 @@ export class StandaloneBrowserAgent {
 
   get activeEngine(): CdpBrowserAgentEngine | undefined {
     return this.pages.activeEngine;
+  }
+
+  assessCategory(category: WebTaskCategory): CapabilityAssessment {
+    return assessWebTaskCategory(this.capabilityProfile, category);
   }
 
   async prepare(selectInitialPage = true): Promise<MultiPageSwitchResult | undefined> {
