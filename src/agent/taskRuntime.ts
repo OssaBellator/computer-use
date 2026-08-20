@@ -17,8 +17,10 @@ import {
   type ScrollViewportTaskStep,
   type SelectOptionTaskStep,
   type SwitchPageTaskStep,
+  type TaskPredicate,
   type TaskProgram,
   type TaskRisk,
+  type TaskStep,
   type TypeTaskStep,
   type UploadTaskStep,
 } from './taskProgram.js';
@@ -47,6 +49,26 @@ async function sleep(ms: number): Promise<void> { if (ms > 0) await new Promise<
 function riskOf(step: ActionStep): Exclude<TaskRisk, 'observe'> { if (step.kind === 'upload') return 'external-side-effect'; return step.risk ?? 'interaction'; }
 function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefined): boolean { if (!result) return false; switch (step.kind) { case 'select-option': return result.status === 'selected' || result.status === 'already-selected'; case 'upload': return result.status === 'uploaded'; case 'switch-page': return result.status === 'switched'; case 'navigate': case 'history': return result.status === 'navigated'; case 'handle-dialog': return result.status === 'handled'; case 'open-tab': return result.status === 'created'; case 'close-latest-tab': return result.status === 'closed'; default: return result.status === 'verified'; } }
 function successOutcome(step: ActionStep): TaskTraceOutcome { switch (step.kind) { case 'upload': return 'uploaded'; case 'switch-page': return 'page-switched'; case 'navigate': return 'navigated'; case 'history': return 'history-navigated'; case 'handle-dialog': return 'dialog-handled'; case 'open-tab': return 'target-created'; case 'close-latest-tab': return 'target-closed'; default: return 'verified'; } }
+
+function predicateUsesDocument(predicate: TaskPredicate): boolean {
+  switch (predicate.kind) {
+    case 'document': return true;
+    case 'all': case 'any': return predicate.predicates.some(predicateUsesDocument);
+    case 'not': return predicateUsesDocument(predicate.predicate);
+    default: return false;
+  }
+}
+
+function stepUsesDocument(step: TaskStep): boolean {
+  if (step.kind === 'assert' || step.kind === 'branch' || step.kind === 'wait') {
+    return predicateUsesDocument(step.condition);
+  }
+  return step.kind === 'complete' && step.condition !== undefined && predicateUsesDocument(step.condition);
+}
+
+function programUsesDocument(program: TaskProgram): boolean {
+  return program.steps.some(stepUsesDocument);
+}
 
 async function performAction(engine: TaskRuntimeEngine, step: ActionStep, inputs: Readonly<Record<string, string>>, options: TaskRuntimeOptions): Promise<RuntimeActionResult | undefined> {
   switch (step.kind) {
@@ -78,6 +100,7 @@ export class TaskRuntime {
     const stepMap = new Map(program.steps.map((step) => [step.id, step] as const));
     const maxSteps = positiveInt(options.maxSteps, 64), maxVisits = positiveInt(options.maxVisitsPerStep, 8), maxNoProgress = positiveInt(options.maxConsecutiveNoProgress, 4), maxRisk = options.maxRisk ?? 'interaction';
     const trace: TaskTraceEntry[] = [], visits = new Map<string, number>();
+    const observe = () => observeTaskEngine(this.engine, { document: programUsesDocument(program) });
     let currentId = program.entry, consecutiveNoProgress = 0;
     const emit = async (entry: TaskTraceEntry) => { trace.push(entry); try { await options.onTrace?.(entry); } catch {} };
     const failed = (status: TaskRunStatus, stepsExecuted: number): TaskRunResult => ({ status, completed: false, finalStepId: currentId, stepsExecuted, trace, validationWarnings: validation.warnings });
@@ -86,7 +109,7 @@ export class TaskRuntime {
       const step = stepMap.get(currentId)!;
       const visit = (visits.get(currentId) ?? 0) + 1; visits.set(currentId, visit);
       if (visit > maxVisits) return failed('loop-detected', index);
-      let before; try { before = await observeTaskEngine(this.engine); } catch { return failed('failed', index); }
+      let before; try { before = await observe(); } catch { return failed('failed', index); }
 
       if (step.kind === 'activate' || step.kind === 'hover' || step.kind === 'type' || step.kind === 'select-option' || step.kind === 'upload' || step.kind === 'press-key' || step.kind === 'scroll-viewport' || step.kind === 'switch-page' || step.kind === 'navigate' || step.kind === 'history' || step.kind === 'handle-dialog' || step.kind === 'open-tab' || step.kind === 'close-latest-tab') {
         const risk = riskOf(step), needsApproval = RISK_RANK[risk] > RISK_RANK[maxRisk] || step.requiresApproval === true;
@@ -96,7 +119,7 @@ export class TaskRuntime {
 
         let action: RuntimeActionResult | undefined, threw = false;
         try { action = await performAction(this.engine, step, inputs, options); } catch { threw = true; }
-        let after = before; try { after = await observeTaskEngine(this.engine); } catch {}
+        let after = before; try { after = await observe(); } catch {}
         const changed = before.fingerprint !== after.fingerprint;
         const succeeded = actionSucceeded(step, action), nextId = succeeded ? step.next : step.onFailure;
         const madeProgress = changed || ((step.kind === 'scroll-viewport' || step.kind === 'select-option') && succeeded);
@@ -108,17 +131,17 @@ export class TaskRuntime {
         currentId = nextId; continue;
       }
 
-      const predicate = (condition: Parameters<typeof evaluateTaskPredicate>[0]) => evaluateTaskPredicate(condition, before.nodes, inputs, before.browser, before.dialog, before.targets, before.downloads);
+      const predicate = (condition: Parameters<typeof evaluateTaskPredicate>[0]) => evaluateTaskPredicate(condition, before.nodes, inputs, before.browser, before.dialog, before.targets, before.downloads, before.document);
       if (step.kind === 'assert') { const passed = predicate(step.condition), nextId = passed ? step.next : step.onFailure; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'asserted' : 'assertion-failed', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); if (!nextId) return failed('failed', index + 1); currentId = nextId; continue; }
       if (step.kind === 'branch') { const passed = predicate(step.condition), nextId = passed ? step.then : step.else; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'branch-then' : 'branch-else', nextStepId: nextId, beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); currentId = nextId; continue; }
-      if (step.kind === 'wait') { const maxPolls = positiveInt(step.maxPolls, positiveInt(options.waitMaxPolls, 20)), pollIntervalMs = Math.max(0, step.pollIntervalMs ?? options.waitPollIntervalMs ?? 100); let observed = before, passed = predicate(step.condition); for (let poll = 1; !passed && poll < maxPolls; poll += 1) { await sleep(pollIntervalMs); try { observed = await observeTaskEngine(this.engine); } catch { break; } passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog, observed.targets, observed.downloads); } const nextId = passed ? step.next : step.onTimeout; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'wait-satisfied' : 'wait-timeout', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: observed.fingerprint, browserStateChanged: before.fingerprint !== observed.fingerprint, visit }); if (!nextId) return failed('failed', index + 1); currentId = nextId; continue; }
+      if (step.kind === 'wait') { const maxPolls = positiveInt(step.maxPolls, positiveInt(options.waitMaxPolls, 20)), pollIntervalMs = Math.max(0, step.pollIntervalMs ?? options.waitPollIntervalMs ?? 100); let observed = before, passed = predicate(step.condition); for (let poll = 1; !passed && poll < maxPolls; poll += 1) { await sleep(pollIntervalMs); try { observed = await observe(); } catch { break; } passed = evaluateTaskPredicate(step.condition, observed.nodes, inputs, observed.browser, observed.dialog, observed.targets, observed.downloads, observed.document); } const nextId = passed ? step.next : step.onTimeout; await emit({ index, stepId: step.id, kind: step.kind, outcome: passed ? 'wait-satisfied' : 'wait-timeout', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: observed.fingerprint, browserStateChanged: before.fingerprint !== observed.fingerprint, visit }); if (!nextId) return failed('failed', index + 1); currentId = nextId; continue; }
       if (step.kind === 'wait-network-idle') {
         let idle = false;
         try {
           const result = await this.engine.waitForNetworkIdle?.({ quietMs: step.quietMs, maxInflight: step.maxInflight, timeoutMs: step.timeoutMs, pollIntervalMs: step.pollIntervalMs });
           idle = result?.idle === true;
         } catch {}
-        let after = before; try { after = await observeTaskEngine(this.engine); } catch {}
+        let after = before; try { after = await observe(); } catch {}
         const nextId = idle ? step.next : step.onTimeout;
         await emit({ index, stepId: step.id, kind: step.kind, outcome: idle ? 'wait-satisfied' : 'wait-timeout', ...(nextId ? { nextStepId: nextId } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: before.fingerprint !== after.fingerprint, visit });
         if (!nextId) return failed('failed', index + 1);
