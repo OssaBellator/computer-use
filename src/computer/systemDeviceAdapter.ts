@@ -10,40 +10,27 @@ import {
 } from './environmentAdapter.js';
 
 export const SYSTEM_DEVICE_IDENTITY_KINDS = [
-  'device',
-  'peripheral',
-  'volume',
-  'system-setting-scope',
-  'security-setting-scope',
+  'device', 'peripheral', 'volume', 'system-setting-scope', 'security-setting-scope',
 ] as const;
-
 export type SystemDeviceIdentityKind = typeof SYSTEM_DEVICE_IDENTITY_KINDS[number];
 
 export interface SystemDeviceIdentity<K extends SystemDeviceIdentityKind = SystemDeviceIdentityKind> {
-  /** Stable adapter-local token. It must not contain a serial number, hostname, account, path, or secret. */
   id: string;
   kind: K;
-  /** Increments whenever replacement/re-enumeration makes an older handle unsafe to use. */
   generation: number;
 }
-
 export type DeviceIdentity = SystemDeviceIdentity<'device' | 'peripheral'>;
 export type SystemVolumeIdentity = SystemDeviceIdentity<'volume'>;
 export type SystemSettingScopeIdentity = SystemDeviceIdentity<'system-setting-scope'>;
 export type SecuritySettingScopeIdentity = SystemDeviceIdentity<'security-setting-scope'>;
 
 export type SystemDeviceAccessState =
-  | 'available'
-  | 'unsupported-platform'
-  | 'unsupported-privilege'
-  | 'permission-denied';
+  | 'available' | 'unsupported-platform' | 'unsupported-privilege' | 'permission-denied';
 
 export interface SystemDevicePrivilegeState {
   state: SystemDeviceAccessState;
-  /** Bounded machine code only. Do not include usernames, groups, tokens, or policy text. */
   reason?: string;
 }
-
 export type DevicePresence = 'present' | 'absent' | 'unknown';
 export type DeviceOperationalState = 'ready' | 'busy' | 'disabled' | 'degraded' | 'unknown';
 
@@ -52,45 +39,36 @@ export interface BoundedDeviceMetadata {
   category: 'display' | 'input' | 'audio' | 'camera' | 'printer' | 'storage' | 'network' | 'other';
   presence: DevicePresence;
   state: DeviceOperationalState;
-  /** Optional human-readable class/model label; never a serial, MAC, IMEI, host name, or account identifier. */
   label?: string;
 }
-
 export interface BoundedVolumeMetadata {
   identity: SystemVolumeIdentity;
   state: 'online' | 'offline' | 'read-only' | 'unknown';
   removable?: boolean;
   capacityBytes?: number;
   freeBytes?: number;
-  /** Filesystem type only; mount paths and globally unique storage identifiers are deliberately omitted. */
   filesystemType?: string;
 }
-
 export interface BoundedSystemInformation {
   platformFamily: string;
   architecture?: string;
   logicalProcessorCount?: number;
   totalMemoryBytes?: number;
 }
-
 export interface SystemSettingObservation {
   scope: SystemSettingScopeIdentity;
   setting: string;
   state: 'known' | 'unsupported' | 'permission-denied' | 'unknown';
-  /** Backend-normalized scalar/enum value. No paths, account identifiers, credentials, or free-form secret-bearing blobs. */
   value?: string | number | boolean;
   revision: string;
 }
-
 export interface SecuritySettingObservation {
   scope: SecuritySettingScopeIdentity;
   setting: string;
   state: 'known' | 'unsupported' | 'permission-denied' | 'unknown';
-  /** Deliberately coarse: security observations report posture/state, never credentials, keys, tokens, rulesets, or secrets. */
   value?: 'enabled' | 'disabled' | 'managed' | 'not-configured' | 'unknown';
   revision: string;
 }
-
 export interface SystemDeviceSnapshot {
   access: SystemDevicePrivilegeState;
   system?: BoundedSystemInformation;
@@ -102,46 +80,50 @@ export type SystemDeviceBackendFailure =
   | { state: 'unsupported-platform'; evidence: string }
   | { state: 'unsupported-privilege'; evidence: string }
   | { state: 'permission-denied'; evidence: string };
-
-export type SystemDeviceBackendResult<T> =
-  | { state: 'ok'; value: T }
-  | SystemDeviceBackendFailure;
+export type SystemDeviceBackendResult<T> = { state: 'ok'; value: T } | SystemDeviceBackendFailure;
 
 export interface SystemDeviceMutationBaseline {
   target: SystemDeviceIdentity;
   configurationRevision: string;
 }
-
 export interface SystemDeviceMutationApproval {
   approved: true;
-  /** Opaque approval token used only for equality/binding. It must be bounded and non-secret. */
   approvalId: string;
   effect: Exclude<ComputerEffectClass, 'observe-only'>;
   target: SystemDeviceIdentity;
   configurationRevision: string;
 }
-
 export interface SystemDeviceMutationPayload {
-  operation:
-    | 'system-setting-change'
-    | 'security-setting-change'
-    | 'peripheral-configuration';
+  operation: 'system-setting-change' | 'security-setting-change' | 'peripheral-configuration';
   target: SystemDeviceIdentity;
   setting: string;
-  /** Backend-normalized bounded scalar/enum only. */
   value: string | number | boolean;
   approval: SystemDeviceMutationApproval;
 }
-
 export interface SystemDeviceMutationDispatch {
   state: 'dispatched';
-  /** Bounded non-sensitive verification binding, not a native command/result dump. */
   verificationToken: string;
 }
-
 export interface SystemDeviceMutationVerification {
   state: 'verified' | 'pending' | 'rejected' | 'mismatch' | 'unverified';
   evidence: readonly string[];
+}
+
+export interface SystemDeviceApprovalVerifier {
+  verify(
+    request: Readonly<Pick<ComputerActionRequest, 'actionId' | 'capability' | 'effect'>>,
+    payload: Readonly<SystemDeviceMutationPayload>,
+  ): Promise<boolean>;
+}
+
+/**
+ * Exactly-once integration seam. Production implementations can use bounded durable
+ * storage with their own retention policy. `claim` must atomically reject a reused
+ * action ID, including IDs whose earlier dispatch outcome was uncertain.
+ */
+export interface SystemDeviceActionLedger {
+  claim(actionId: string): Promise<'claimed' | 'already-used' | 'unavailable'>;
+  record(actionId: string, result: Readonly<ComputerActionResult>): Promise<void>;
 }
 
 export interface SystemDeviceBackend {
@@ -152,9 +134,7 @@ export interface SystemDeviceBackend {
   enumerateVolumes(): Promise<SystemDeviceBackendResult<readonly BoundedVolumeMetadata[]>>;
   observeSystemSetting(scope: SystemSettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SystemSettingObservation>>;
   observeSecuritySetting(scope: SecuritySettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SecuritySettingObservation>>;
-  /** Returns the current generation/revision immediately before a mutation. */
   freshMutationBaseline(target: SystemDeviceIdentity, setting: string): Promise<SystemDeviceBackendResult<SystemDeviceMutationBaseline>>;
-  /** Called exactly once by this adapter for a newly accepted actionId. */
   dispatchMutation(payload: SystemDeviceMutationPayload, baseline: SystemDeviceMutationBaseline): Promise<SystemDeviceMutationDispatch>;
   verifyMutation(
     payload: SystemDeviceMutationPayload,
@@ -165,10 +145,12 @@ export interface SystemDeviceBackend {
 
 const MAX_ID_BYTES = 192;
 const MAX_LABEL_BYTES = 160;
-const MAX_SETTING_BYTES = 128;
+const MAX_VALUE_BYTES = 256;
 const MAX_EVIDENCE = 32;
 const SAFE_MACHINE_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
 const SAFE_SETTING = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
+const SYSTEM_STATES = new Set(['known', 'unsupported', 'permission-denied', 'unknown']);
+const SECURITY_VALUES = new Set(['enabled', 'disabled', 'managed', 'not-configured', 'unknown']);
 const HIGH_RISK_UNSUPPORTED_CAPABILITIES = new Set([
   'device.disk.partition',
   'device.storage.destructive',
@@ -178,11 +160,10 @@ const HIGH_RISK_UNSUPPORTED_CAPABILITIES = new Set([
   'security.account.privileged.modify',
 ]);
 
+/** Complete capability vocabulary for this domain; descriptors only advertise neutral-interface-routable capabilities. */
 export const SYSTEM_DEVICE_CAPABILITIES = [
   'device.observe',
   'system.observe',
-  'system.setting.observe',
-  'security.setting.observe',
   'system.setting.change',
   'security.setting.change',
   'device.peripheral.configure',
@@ -191,79 +172,72 @@ export const SYSTEM_DEVICE_CAPABILITIES = [
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
-
 function boundedText(value: string, maxBytes: number): boolean {
   return value.length > 0 && utf8Bytes(value) <= maxBytes && !/[\r\n\0]/.test(value);
 }
-
 function validIdentity(identity: SystemDeviceIdentity): boolean {
   return SYSTEM_DEVICE_IDENTITY_KINDS.includes(identity.kind) &&
     boundedText(identity.id, MAX_ID_BYTES) &&
     Number.isSafeInteger(identity.generation) && identity.generation >= 0;
 }
-
 function sameIdentity(left: SystemDeviceIdentity, right: SystemDeviceIdentity): boolean {
   return left.id === right.id && left.kind === right.kind && left.generation === right.generation;
 }
-
 function validRevision(value: string): boolean {
   return boundedText(value, MAX_ID_BYTES);
 }
-
 function validEvidence(evidence: readonly string[]): boolean {
   return evidence.length <= MAX_EVIDENCE && evidence.every((entry) => SAFE_MACHINE_CODE.test(entry));
 }
-
-function safeLabel(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  return boundedText(value, MAX_LABEL_BYTES) ? value : undefined;
+function safeMachineCode(value: string | undefined, fallback: string): string {
+  return value !== undefined && SAFE_MACHINE_CODE.test(value) ? value : fallback;
 }
-
+function sanitizePrivilege(value: SystemDevicePrivilegeState): SystemDevicePrivilegeState {
+  return {
+    state: ['available', 'unsupported-platform', 'unsupported-privilege', 'permission-denied'].includes(value.state)
+      ? value.state : 'unsupported-platform',
+    ...(value.reason ? { reason: safeMachineCode(value.reason, 'backend-access-unavailable') } : {}),
+  };
+}
+function safeLabel(value: string | undefined): string | undefined {
+  return value !== undefined && boundedText(value, MAX_LABEL_BYTES) ? value : undefined;
+}
+function safeScalar(value: unknown): string | number | boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string') return boundedText(value, MAX_VALUE_BYTES) ? value : undefined;
+  return undefined;
+}
 function clampNonNegativeSafe(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
-
 function boundDevice(device: BoundedDeviceMetadata): BoundedDeviceMetadata | undefined {
   if (!validIdentity(device.identity)) return undefined;
   return {
-    identity: { ...device.identity },
-    category: device.category,
-    presence: device.presence,
-    state: device.state,
-    label: safeLabel(device.label),
+    identity: { ...device.identity }, category: device.category, presence: device.presence,
+    state: device.state, label: safeLabel(device.label),
   };
 }
-
 function boundVolume(volume: BoundedVolumeMetadata): BoundedVolumeMetadata | undefined {
   if (!validIdentity(volume.identity)) return undefined;
   return {
-    identity: { ...volume.identity },
-    state: volume.state,
-    removable: volume.removable,
+    identity: { ...volume.identity }, state: volume.state, removable: volume.removable,
     capacityBytes: clampNonNegativeSafe(volume.capacityBytes),
     freeBytes: clampNonNegativeSafe(volume.freeBytes),
     filesystemType: safeLabel(volume.filesystemType),
   };
 }
-
 function accessFromFailure(failure: SystemDeviceBackendFailure): SystemDevicePrivilegeState {
-  return { state: failure.state, reason: SAFE_MACHINE_CODE.test(failure.evidence) ? failure.evidence : 'backend-access-unavailable' };
+  return { state: failure.state, reason: safeMachineCode(failure.evidence, 'backend-access-unavailable') };
 }
-
 function actionResult(
   status: ComputerActionResult['status'],
   dispatch: ComputerActionResult['dispatch'],
   verification: ComputerActionResult['verification'],
   evidence: readonly string[],
 ): ComputerActionResult {
-  return {
-    status,
-    dispatch,
-    verification,
-    evidence: validEvidence(evidence) ? evidence : ['evidence-redacted'],
-  };
+  return { status, dispatch, verification, evidence: validEvidence(evidence) ? evidence : ['evidence-redacted'] };
 }
-
 function requiredEffect(payload: SystemDeviceMutationPayload): Exclude<ComputerEffectClass, 'observe-only'> {
   switch (payload.operation) {
     case 'system-setting-change': return 'system-configuration';
@@ -271,7 +245,6 @@ function requiredEffect(payload: SystemDeviceMutationPayload): Exclude<ComputerE
     case 'peripheral-configuration': return 'hardware-affecting';
   }
 }
-
 function operationCapability(operation: SystemDeviceMutationPayload['operation']): string {
   switch (operation) {
     case 'system-setting-change': return 'system.setting.change';
@@ -279,134 +252,172 @@ function operationCapability(operation: SystemDeviceMutationPayload['operation']
     case 'peripheral-configuration': return 'device.peripheral.configure';
   }
 }
-
 function isMutationPayload(value: unknown): value is SystemDeviceMutationPayload {
   if (!value || typeof value !== 'object') return false;
   const payload = value as Partial<SystemDeviceMutationPayload>;
   if (!['system-setting-change', 'security-setting-change', 'peripheral-configuration'].includes(String(payload.operation))) return false;
   if (!payload.target || !validIdentity(payload.target)) return false;
   if (typeof payload.setting !== 'string' || !SAFE_SETTING.test(payload.setting)) return false;
-  if (!['string', 'number', 'boolean'].includes(typeof payload.value)) return false;
-  if (typeof payload.value === 'string' && !boundedText(payload.value, 256)) return false;
-  if (typeof payload.value === 'number' && !Number.isFinite(payload.value)) return false;
+  if (safeScalar(payload.value) === undefined) return false;
   if (!payload.approval || payload.approval.approved !== true || !validIdentity(payload.approval.target)) return false;
-  if (!boundedText(payload.approval.approvalId, MAX_ID_BYTES) || !validRevision(payload.approval.configurationRevision)) return false;
-  return true;
+  return boundedText(payload.approval.approvalId, MAX_ID_BYTES) && validRevision(payload.approval.configurationRevision);
+}
+function consumeText(value: string | undefined, budget: { remaining: number; truncated: boolean }): string | undefined {
+  if (value === undefined) return undefined;
+  const bytes = utf8Bytes(value);
+  if (bytes > budget.remaining) {
+    budget.truncated = true;
+    return undefined;
+  }
+  budget.remaining -= bytes;
+  return value;
 }
 
-/**
- * Observation-first environment-neutral adapter for system/device state.
- *
- * It does not contain an OS backend. Production callers must supply a backend
- * explicitly; tests use synthetic backends. Generic `observe()` returns only a
- * bounded system/device snapshot. Typed setting observations are explicit methods
- * so sensitive security state is never silently folded into ordinary traces.
- */
 export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor;
   private sequence = 0;
-  private readonly actionDispatches = new Map<string, ComputerActionResult>();
+  private readonly mutationsEnabled: boolean;
+  private readonly approvalVerifier?: SystemDeviceApprovalVerifier;
+  private readonly actionLedger?: SystemDeviceActionLedger;
 
   constructor(
     readonly adapterId: string,
     private readonly backend: SystemDeviceBackend,
-    options: { enableMutations?: boolean } = {},
+    options: {
+      enableMutations?: boolean;
+      approvalVerifier?: SystemDeviceApprovalVerifier;
+      actionLedger?: SystemDeviceActionLedger;
+    } = {},
   ) {
-    this.mutationsEnabled = options.enableMutations === true;
+    this.approvalVerifier = options.approvalVerifier;
+    this.actionLedger = options.actionLedger;
+    this.mutationsEnabled = options.enableMutations === true &&
+      this.approvalVerifier !== undefined && this.actionLedger !== undefined;
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'device' as const,
-      version: 'system-device-foundation-v1',
+      version: 'system-device-foundation-v2',
       capabilities: Object.freeze([
         'device.observe',
         'system.observe',
-        'system.setting.observe',
-        'security.setting.observe',
         ...(this.mutationsEnabled ? ['system.setting.change', 'security.setting.change', 'device.peripheral.configure'] : []),
       ]),
     });
   }
 
-  private readonly mutationsEnabled: boolean;
-
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
     if (request.adapterId !== this.adapterId || request.channel !== 'device') {
       return {
-        adapterId: this.adapterId,
-        environment: 'device',
-        channel: request.channel,
-        sequence: this.sequence++,
-        complete: false,
-        truncated: false,
+        adapterId: this.adapterId, environment: 'device', channel: request.channel,
+        sequence: this.sequence++, complete: false, truncated: false,
         data: { access: { state: 'unsupported-platform', reason: 'observation-channel-unsupported' } },
       };
     }
 
     const maxItems = Math.min(request.limits?.maxItems ?? 64, 256);
-    const [access, system, devices, volumes] = await Promise.all([
-      this.backend.privilegeState(),
-      this.backend.systemInformation(),
-      this.backend.enumerateDevices(),
-      this.backend.enumerateVolumes(),
+    const textBudget = { remaining: Math.min(request.limits?.maxTextBytes ?? 16_384, 65_536), truncated: false };
+    const [rawAccess, system, devices, volumes] = await Promise.all([
+      this.backend.privilegeState(), this.backend.systemInformation(),
+      this.backend.enumerateDevices(), this.backend.enumerateVolumes(),
     ]);
-
-    const boundedDevices = devices.state === 'ok'
-      ? devices.value.map(boundDevice).filter((value): value is BoundedDeviceMetadata => value !== undefined).slice(0, maxItems)
-      : [];
-    const boundedVolumes = volumes.state === 'ok'
-      ? volumes.value.map(boundVolume).filter((value): value is BoundedVolumeMetadata => value !== undefined).slice(0, maxItems)
-      : [];
+    const access = sanitizePrivilege(rawAccess);
     const unavailable = system.state !== 'ok' ? accessFromFailure(system) :
       devices.state !== 'ok' ? accessFromFailure(devices) :
       volumes.state !== 'ok' ? accessFromFailure(volumes) : undefined;
-    const snapshot: SystemDeviceSnapshot = {
-      access: unavailable ?? access,
-      system: system.state === 'ok' ? {
-        platformFamily: safeLabel(system.value.platformFamily) ?? 'unknown',
-        architecture: safeLabel(system.value.architecture),
+    const chosenAccess = unavailable ?? access;
+    const boundedAccess: SystemDevicePrivilegeState = {
+      state: chosenAccess.state,
+      reason: consumeText(chosenAccess.reason, textBudget),
+    };
+
+    let remainingItems = maxItems;
+    const boundedDevices: BoundedDeviceMetadata[] = [];
+    if (devices.state === 'ok') {
+      for (const raw of devices.value) {
+        if (remainingItems === 0) break;
+        const bounded = boundDevice(raw);
+        if (!bounded) { textBudget.truncated = true; continue; }
+        bounded.label = consumeText(bounded.label, textBudget);
+        boundedDevices.push(bounded);
+        remainingItems -= 1;
+      }
+      if (devices.value.length > boundedDevices.length) textBudget.truncated = true;
+    }
+    const boundedVolumes: BoundedVolumeMetadata[] = [];
+    if (volumes.state === 'ok') {
+      for (const raw of volumes.value) {
+        if (remainingItems === 0) break;
+        const bounded = boundVolume(raw);
+        if (!bounded) { textBudget.truncated = true; continue; }
+        bounded.filesystemType = consumeText(bounded.filesystemType, textBudget);
+        boundedVolumes.push(bounded);
+        remainingItems -= 1;
+      }
+      if (volumes.value.length > boundedVolumes.length) textBudget.truncated = true;
+    }
+
+    let boundedSystem: BoundedSystemInformation | undefined;
+    if (system.state === 'ok') {
+      boundedSystem = {
+        platformFamily: consumeText(safeLabel(system.value.platformFamily), textBudget) ?? 'unknown',
+        architecture: consumeText(safeLabel(system.value.architecture), textBudget),
         logicalProcessorCount: clampNonNegativeSafe(system.value.logicalProcessorCount),
         totalMemoryBytes: clampNonNegativeSafe(system.value.totalMemoryBytes),
-      } : undefined,
-      devices: boundedDevices,
-      volumes: boundedVolumes,
-    };
-    const truncated = (devices.state === 'ok' && devices.value.length > boundedDevices.length) ||
-      (volumes.state === 'ok' && volumes.value.length > boundedVolumes.length);
+      };
+    }
+
     return {
-      adapterId: this.adapterId,
-      environment: 'device',
-      channel: 'device',
-      sequence: this.sequence++,
-      complete: !unavailable,
-      truncated,
-      data: snapshot,
+      adapterId: this.adapterId, environment: 'device', channel: 'device',
+      sequence: this.sequence++, complete: !unavailable, truncated: textBudget.truncated,
+      data: { access: boundedAccess, system: boundedSystem, devices: boundedDevices, volumes: boundedVolumes } satisfies SystemDeviceSnapshot,
     };
   }
 
+  /**
+   * Typed observation helper. Deliberately not advertised in the neutral descriptor
+   * until ComputerObservationRequest has a first-class setting-scope route.
+   */
   async observeSystemSetting(scope: SystemSettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SystemSettingObservation>> {
     if (!validIdentity(scope) || !SAFE_SETTING.test(setting)) {
       return { state: 'unsupported-platform', evidence: 'invalid-observation-request' };
     }
     const result = await this.backend.observeSystemSetting(scope, setting);
-    if (result.state !== 'ok') return result;
+    if (result.state !== 'ok') {
+      return { state: result.state, evidence: safeMachineCode(result.evidence, 'backend-access-unavailable') };
+    }
     const value = result.value;
-    if (!sameIdentity(value.scope, scope) || value.setting !== setting || !validRevision(value.revision)) {
+    const scalar = safeScalar(value.value);
+    if (!sameIdentity(value.scope, scope) || value.setting !== setting || !validRevision(value.revision) ||
+        !SYSTEM_STATES.has(value.state) || (value.value !== undefined && scalar === undefined)) {
       return { state: 'unsupported-platform', evidence: 'invalid-backend-observation' };
     }
-    return { state: 'ok', value: { ...value, scope: { ...value.scope } } };
+    return {
+      state: 'ok',
+      value: { scope: { ...scope }, setting, state: value.state, value: scalar, revision: value.revision },
+    };
   }
 
+  /**
+   * Typed security observation helper with coarse allowlisted values only.
+   * It is not advertised as neutral-routable for the same reason as system settings.
+   */
   async observeSecuritySetting(scope: SecuritySettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SecuritySettingObservation>> {
     if (!validIdentity(scope) || !SAFE_SETTING.test(setting)) {
       return { state: 'unsupported-platform', evidence: 'invalid-observation-request' };
     }
     const result = await this.backend.observeSecuritySetting(scope, setting);
-    if (result.state !== 'ok') return result;
+    if (result.state !== 'ok') {
+      return { state: result.state, evidence: safeMachineCode(result.evidence, 'backend-access-unavailable') };
+    }
     const value = result.value;
-    if (!sameIdentity(value.scope, scope) || value.setting !== setting || !validRevision(value.revision)) {
+    if (!sameIdentity(value.scope, scope) || value.setting !== setting || !validRevision(value.revision) ||
+        !SYSTEM_STATES.has(value.state) || (value.value !== undefined && !SECURITY_VALUES.has(value.value))) {
       return { state: 'unsupported-platform', evidence: 'invalid-backend-observation' };
     }
-    return { state: 'ok', value: { ...value, scope: { ...value.scope } } };
+    return {
+      state: 'ok',
+      value: { scope: { ...scope }, setting, state: value.state, value: value.value, revision: value.revision },
+    };
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
@@ -416,7 +427,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     if (HIGH_RISK_UNSUPPORTED_CAPABILITIES.has(request.capability)) {
       return actionResult('unsupported', 'not-dispatched', 'unverified', ['high-risk-operation-unsupported']);
     }
-    if (!this.mutationsEnabled) {
+    if (!this.mutationsEnabled || !this.approvalVerifier || !this.actionLedger) {
       return actionResult('unsupported', 'not-dispatched', 'unverified', ['mutation-disabled']);
     }
     if (!isMutationPayload(request.payload)) {
@@ -427,46 +438,64 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     if (request.capability !== operationCapability(payload.operation) || request.effect !== effect || request.idempotency === 'read-only') {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['risk-classification-mismatch']);
     }
-    if (
-      payload.approval.effect !== effect ||
-      !sameIdentity(payload.approval.target, payload.target)
-    ) {
+    if (payload.approval.effect !== effect || !sameIdentity(payload.approval.target, payload.target)) {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['approval-binding-mismatch']);
     }
-
-    const previous = this.actionDispatches.get(request.actionId);
-    if (previous) {
-      return actionResult('rejected', previous.dispatch === 'not-dispatched' ? 'not-dispatched' : 'unknown', 'unverified', ['action-id-already-used']);
+    let trustedApproval = false;
+    try {
+      trustedApproval = await this.approvalVerifier.verify(
+        { actionId: request.actionId, capability: request.capability, effect: request.effect },
+        payload,
+      );
+    } catch {
+      return actionResult('rejected', 'not-dispatched', 'unverified', ['approval-verification-unavailable']);
+    }
+    if (!trustedApproval) {
+      return actionResult('rejected', 'not-dispatched', 'unverified', ['approval-not-trusted']);
     }
 
-    const access = await this.backend.privilegeState();
+    const access = sanitizePrivilege(await this.backend.privilegeState());
     if (access.state !== 'available') {
-      return actionResult('unsupported', 'not-dispatched', 'unverified', [access.reason && SAFE_MACHINE_CODE.test(access.reason) ? access.reason : access.state]);
+      return actionResult('unsupported', 'not-dispatched', 'unverified', [
+        access.reason ?? safeMachineCode(access.state, 'backend-access-unavailable'),
+      ]);
     }
-
     const baselineResult = await this.backend.freshMutationBaseline(payload.target, payload.setting);
     if (baselineResult.state !== 'ok') {
-      return actionResult('unsupported', 'not-dispatched', 'unverified', [baselineResult.evidence]);
+      return actionResult('unsupported', 'not-dispatched', 'unverified', [
+        safeMachineCode(baselineResult.evidence, 'backend-access-unavailable'),
+      ]);
     }
     const baseline = baselineResult.value;
-    if (
-      !validIdentity(baseline.target) || !sameIdentity(baseline.target, payload.target) ||
-      !validRevision(baseline.configurationRevision) ||
-      payload.approval.configurationRevision !== baseline.configurationRevision
-    ) {
+    if (!validIdentity(baseline.target) || !sameIdentity(baseline.target, payload.target) ||
+        !validRevision(baseline.configurationRevision) ||
+        payload.approval.configurationRevision !== baseline.configurationRevision) {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['stale-identity-or-baseline']);
     }
 
-    // Reserve the action ID before dispatch. Any exception after this point is uncertain and never retryable.
+    let claim: Awaited<ReturnType<SystemDeviceActionLedger['claim']>>;
+    try {
+      claim = await this.actionLedger.claim(request.actionId);
+    } catch {
+      claim = 'unavailable';
+    }
+    if (claim === 'already-used') {
+      return actionResult('rejected', 'unknown', 'unverified', ['action-id-already-used']);
+    }
+    if (claim !== 'claimed') {
+      return actionResult('rejected', 'not-dispatched', 'unverified', ['action-ledger-unavailable']);
+    }
+
     const uncertain = actionResult('unknown', 'unknown', 'unverified', ['dispatch-outcome-uncertain']);
-    this.actionDispatches.set(request.actionId, uncertain);
     let dispatch: SystemDeviceMutationDispatch;
     try {
       dispatch = await this.backend.dispatchMutation(payload, baseline);
     } catch {
+      await this.recordBestEffort(request.actionId, uncertain);
       return uncertain;
     }
     if (dispatch.state !== 'dispatched' || !boundedText(dispatch.verificationToken, MAX_ID_BYTES)) {
+      await this.recordBestEffort(request.actionId, uncertain);
       return uncertain;
     }
 
@@ -475,23 +504,28 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
       verification = await this.backend.verifyMutation(payload, baseline, dispatch);
     } catch {
       const result = actionResult('unknown', 'dispatched-once', 'unverified', ['verification-failed']);
-      this.actionDispatches.set(request.actionId, result);
+      await this.recordBestEffort(request.actionId, result);
       return result;
     }
     const evidence = validEvidence(verification.evidence) ? verification.evidence : ['evidence-redacted'];
     const result = verification.state === 'verified'
       ? actionResult('completed', 'dispatched-once', 'verified', evidence)
       : actionResult(
-        verification.state === 'rejected' || verification.state === 'mismatch' ? 'rejected' : 'unknown',
-        'dispatched-once',
-        verification.state,
-        evidence,
-      );
-    this.actionDispatches.set(request.actionId, result);
+          verification.state === 'rejected' || verification.state === 'mismatch' ? 'rejected' : 'unknown',
+          'dispatched-once', verification.state, evidence,
+        );
+    await this.recordBestEffort(request.actionId, result);
     return result;
   }
 
-  mayAutoRetry(request: Pick<ComputerActionRequest, 'effect' | 'idempotency'>, result: Pick<ComputerActionResult, 'dispatch'>): boolean {
+  private async recordBestEffort(actionId: string, result: ComputerActionResult): Promise<void> {
+    try { await this.actionLedger?.record(actionId, result); } catch { /* claim remains the safety boundary */ }
+  }
+
+  mayAutoRetry(
+    request: Pick<ComputerActionRequest, 'effect' | 'idempotency'>,
+    result: Pick<ComputerActionResult, 'dispatch'>,
+  ): boolean {
     return computerActionMayAutoRetry(request, result);
   }
 }
