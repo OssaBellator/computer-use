@@ -60,138 +60,198 @@ function textBytes(value:string):number { return new TextEncoder().encode(value)
 function boundedString(value:unknown,maxBytes=MAX_NATIVE_STRING_BYTES,allowEmpty=false):value is string {
   return typeof value === 'string' && (allowEmpty || value.length > 0) && textBytes(value) <= maxBytes && !/[\0\r\n]/.test(value);
 }
-function asObject(value:unknown):Readonly<Record<string,unknown>> {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) {
-    throw new Error('native desktop bridge returned non-plain object');
-  }
-  return value as Readonly<Record<string,unknown>>;
+function asObject(value:unknown):object {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('native desktop bridge returned non-object');
+  return value;
 }
-function ownKeysOnly(object:Readonly<Record<string,unknown>>,allowed:readonly string[]):void {
-  if (Object.keys(object).some((key)=>!allowed.includes(key))) throw new Error('native desktop bridge returned unexpected fields');
+function field(object:object,key:string):{present:boolean;value:unknown} {
+  let property:PropertyDescriptor|undefined;
+  try { property = Object.getOwnPropertyDescriptor(object,key); }
+  catch { throw new Error('native desktop bridge result field malformed'); }
+  if (!property) return {present:false,value:undefined};
+  if (!('value' in property) || property.get !== undefined || property.set !== undefined) throw new Error('native desktop bridge result accessor rejected');
+  return {present:true,value:property.value};
+}
+function requiredField(object:object,key:string):unknown {
+  const result = field(object,key);
+  if (!result.present) throw new Error('native desktop bridge result field missing');
+  return result.value;
+}
+function capturedArray(value:unknown,maxItems:number):readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error('native desktop bridge array malformed');
+  let lengthProperty:PropertyDescriptor|undefined;
+  try { lengthProperty = Object.getOwnPropertyDescriptor(value,'length'); }
+  catch { throw new Error('native desktop bridge array malformed'); }
+  if (!lengthProperty || !('value' in lengthProperty) || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0 || lengthProperty.value > maxItems) {
+    throw new Error('native desktop bridge array malformed');
+  }
+  const result:unknown[] = [];
+  for (let index=0;index<(lengthProperty.value as number);index+=1) {
+    let property:PropertyDescriptor|undefined;
+    try { property = Object.getOwnPropertyDescriptor(value,String(index)); }
+    catch { throw new Error('native desktop bridge array malformed'); }
+    if (!property || !('value' in property) || property.get !== undefined || property.set !== undefined) throw new Error('native desktop bridge array malformed');
+    result.push(property.value);
+  }
+  return Object.freeze(result);
 }
 function finiteRect(value:unknown):{x:number;y:number;width:number;height:number}|undefined {
   if (value === undefined) return undefined;
-  const object = asObject(value); ownKeysOnly(object,['x','y','width','height']);
-  const values = [object.x,object.y,object.width,object.height];
+  const object = asObject(value);
+  const x = requiredField(object,'x'); const y = requiredField(object,'y'); const width = requiredField(object,'width'); const height = requiredField(object,'height');
+  const values = [x,y,width,height];
   if (values.some((entry)=>typeof entry !== 'number' || !Number.isFinite(entry) || Math.abs(entry) > 1_000_000) ||
-      (object.width as number) < 0 || (object.height as number) < 0) throw new Error('native desktop rectangle malformed');
-  return Object.freeze({x:object.x as number,y:object.y as number,width:object.width as number,height:object.height as number});
+      (width as number) < 0 || (height as number) < 0) throw new Error('native desktop rectangle malformed');
+  return Object.freeze({x:x as number,y:y as number,width:width as number,height:height as number});
 }
 function windowValue(value:unknown):PlatformDesktopWindow {
   const object = asObject(value);
-  ownKeysOnly(object,['nativeId','instanceToken','applicationId','processId','title','bounds','foreground','focused']);
-  if (!boundedString(object.nativeId,256) || !boundedString(object.instanceToken,512) ||
-      typeof object.foreground !== 'boolean' || typeof object.focused !== 'boolean') throw new Error('native desktop window malformed');
-  if (object.applicationId !== undefined && !boundedString(object.applicationId,256)) throw new Error('native application identity malformed');
-  if (object.processId !== undefined && !boundedString(object.processId,256)) throw new Error('native process identity malformed');
-  if (object.title !== undefined && !boundedString(object.title,4_096,true)) throw new Error('native window title malformed');
+  const nativeId = requiredField(object,'nativeId');
+  const instanceToken = requiredField(object,'instanceToken');
+  const foreground = requiredField(object,'foreground');
+  const focused = requiredField(object,'focused');
+  const applicationId = field(object,'applicationId');
+  const processId = field(object,'processId');
+  const title = field(object,'title');
+  const bounds = field(object,'bounds');
+  if (!boundedString(nativeId,256) || !boundedString(instanceToken,512) || typeof foreground !== 'boolean' || typeof focused !== 'boolean') {
+    throw new Error('native desktop window malformed');
+  }
+  if (applicationId.present && applicationId.value !== undefined && !boundedString(applicationId.value,256)) throw new Error('native application identity malformed');
+  if (processId.present && processId.value !== undefined && !boundedString(processId.value,256)) throw new Error('native process identity malformed');
+  if (title.present && title.value !== undefined && !boundedString(title.value,4_096,true)) throw new Error('native window title malformed');
   return Object.freeze({
-    nativeId:object.nativeId,instanceToken:object.instanceToken,
-    ...(object.applicationId !== undefined ? {applicationId:object.applicationId as string} : {}),
-    ...(object.processId !== undefined ? {processId:object.processId as string} : {}),
-    ...(object.title !== undefined ? {title:object.title as string} : {}),
-    ...(object.bounds !== undefined ? {bounds:finiteRect(object.bounds)!} : {}),
-    foreground:object.foreground,focused:object.focused,
+    nativeId,instanceToken,
+    ...(applicationId.present && applicationId.value !== undefined ? {applicationId:applicationId.value as string} : {}),
+    ...(processId.present && processId.value !== undefined ? {processId:processId.value as string} : {}),
+    ...(title.present && title.value !== undefined ? {title:title.value as string} : {}),
+    ...(bounds.present && bounds.value !== undefined ? {bounds:finiteRect(bounds.value)!} : {}),
+    foreground,focused,
   });
 }
 function windowsResult(value:unknown,limits:Required<ComputerObservationLimits>):{windows:readonly PlatformDesktopWindow[];truncated:boolean;focusedControlNativeId?:string} {
-  const object = asObject(value); ownKeysOnly(object,['windows','truncated','focusedControlNativeId']);
-  if (!Array.isArray(object.windows) || object.windows.length > limits.maxItems || typeof object.truncated !== 'boolean') {
-    throw new Error('native desktop window response malformed');
-  }
-  if (object.focusedControlNativeId !== undefined && !boundedString(object.focusedControlNativeId,256)) {
+  const object = asObject(value);
+  const windowsRaw = requiredField(object,'windows');
+  const truncated = requiredField(object,'truncated');
+  const focusedControlNativeId = field(object,'focusedControlNativeId');
+  if (typeof truncated !== 'boolean') throw new Error('native desktop window response malformed');
+  const rawWindows = capturedArray(windowsRaw,limits.maxItems);
+  if (focusedControlNativeId.present && focusedControlNativeId.value !== undefined && !boundedString(focusedControlNativeId.value,256)) {
     throw new Error('native focused control identity malformed');
   }
-  const windows = Object.freeze(object.windows.map(windowValue));
-  return Object.freeze({windows,truncated:object.truncated,...(object.focusedControlNativeId !== undefined ? {focusedControlNativeId:object.focusedControlNativeId as string} : {})});
+  const windows:PlatformDesktopWindow[] = [];
+  for (const rawWindow of rawWindows) windows.push(windowValue(rawWindow));
+  return Object.freeze({windows:Object.freeze(windows),truncated,...(focusedControlNativeId.present && focusedControlNativeId.value !== undefined ? {focusedControlNativeId:focusedControlNativeId.value as string} : {})});
 }
 function controlTree(value:unknown,limits:Required<ComputerObservationLimits>):PlatformDesktopControl {
   let count = 0;
   let text = 0;
+  const seen = new WeakSet<object>();
   const visit = (candidate:unknown,depth:number):PlatformDesktopControl => {
     if (depth > limits.maxDepth || count >= limits.maxItems) throw new Error('native accessibility response exceeded acquisition limits');
     const object = asObject(candidate);
-    ownKeysOnly(object,['nativeId','instanceToken','role','name','value','enabled','focused','bounds','children']);
-    if (!boundedString(object.nativeId,256) || !boundedString(object.instanceToken,512)) throw new Error('native accessibility identity malformed');
-    for (const key of ['role','name','value'] as const) {
-      const field = object[key];
-      if (field !== undefined && !boundedString(field,key === 'role' ? 256 : 4_096,true)) throw new Error('native accessibility text malformed');
-      if (typeof field === 'string') text += textBytes(field);
+    if (seen.has(object)) throw new Error('native accessibility cycle malformed');
+    seen.add(object);
+    const nativeId = requiredField(object,'nativeId');
+    const instanceToken = requiredField(object,'instanceToken');
+    if (!boundedString(nativeId,256) || !boundedString(instanceToken,512)) throw new Error('native accessibility identity malformed');
+    const role = field(object,'role'); const name = field(object,'name'); const controlValue = field(object,'value');
+    for (const [entry,max] of [[role,256],[name,4_096],[controlValue,4_096]] as const) {
+      if (entry.present && entry.value !== undefined && !boundedString(entry.value,max,true)) throw new Error('native accessibility text malformed');
+      if (typeof entry.value === 'string') text += textBytes(entry.value);
     }
-    text += textBytes(object.nativeId) + textBytes(object.instanceToken);
+    text += textBytes(nativeId) + textBytes(instanceToken);
     if (text > limits.maxTextBytes) throw new Error('native accessibility response exceeded text acquisition limit');
-    if (object.enabled !== undefined && typeof object.enabled !== 'boolean') throw new Error('native accessibility enabled malformed');
-    if (object.focused !== undefined && typeof object.focused !== 'boolean') throw new Error('native accessibility focused malformed');
+    const enabled = field(object,'enabled'); const focused = field(object,'focused'); const bounds = field(object,'bounds'); const childrenField = field(object,'children');
+    if (enabled.present && enabled.value !== undefined && typeof enabled.value !== 'boolean') throw new Error('native accessibility enabled malformed');
+    if (focused.present && focused.value !== undefined && typeof focused.value !== 'boolean') throw new Error('native accessibility focused malformed');
     count += 1;
     let children:readonly PlatformDesktopControl[]|undefined;
-    if (object.children !== undefined) {
-      if (!Array.isArray(object.children)) throw new Error('native accessibility children malformed');
-      children = Object.freeze(object.children.map((child)=>visit(child,depth + 1)));
+    if (childrenField.present && childrenField.value !== undefined) {
+      const rawChildren = capturedArray(childrenField.value,limits.maxItems - count);
+      if (depth >= limits.maxDepth && rawChildren.length > 0) throw new Error('native accessibility response exceeded acquisition limits');
+      const copied:PlatformDesktopControl[] = [];
+      for (const child of rawChildren) copied.push(visit(child,depth + 1));
+      children = Object.freeze(copied);
     }
     return Object.freeze({
-      nativeId:object.nativeId,instanceToken:object.instanceToken,
-      ...(object.role !== undefined ? {role:object.role as string} : {}),
-      ...(object.name !== undefined ? {name:object.name as string} : {}),
-      ...(object.value !== undefined ? {value:object.value as string} : {}),
-      ...(object.enabled !== undefined ? {enabled:object.enabled as boolean} : {}),
-      ...(object.focused !== undefined ? {focused:object.focused as boolean} : {}),
-      ...(object.bounds !== undefined ? {bounds:finiteRect(object.bounds)!} : {}),
+      nativeId,instanceToken,
+      ...(role.present && role.value !== undefined ? {role:role.value as string} : {}),
+      ...(name.present && name.value !== undefined ? {name:name.value as string} : {}),
+      ...(controlValue.present && controlValue.value !== undefined ? {value:controlValue.value as string} : {}),
+      ...(enabled.present && enabled.value !== undefined ? {enabled:enabled.value as boolean} : {}),
+      ...(focused.present && focused.value !== undefined ? {focused:focused.value as boolean} : {}),
+      ...(bounds.present && bounds.value !== undefined ? {bounds:finiteRect(bounds.value)!} : {}),
       ...(children !== undefined ? {children} : {}),
     });
   };
   return visit(value,0);
 }
 function accessibilityResult(value:unknown,limits:Required<ComputerObservationLimits>):PlatformDesktopAccessibilityObservation {
-  const object = asObject(value); ownKeysOnly(object,['status','windowInstanceToken','root','reason']);
-  if (object.status !== 'available' && object.status !== 'unavailable' && object.status !== 'unsupported') throw new Error('native accessibility status malformed');
-  if (!boundedString(object.windowInstanceToken,512)) throw new Error('native accessibility window token malformed');
-  if (object.reason !== undefined && (!boundedString(object.reason,64) || !REASON_CODE.test(object.reason))) throw new Error('native accessibility reason malformed');
-  if (object.status === 'available') {
-    if (object.root === undefined || object.reason !== undefined) throw new Error('native accessibility availability malformed');
-    return Object.freeze({status:'available',windowInstanceToken:object.windowInstanceToken,root:controlTree(object.root,limits)});
+  const object = asObject(value);
+  const status = requiredField(object,'status');
+  const windowInstanceToken = requiredField(object,'windowInstanceToken');
+  const root = field(object,'root'); const reason = field(object,'reason');
+  if (status !== 'available' && status !== 'unavailable' && status !== 'unsupported') throw new Error('native accessibility status malformed');
+  if (!boundedString(windowInstanceToken,512)) throw new Error('native accessibility window token malformed');
+  if (reason.present && reason.value !== undefined && (!boundedString(reason.value,64) || !REASON_CODE.test(reason.value))) throw new Error('native accessibility reason malformed');
+  if (status === 'available') {
+    if (!root.present || root.value === undefined || (reason.present && reason.value !== undefined)) throw new Error('native accessibility availability malformed');
+    return Object.freeze({status:'available',windowInstanceToken,root:controlTree(root.value,limits)});
   }
-  if (object.root !== undefined) throw new Error('native accessibility unavailable response malformed');
-  return Object.freeze({status:object.status,windowInstanceToken:object.windowInstanceToken,...(object.reason !== undefined ? {reason:object.reason as string} : {})});
+  if (root.present && root.value !== undefined) throw new Error('native accessibility unavailable response malformed');
+  return Object.freeze({status,windowInstanceToken,...(reason.present && reason.value !== undefined ? {reason:reason.value as string} : {})});
 }
 function visualResult(value:unknown,limits:DesktopVisualAcquisitionLimits):PlatformDesktopVisualObservation {
-  const object = asObject(value); ownKeysOnly(object,['status','windowInstanceToken','width','height','artifact','reason']);
-  if (object.status !== 'available' && object.status !== 'unavailable' && object.status !== 'unsupported') throw new Error('native visual status malformed');
-  if (!boundedString(object.windowInstanceToken,512)) throw new Error('native visual window token malformed');
-  if (object.reason !== undefined && (!boundedString(object.reason,64) || !REASON_CODE.test(object.reason))) throw new Error('native visual reason malformed');
-  if (object.status !== 'available') {
-    if (object.width !== undefined || object.height !== undefined || object.artifact !== undefined) throw new Error('native visual unavailable response malformed');
-    return Object.freeze({status:object.status,windowInstanceToken:object.windowInstanceToken,...(object.reason !== undefined ? {reason:object.reason as string} : {})});
+  const object = asObject(value);
+  const status = requiredField(object,'status'); const windowInstanceToken = requiredField(object,'windowInstanceToken');
+  const width = field(object,'width'); const height = field(object,'height'); const artifactField = field(object,'artifact'); const reason = field(object,'reason');
+  if (status !== 'available' && status !== 'unavailable' && status !== 'unsupported') throw new Error('native visual status malformed');
+  if (!boundedString(windowInstanceToken,512)) throw new Error('native visual window token malformed');
+  if (reason.present && reason.value !== undefined && (!boundedString(reason.value,64) || !REASON_CODE.test(reason.value))) throw new Error('native visual reason malformed');
+  if (status !== 'available') {
+    if ((width.present && width.value !== undefined) || (height.present && height.value !== undefined) || (artifactField.present && artifactField.value !== undefined)) throw new Error('native visual unavailable response malformed');
+    return Object.freeze({status,windowInstanceToken,...(reason.present && reason.value !== undefined ? {reason:reason.value as string} : {})});
   }
-  if (object.reason !== undefined || !Number.isSafeInteger(object.width) || !Number.isSafeInteger(object.height) ||
-      (object.width as number) <= 0 || (object.height as number) <= 0 || (object.width as number) * (object.height as number) > limits.maxPixels) {
+  if ((reason.present && reason.value !== undefined) || !width.present || !height.present || !Number.isSafeInteger(width.value) || !Number.isSafeInteger(height.value) ||
+      (width.value as number) <= 0 || (height.value as number) <= 0 || (width.value as number) * (height.value as number) > limits.maxPixels) {
     throw new Error('native visual dimensions exceeded acquisition limits');
   }
-  const artifact = asObject(object.artifact); ownKeysOnly(artifact,['token','mediaType','byteLength']);
-  if (!boundedString(artifact.token,256) || (artifact.mediaType !== undefined && !boundedString(artifact.mediaType,128)) ||
-      !Number.isSafeInteger(artifact.byteLength) || (artifact.byteLength as number) < 0 || (artifact.byteLength as number) > limits.maxBytes) {
+  if (!artifactField.present || artifactField.value === undefined) throw new Error('native visual artifact exceeded acquisition limits');
+  const artifact = asObject(artifactField.value);
+  const token = requiredField(artifact,'token'); const mediaType = field(artifact,'mediaType'); const byteLength = requiredField(artifact,'byteLength');
+  if (!boundedString(token,256) || (mediaType.present && mediaType.value !== undefined && !boundedString(mediaType.value,128)) ||
+      !Number.isSafeInteger(byteLength) || (byteLength as number) < 0 || (byteLength as number) > limits.maxBytes) {
     throw new Error('native visual artifact exceeded acquisition limits');
   }
-  return Object.freeze({status:'available',windowInstanceToken:object.windowInstanceToken,width:object.width as number,height:object.height as number,artifact:Object.freeze({token:artifact.token,...(artifact.mediaType !== undefined ? {mediaType:artifact.mediaType as string} : {}),byteLength:artifact.byteLength as number})});
+  return Object.freeze({status:'available',windowInstanceToken,width:width.value as number,height:height.value as number,artifact:Object.freeze({token,...(mediaType.present && mediaType.value !== undefined ? {mediaType:mediaType.value as string} : {}),byteLength:byteLength as number})});
 }
 function dispatchResult(value:unknown):DesktopBackendActionResult {
-  const object = asObject(value); ownKeysOnly(object,['status','dispatched','verified','evidence']);
-  if (object.status !== 'completed' && object.status !== 'rejected' && object.status !== 'unsupported' && object.status !== 'failed') throw new Error('native dispatch status malformed');
-  if (typeof object.dispatched !== 'boolean' || (object.verified !== undefined && typeof object.verified !== 'boolean')) throw new Error('native dispatch result malformed');
+  const object = asObject(value);
+  const status = requiredField(object,'status'); const dispatched = requiredField(object,'dispatched'); const verified = field(object,'verified'); const evidenceField = field(object,'evidence');
+  if (status !== 'completed' && status !== 'rejected' && status !== 'unsupported' && status !== 'failed') throw new Error('native dispatch status malformed');
+  if (typeof dispatched !== 'boolean' || (verified.present && verified.value !== undefined && typeof verified.value !== 'boolean')) throw new Error('native dispatch result malformed');
   let evidence:readonly string[]|undefined;
-  if (object.evidence !== undefined) {
-    if (!Array.isArray(object.evidence) || object.evidence.length > MAX_EVIDENCE_ITEMS || object.evidence.some((entry)=>typeof entry !== 'string' || !REASON_CODE.test(entry))) {
-      throw new Error('native dispatch evidence malformed');
+  if (evidenceField.present && evidenceField.value !== undefined) {
+    const rawEvidence = capturedArray(evidenceField.value,MAX_EVIDENCE_ITEMS);
+    const copied:string[] = [];
+    for (const entry of rawEvidence) {
+      if (typeof entry !== 'string' || !REASON_CODE.test(entry)) throw new Error('native dispatch evidence malformed');
+      copied.push(entry);
     }
-    evidence = Object.freeze([...object.evidence] as string[]);
+    evidence = Object.freeze(copied);
   }
-  return Object.freeze({status:object.status,dispatched:object.dispatched,...(object.verified !== undefined ? {verified:object.verified as boolean} : {}),...(evidence ? {evidence} : {})});
+  return Object.freeze({status,dispatched,...(verified.present && verified.value !== undefined ? {verified:verified.value as boolean} : {}),...(evidence ? {evidence} : {})});
 }
 
 /**
  * Rigorously testable production bridge boundary. The native helper owns the
  * platform call and MUST enforce instance-token freshness inside the same native
- * critical section as input dispatch. Helper exceptions after possible emission
- * deliberately propagate; the neutral adapter will classify dispatch unknown.
+ * critical section as input dispatch. Executor-owned results are captured only
+ * through fixed authority-bearing fields and bounded array indices; unknown
+ * fields are ignored rather than whole-object enumerated. Helper exceptions after
+ * possible emission deliberately propagate so the neutral adapter reports
+ * dispatch:unknown.
  */
 export class NativeJsonDesktopPlatformBridge implements DesktopPlatformBridge {
   readonly supportsRelativePointer:boolean;
