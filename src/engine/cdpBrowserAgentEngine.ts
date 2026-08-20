@@ -1,5 +1,10 @@
 import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } from '../agent/taskRuntime.js';
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
+import {
+  snapshotInteractiveDomBounded,
+  type BoundedSemanticSnapshotLimits,
+  type BoundedSemanticSnapshotResult,
+} from '../browser/boundedSemanticSnapshot.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import { DocumentFormattingObserver } from '../browser/documentFormatting.js';
@@ -107,6 +112,12 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
       result[FRAME_DOCUMENT_TOKENS_INCOMPLETE] = '1';
     }
     return result;
+  }
+
+  semanticSnapshot(limits: BoundedSemanticSnapshotLimits): Promise<BoundedSemanticSnapshotResult | undefined> {
+    return this.snapshotPage
+      ? snapshotInteractiveDomBounded(this.snapshotPage, limits)
+      : Promise.resolve(undefined);
   }
 
   documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
@@ -264,7 +275,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
       return Promise.resolve({
         status: 'protocol-error',
         accepted: accept,
-        errorText: 'CDP session does not expose event subscriptions for dialog monitoring',
+        errorText: 'CDP session does not expose event subscriptions for dialog lifecycle monitoring',
       });
     }
     return this.dialogs.handle(accept, promptText);
