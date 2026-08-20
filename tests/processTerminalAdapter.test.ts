@@ -29,7 +29,7 @@ class FakeProcessSource implements ProcessSnapshotSource {
     [11, { pid: 11, startTicks: 110, name: 'beta', executable: 'beta-bin', state: 'sleeping', rssBytes: 20 }],
     [12, { pid: 12, startTicks: 120, name: 'gamma', executable: 'gamma-bin', state: 'waiting', rssBytes: 30 }],
   ]);
-  async listPids(): Promise<readonly number[]> { return this.pids; }
+  async listPids(): Promise<{ pids: readonly number[]; truncated: boolean }> { return { pids: this.pids, truncated: false }; }
   async inspect(pid: number): Promise<ProcessRecord | undefined> { return this.records.get(pid); }
 }
 
