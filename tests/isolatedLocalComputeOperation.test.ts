@@ -26,10 +26,10 @@ test('preferred isolated adapter construction accepts and snapshots file-backed 
   assert.equal(adapter.descriptor.id, 'factory-test');
 });
 
-test('isolated operation type helper preserves the registered callback', async () => {
+test('isolated operation type helper preserves encoded-output callbacks', async () => {
   const operation = defineIsolatedLocalComputeOperation((input: LocalComputeJson, context) => {
     context.diagnostic('test.operation-called');
-    return input;
+    return JSON.stringify(input);
   });
   const diagnostics: string[] = [];
   const result = await operation({ ok: true }, {
@@ -44,6 +44,6 @@ test('isolated operation type helper preserves the registered callback', async (
     },
     diagnostic: (code) => diagnostics.push(code),
   });
-  assert.deepEqual(result, { ok: true });
+  assert.equal(result, '{"ok":true}');
   assert.deepEqual(diagnostics, ['test.operation-called']);
 });
