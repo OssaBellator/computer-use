@@ -47,8 +47,13 @@ class ObservationRuntime implements BrowserComputerRuntime {
   semanticCalls = 0;
   visualCalls = 0;
   scrollCalls = 0;
+  browserStateCalls = 0;
   semanticEntered: (() => void) | undefined;
   semanticGate: Promise<void> | undefined;
+  identityGateAfterCall: number | undefined;
+  identityEntered: (() => void) | undefined;
+  identityGate: Promise<void> | undefined;
+  lastSemanticResult: { nodes: InteractionNode[]; complete: boolean; truncated: boolean } | undefined;
 
   browserTargets(): BrowserTargetState[] { return this.targets.map((target) => ({ ...target })); }
   activePageTargetId(): string { return 'page-a'; }
@@ -62,6 +67,11 @@ class ObservationRuntime implements BrowserComputerRuntime {
     };
   }
   async browserState() {
+    this.browserStateCalls += 1;
+    if (this.identityGateAfterCall !== undefined && this.browserStateCalls >= this.identityGateAfterCall) {
+      this.identityEntered?.();
+      if (this.identityGate) await this.identityGate;
+    }
     return {
       url: 'https://example.test/',
       origin: 'https://example.test',
@@ -76,11 +86,13 @@ class ObservationRuntime implements BrowserComputerRuntime {
     this.semanticOptions = { ...limits };
     this.semanticEntered?.();
     if (this.semanticGate) await this.semanticGate;
-    return {
+    const result = {
       nodes: this.nodes.slice(0, limits.maxItems).map((item) => ({ ...item, backendNodeId: undefined })),
       complete: this.nodes.length <= limits.maxItems,
       truncated: this.nodes.length > limits.maxItems,
     };
+    this.lastSemanticResult = result;
+    return result;
   }
   async visualSnapshot(): Promise<any> {
     this.visualCalls += 1;
@@ -316,4 +328,46 @@ test('browser semantic capability rebuilding touches only the bounded indexed pr
   assert.equal(indexedDescriptorReads, 32);
   assert.equal(iteratorReads, 0);
   assert.equal(ownKeysCalls, 0);
+});
+
+test('browser semantic observation snapshots runtime-owned results before document revalidation awaits', async () => {
+  const runtime = new ObservationRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  runtime.identityGateAfterCall = 2;
+  runtime.identityGate = gate;
+  runtime.identityEntered = entered;
+
+  const pending = adapter.observe({
+    adapterId: adapter.descriptor.id,
+    channel: 'semantic-ui',
+    surface: adapter.currentSurface(),
+    limits: { maxItems: 1, maxTextBytes: 64, maxDepth: 1 },
+  });
+  await enteredPromise;
+
+  const live = runtime.lastSemanticResult!;
+  live.complete = false;
+  live.truncated = true;
+  live.nodes[0].id = 'mutated-node';
+  live.nodes[0].structuralId = 'mutated-node';
+  live.nodes[0].frameId = 'mutated-frame';
+  live.nodes[0].name = 'mutated-name';
+  live.nodes[0].capabilities = ['dismiss'];
+
+  release();
+  const observed = await pending;
+  const first = (observed.data as Array<{
+    entity: ComputerEntityRef;
+    name?: string;
+    capabilities: readonly string[];
+  }>)[0];
+  assert.equal(observed.complete, true);
+  assert.equal(observed.truncated, false);
+  assert.equal(first.name, 'abcdefghij');
+  assert.deepEqual(first.capabilities, ['activate']);
+  assert.equal(first.entity.entityId, 'doc:1:frame:main:node:main%3Abutton%3Anth-of-type(1)');
 });
