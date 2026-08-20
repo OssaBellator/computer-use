@@ -10,7 +10,7 @@ class FakeBackend implements RemoteSessionBackend{
  constructor(protocol:'ssh'|'rdp'|'vnc'){this.protocol=protocol;}
  async connect(e:RemoteEndpointIdentity,c?:unknown):Promise<RemoteSessionConnection>{this.seenEndpoint=e;this.seenCredential=c;return{sessionId:this.invalidNextIdentity?'':this.nextSession,remoteHostId:this.nextHost,capabilities:['remote.session.observe','remote.metadata.observe',...(this.protocol==='ssh'?['remote.ssh.execute']:['remote.display.observe','remote.visual.input'])]};}
  async disconnect(c:RemoteSessionConnection){if(this.disconnectFailures.has(c.sessionId))throw new Error('synthetic disconnect failure');this.disconnectCount++;this.disconnectedSessions.push(c.sessionId);if(this.disconnectAfterDropFailures.has(c.sessionId))throw new Error('synthetic disconnect failure after drop')}
- async observeMetadata(){return this.metadata} async captureDisplay(){return this.displayFrame}
+ async observeMetadata(){return this.metadata} async captureDisplay(_c:RemoteSessionConnection,_limits:RemoteDisplayCaptureLimits){return this.displayFrame}
  async executeRemoteCommand(_c:RemoteSessionConnection,i:RemoteCommandInvocation){this.commandCalls++;if(this.commandGate)await this.commandGate.promise;this.lastInvocation=i;if(this.commandError)throw this.commandError;return this.commandOutcome}
  async sendVisualInput(_c:RemoteSessionConnection,i:RemoteVisualInput){this.inputCalls++;if(this.inputGate)await this.inputGate.promise;this.lastInput=i;return this.inputOutcome}
 }
