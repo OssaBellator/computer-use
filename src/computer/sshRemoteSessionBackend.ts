@@ -40,10 +40,18 @@ const MAX_COMMAND_BYTES = 4096;
 const MAX_COMMAND_ARGS = 128;
 const MAX_COMMAND_ARG_BYTES = 4096;
 const MAX_COMMAND_TOTAL_BYTES = 65_536;
+const MAX_PROCESS_TIMEOUT_MS = 300_000;
+const MAX_CLEANUP_ACK_TIMEOUT_MS = 5_000;
+const DEFAULT_CLEANUP_ACK_TIMEOUT_MS = 1_000;
 
 function bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
 function finiteString(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && bytes(value) <= max && !/[\0\r\n]/.test(value);
+}
+function finiteTimeout(value: number | undefined, fallback: number, max: number): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > max) throw new Error('invalid ssh process timeout');
+  return resolved;
 }
 function ownData(record: object, key: string): unknown {
   const descriptor = Object.getOwnPropertyDescriptor(record, key);
@@ -248,8 +256,11 @@ export interface OpenSshProcessProviderOptions {
   readonly executable?: string;
   readonly connectTimeoutMs?: number;
   readonly commandTimeoutMs?: number;
+  readonly cleanupAckTimeoutMs?: number;
   readonly knownHostsFile?: string;
   readonly strictHostKeyChecking?: 'yes' | 'accept-new';
+  /** Test/integration seam; defaults to node:child_process.spawn. */
+  readonly processSpawner?: typeof spawn;
 }
 interface OpenSshOwnedSession extends SshProviderSession {
   readonly endpoint: RemoteEndpointIdentity;
@@ -267,15 +278,19 @@ export class OpenSshProcessProvider implements SshTransportProvider {
   private readonly executable: string;
   private readonly connectTimeoutMs: number;
   private readonly commandTimeoutMs: number;
+  private readonly cleanupAckTimeoutMs: number;
   private readonly knownHostsFile?: string;
   private readonly strictHostKeyChecking: 'yes' | 'accept-new';
+  private readonly processSpawner: typeof spawn;
 
   constructor(options: OpenSshProcessProviderOptions = {}) {
     this.executable = options.executable ?? 'ssh';
-    this.connectTimeoutMs = options.connectTimeoutMs ?? 15_000;
-    this.commandTimeoutMs = options.commandTimeoutMs ?? 60_000;
+    this.connectTimeoutMs = finiteTimeout(options.connectTimeoutMs, 15_000, MAX_PROCESS_TIMEOUT_MS);
+    this.commandTimeoutMs = finiteTimeout(options.commandTimeoutMs, 60_000, MAX_PROCESS_TIMEOUT_MS);
+    this.cleanupAckTimeoutMs = finiteTimeout(options.cleanupAckTimeoutMs, DEFAULT_CLEANUP_ACK_TIMEOUT_MS, MAX_CLEANUP_ACK_TIMEOUT_MS);
     this.knownHostsFile = options.knownHostsFile;
     this.strictHostKeyChecking = options.strictHostKeyChecking ?? 'yes';
+    this.processSpawner = options.processSpawner ?? spawn;
   }
 
   async connect(request: SshProviderConnectRequest): Promise<SshProviderSession> {
@@ -290,8 +305,8 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     });
     const argv = [...this.baseArgs(owned), '-o', 'ControlMaster=yes', '-o', 'ControlPersist=no', '-S', owned.controlPath, '-N', '-f', '--', owned.endpoint.host];
     try {
-      const result = await runBoundedProcess(this.executable, argv, this.connectTimeoutMs, 4096, 4096, this.environment(owned));
-      if (!result.spawned || result.error || result.timedOut || result.exitCode !== 0) throw new Error('ssh connect ambiguous');
+      const result = await runBoundedProcess(this.executable, argv, this.connectTimeoutMs, 4096, 4096, this.environment(owned), this.cleanupAckTimeoutMs, this.processSpawner);
+      if (!result.spawned || result.error || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.terminationAmbiguous || result.exitCode !== 0) throw new Error('ssh connect ambiguous');
       this.sessions.set(owned.providerSessionId, owned);
       return Object.freeze({ providerSessionId: owned.providerSessionId, remoteHostId: owned.remoteHostId });
     } catch (error) {
@@ -308,7 +323,7 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     let ambiguous = false;
     try {
       const result = await this.controlExit(owned);
-      ambiguous = !result.spawned || Boolean(result.error) || result.timedOut || result.exitCode !== 0;
+      ambiguous = !result.spawned || Boolean(result.error) || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.terminationAmbiguous || result.exitCode !== 0;
     } finally {
       await rm(owned.controlDirectory, { recursive: true, force: true });
     }
@@ -319,9 +334,9 @@ export class OpenSshProcessProvider implements SshTransportProvider {
     const owned = this.sessions.get(session.providerSessionId);
     if (!owned) return Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: 'ssh.session-not-owned' });
     const argv = [...this.baseArgs(owned), '-S', owned.controlPath, '--', owned.endpoint.host, remoteArgvCommand(invocation)];
-    const result = await runBoundedProcess(this.executable, argv, this.commandTimeoutMs, limits.maxStdoutBytes, limits.maxStderrBytes, this.environment(owned));
+    const result = await runBoundedProcess(this.executable, argv, this.commandTimeoutMs, limits.maxStdoutBytes, limits.maxStderrBytes, this.environment(owned), this.cleanupAckTimeoutMs, this.processSpawner);
     if (!result.spawned) return Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: 'ssh.spawn-failed' });
-    if (result.error || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.exitCode === null) {
+    if (result.error || result.timedOut || result.stdoutExceeded || result.stderrExceeded || result.terminationAmbiguous || result.exitCode === null) {
       return Object.freeze({
         dispatch: 'unknown',
         status: 'unknown',
@@ -353,6 +368,8 @@ export class OpenSshProcessProvider implements SshTransportProvider {
       4096,
       4096,
       this.environment(session),
+      this.cleanupAckTimeoutMs,
+      this.processSpawner,
     );
   }
   private async bestEffortControlExit(session: OpenSshOwnedSession): Promise<void> {
@@ -368,6 +385,9 @@ interface ProcessResult {
   readonly stdoutExceeded: boolean;
   readonly stderrExceeded: boolean;
   readonly timedOut: boolean;
+  readonly terminationRequested: boolean;
+  readonly killAccepted?: boolean;
+  readonly terminationAmbiguous: boolean;
   readonly error?: Error;
 }
 function runBoundedProcess(
@@ -376,19 +396,21 @@ function runBoundedProcess(
   timeoutMs: number,
   maxStdoutBytes: number,
   maxStderrBytes: number,
-  environment?: Readonly<Record<string, string>>,
+  environment: Readonly<Record<string, string>> | undefined,
+  cleanupAckTimeoutMs: number,
+  processSpawner: typeof spawn,
 ): Promise<ProcessResult> {
   return new Promise(resolve => {
-    let child;
+    let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(executable, argv, {
+      child = processSpawner(executable, argv, {
         shell: false,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: environment ? { ...process.env, ...environment } : process.env,
       });
     } catch (error) {
-      resolve({ spawned: false, exitCode: null, stdout: '', stderr: '', stdoutExceeded: false, stderrExceeded: false, timedOut: false, error: error as Error });
+      resolve({ spawned: false, exitCode: null, stdout: '', stderr: '', stdoutExceeded: false, stderrExceeded: false, timedOut: false, terminationRequested: false, terminationAmbiguous: false, error: error as Error });
       return;
     }
     let spawned = false;
@@ -398,36 +420,56 @@ function runBoundedProcess(
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let processError: Error | undefined;
+    let terminationRequested = false;
+    let killAccepted: boolean | undefined;
+    let settled = false;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    const kill = () => { try { child.kill('SIGKILL'); } catch {} };
-    const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
-    child.once('spawn', () => { spawned = true; });
-    child.once('error', error => { processError = error; });
-    child.stdout?.on('data', (chunk: Buffer) => {
-      if (stdoutExceeded) return;
-      stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > maxStdoutBytes) { stdoutExceeded = true; kill(); return; }
-      stdout.push(Buffer.from(chunk));
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      if (stderrExceeded) return;
-      stderrBytes += chunk.byteLength;
-      if (stderrBytes > maxStderrBytes) { stderrExceeded = true; kill(); return; }
-      stderr.push(Buffer.from(chunk));
-    });
-    child.once('close', code => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      requestTermination();
+    }, timeoutMs);
+    const finish = (exitCode: number | null, terminationAmbiguous: boolean) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
       resolve({
         spawned,
-        exitCode: typeof code === 'number' ? code : null,
+        exitCode,
         stdout: Buffer.concat(stdout).toString('utf8'),
         stderr: Buffer.concat(stderr).toString('utf8'),
         stdoutExceeded,
         stderrExceeded,
         timedOut,
+        terminationRequested,
+        ...(killAccepted === undefined ? {} : { killAccepted }),
+        terminationAmbiguous,
         ...(processError ? { error: processError } : {}),
       });
+    };
+    const requestTermination = () => {
+      if (terminationRequested || settled) return;
+      terminationRequested = true;
+      try { killAccepted = child.kill('SIGKILL'); }
+      catch { killAccepted = false; }
+      cleanupTimer = setTimeout(() => finish(null, true), cleanupAckTimeoutMs);
+    };
+    child.once('spawn', () => { spawned = true; });
+    child.once('error', error => { processError = error; });
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (stdoutExceeded || settled) return;
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > maxStdoutBytes) { stdoutExceeded = true; requestTermination(); return; }
+      stdout.push(Buffer.from(chunk));
     });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderrExceeded || settled) return;
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes > maxStderrBytes) { stderrExceeded = true; requestTermination(); return; }
+      stderr.push(Buffer.from(chunk));
+    });
+    child.once('close', code => finish(typeof code === 'number' ? code : null, false));
   });
 }
