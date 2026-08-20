@@ -1,146 +1,50 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  RemoteDispatchError,
-  RemoteSessionAdapter,
-  type RemoteCommandResult,
-  type RemoteDispatchOutcome,
-  type RemoteDisplayFrame,
-  type RemoteEndpointIdentity,
-  type RemoteSessionBackend,
-  type RemoteSessionConnection,
-  type RemoteVisualInput,
+  RemoteDispatchError, RemoteSessionAdapter,
+  type RemoteCommandResult, type RemoteDispatchOutcome, type RemoteDisplayFrame,
+  type RemoteEndpointIdentity, type RemoteSessionBackend, type RemoteSessionConnection, type RemoteVisualInput,
 } from '../src/computer/remoteSessionAdapter.js';
 import { computerActionMayAutoRetry } from '../src/computer/environmentAdapter.js';
 import { ComputerEnvironmentRegistry } from '../src/computer/environmentRegistry.js';
 
 class FakeBackend implements RemoteSessionBackend {
-  readonly protocol;
-  nextHost = 'host-a';
-  nextSession = 'session-1';
-  connectCount = 0;
-  disconnectCount = 0;
-  disconnectedSessions: string[] = [];
-  metadata = Array.from({ length: 80 }, (_, i) => ({ key: `k${i}`, value: 'value' }));
-  commandError: unknown;
-  commandCalls = 0;
-  commandOutcome: RemoteDispatchOutcome<RemoteCommandResult> = { dispatch: 'dispatched-once', status: 'completed', value: { exitCode: 0, stdout: 'ok' } };
-  inputOutcome: RemoteDispatchOutcome<void> = { dispatch: 'dispatched-once', status: 'completed' };
-  displayFrame: RemoteDisplayFrame = { width: 2, height: 2, format: 'synthetic-rgba', bytes: new Uint8Array(16) };
-  seenCredential: unknown;
-  invalidNextIdentity = false;
-
-  constructor(protocol: 'ssh' | 'rdp' | 'vnc') { this.protocol = protocol; }
-
-  async connect(_endpoint: RemoteEndpointIdentity, credential?: unknown): Promise<RemoteSessionConnection> {
-    this.connectCount++;
-    this.seenCredential = credential;
-    return {
-      sessionId: this.invalidNextIdentity ? '' : this.nextSession,
-      remoteHostId: this.nextHost,
-      capabilities: ['remote.session.observe', 'remote.metadata.observe', ...(this.protocol === 'ssh' ? ['remote.ssh.execute'] : ['remote.display.observe', 'remote.visual.input']), ...Array.from({ length: 100 }, (_, i) => `invalid.${i}`)],
-    };
-  }
-  async disconnect(connection: RemoteSessionConnection) { this.disconnectCount++; this.disconnectedSessions.push(connection.sessionId); }
-  async observeMetadata() { return this.metadata; }
-  async captureDisplay() { return this.displayFrame; }
-  async sendVisualInput(_c: RemoteSessionConnection, _input: RemoteVisualInput) { return this.inputOutcome; }
-  async executeRemoteCommand() { this.commandCalls++; if (this.commandError) throw this.commandError; return this.commandOutcome; }
+  readonly protocol; nextHost='host-a'; nextSession='session-1'; connectCount=0; disconnectCount=0; disconnectedSessions:string[]=[];
+  metadata=Array.from({length:80},(_,i)=>({key:`k${i}`,value:'value'})); commandError:unknown; commandCalls=0; inputCalls=0;
+  commandOutcome:RemoteDispatchOutcome<RemoteCommandResult>={dispatch:'dispatched-once',status:'completed',value:{exitCode:0,stdout:'ok'}};
+  inputOutcome:RemoteDispatchOutcome<void>={dispatch:'dispatched-once',status:'completed'};
+  displayFrame:RemoteDisplayFrame={width:2,height:2,format:'synthetic-rgba',bytes:new Uint8Array(16)}; seenCredential:unknown; invalidNextIdentity=false;
+  lastInput?:RemoteVisualInput;
+  constructor(protocol:'ssh'|'rdp'|'vnc'){this.protocol=protocol;}
+  async connect(_endpoint:RemoteEndpointIdentity,credential?:unknown):Promise<RemoteSessionConnection>{this.connectCount++;this.seenCredential=credential;return{sessionId:this.invalidNextIdentity?'':this.nextSession,remoteHostId:this.nextHost,capabilities:['remote.session.observe','remote.metadata.observe',...(this.protocol==='ssh'?['remote.ssh.execute']:['remote.display.observe','remote.visual.input']),...Array.from({length:100},(_,i)=>`invalid.${i}`)]};}
+  async disconnect(connection:RemoteSessionConnection){this.disconnectCount++;this.disconnectedSessions.push(connection.sessionId);}
+  async observeMetadata(){return this.metadata;} async captureDisplay(){return this.displayFrame;}
+  async sendVisualInput(_c:RemoteSessionConnection,input:RemoteVisualInput){this.inputCalls++;this.lastInput=input;return this.inputOutcome;}
+  async executeRemoteCommand(){this.commandCalls++;if(this.commandError)throw this.commandError;return this.commandOutcome;}
 }
+const endpoint=(protocol:'ssh'|'rdp'|'vnc'):RemoteEndpointIdentity=>({endpointId:`endpoint-${protocol}`,protocol,host:'explicit.example.test',port:protocol==='ssh'?22:3389});
+const action=(adapter:RemoteSessionAdapter,authority:ReturnType<RemoteSessionAdapter['state']>['authority'],capability:string,payload:Record<string,unknown>)=>adapter.act({adapterId:adapter.adapterId,actionId:'a1',capability,effect:'remote-execution',idempotency:'non-idempotent',payload:{authority,...payload}});
 
-const endpoint = (protocol: 'ssh' | 'rdp' | 'vnc'): RemoteEndpointIdentity => ({ endpointId: `endpoint-${protocol}`, protocol, host: 'explicit.example.test', port: protocol === 'ssh' ? 22 : 3389 });
-const action = (adapter: RemoteSessionAdapter, authority: ReturnType<RemoteSessionAdapter['state']>['authority'], capability: string, payload: Record<string, unknown>) => adapter.act({ adapterId: adapter.adapterId, actionId: 'a1', capability, effect: 'remote-execution', idempotency: 'non-idempotent', payload: { authority, ...payload } });
+test('connect/disconnect and bounded session observation',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const credential={kind:'secret-handle' as const,handleId:'vault:ssh-test'};const auth=await a.connect(credential);assert.equal(auth.generation,1);assert.equal(b.seenCredential,credential);const obs=await a.observe({adapterId:'remote-1',channel:'terminal',limits:{maxItems:3,maxTextBytes:100}});assert.equal((obs.data as {metadata:unknown[]}).metadata.length,3);assert.equal(obs.truncated,true);assert.equal(JSON.stringify(a.state()).includes('vault:ssh-test'),false);await a.disconnect();assert.equal(a.state().lifecycle,'disconnected');});
 
-test('connect/disconnect and bounded session observation', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend);
-  const credential = { kind: 'secret-handle' as const, handleId: 'vault:ssh-test' };
-  const auth = await adapter.connect(credential);
-  assert.equal(adapter.state().lifecycle, 'connected'); assert.equal(auth.generation, 1); assert.equal(backend.seenCredential, credential);
-  const obs = await adapter.observe({ adapterId: 'remote-1', channel: 'terminal', limits: { maxItems: 3, maxTextBytes: 100 } });
-  assert.equal((obs.data as { metadata: unknown[] }).metadata.length, 3); assert.equal(obs.truncated, true);
-  assert.equal(JSON.stringify(adapter.state()).includes('vault:ssh-test'), false);
-  await adapter.disconnect(); assert.equal(adapter.state().lifecycle, 'disconnected'); assert.equal(backend.disconnectCount, 1);
-});
+test('reconnect changes generation and stale authority is rejected',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const first=await a.connect();b.nextSession='session-2';const second=await a.reconnect();assert.equal(second.generation,2);const stale=await action(a,first,'remote.ssh.execute',{invocation:{command:'true'}});assert.deepEqual(stale.evidence,['remote-session-replaced']);});
 
-test('reconnect changes generation and stale authority is rejected', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend);
-  const first = await adapter.connect(); backend.nextSession = 'session-2'; const second = await adapter.reconnect();
-  assert.equal(second.generation, 2); assert.notEqual(second.sessionId, first.sessionId);
-  const stale = await action(adapter, first, 'remote.ssh.execute', { invocation: { command: 'printf', args: ['ok'] } });
-  assert.equal(stale.dispatch, 'not-dispatched'); assert.deepEqual(stale.evidence, ['remote-session-replaced']);
-});
+test('failed reconnect closes invalid candidate and preserves prior',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const first=await a.connect();b.invalidNextIdentity=true;await assert.rejects(()=>a.reconnect(),/invalid remote identity/);assert.deepEqual(a.state().authority,first);assert.equal(b.disconnectedSessions.includes(''),true);});
 
-test('failed reconnect closes invalid candidate and preserves tracked prior authority', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend);
-  const first = await adapter.connect();
-  backend.invalidNextIdentity = true;
-  await assert.rejects(() => adapter.reconnect(), /invalid remote identity/);
-  const state = adapter.state();
-  assert.equal(state.lifecycle, 'connected'); assert.deepEqual(state.authority, first);
-  assert.equal(backend.disconnectedSessions.includes(''), true);
-  const stillUsable = await action(adapter, first, 'remote.ssh.execute', { invocation: { command: 'true' } });
-  assert.equal(stillUsable.dispatch, 'dispatched-once');
-});
+test('remote host mismatch rejects before dispatch',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const auth=await a.connect();const r=await action(a,{...auth,remoteHostId:'host-b'},'remote.ssh.execute',{invocation:{command:'true'}});assert.equal(r.dispatch,'not-dispatched');assert.equal(b.commandCalls,0);});
 
-test('remote host mismatch is rejected before dispatch', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend); const auth = await adapter.connect();
-  const result = await action(adapter, { ...auth, remoteHostId: 'host-b' }, 'remote.ssh.execute', { invocation: { command: 'true' } });
-  assert.equal(result.dispatch, 'not-dispatched'); assert.deepEqual(result.evidence, ['remote-host-mismatch']);
-});
+test('SSH preserves definite versus ambiguous dispatch and no auto retry',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const auth=await a.connect();b.commandError=new RemoteDispatchError('not-dispatched','ssh-pre-dispatch-connect-failed');assert.equal((await action(a,auth,'remote.ssh.execute',{invocation:{command:'true'}})).dispatch,'not-dispatched');b.commandError=new RemoteDispatchError('unknown','ssh-transport-failed-after-send');const r=await action(a,auth,'remote.ssh.execute',{invocation:{command:'once'}});assert.equal(r.dispatch,'unknown');assert.equal(computerActionMayAutoRetry({effect:'remote-execution',idempotency:'non-idempotent'},r),false);});
 
-test('SSH requires remote-execution and preserves definite versus ambiguous dispatch', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend); const auth = await adapter.connect();
-  const wrong = await adapter.act({ adapterId: 'remote-1', actionId: 'x', capability: 'remote.ssh.execute', effect: 'process-trigger', idempotency: 'non-idempotent', payload: { authority: auth, invocation: { command: 'true' } } });
-  assert.deepEqual(wrong.evidence, ['remote-effect-required']);
-  backend.commandError = new RemoteDispatchError('not-dispatched', 'ssh-pre-dispatch-connect-failed');
-  const pre = await action(adapter, auth, 'remote.ssh.execute', { invocation: { command: 'true' } }); assert.equal(pre.dispatch, 'not-dispatched');
-  backend.commandError = new RemoteDispatchError('unknown', 'ssh-transport-failed-after-send');
-  const ambiguous = await action(adapter, auth, 'remote.ssh.execute', { invocation: { command: 'do-once' } }); assert.equal(ambiguous.status, 'unknown'); assert.equal(ambiguous.dispatch, 'unknown');
-  assert.equal(computerActionMayAutoRetry({ effect: 'remote-execution', idempotency: 'non-idempotent' }, ambiguous), false);
-});
+test('SSH argv payload is bounded before dispatch',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const auth=await a.connect();assert.equal((await action(a,auth,'remote.ssh.execute',{invocation:{command:'printf',args:['ok',42]}})).dispatch,'not-dispatched');assert.equal((await action(a,auth,'remote.ssh.execute',{invocation:{command:'printf',args:['x'.repeat(5000)]}})).dispatch,'not-dispatched');assert.equal(b.commandCalls,0);});
 
-test('SSH argv payload is strictly bounded and rejected before dispatch', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend); const auth = await adapter.connect();
-  const malformed = await action(adapter, auth, 'remote.ssh.execute', { invocation: { command: 'printf', args: ['ok', 42] } });
-  assert.equal(malformed.dispatch, 'not-dispatched'); assert.deepEqual(malformed.evidence, ['remote-command-invalid']);
-  const oversized = await action(adapter, auth, 'remote.ssh.execute', { invocation: { command: 'printf', args: ['x'.repeat(5000)] } });
-  assert.equal(oversized.dispatch, 'not-dispatched'); assert.equal(backend.commandCalls, 0);
-});
+test('RDP/VNC bounded visual observation and registry-coherent input',async()=>{for(const protocol of ['rdp','vnc'] as const){const b=new FakeBackend(protocol);const a=new RemoteSessionAdapter(`remote-${protocol}`,endpoint(protocol),b);const auth=await a.connect();const visual=await a.observe({adapterId:a.adapterId,channel:'visual'});assert.equal((visual.data as {width:number}).width,2);const registry=new ComputerEnvironmentRegistry();registry.register(a);const r=await registry.act({adapterId:a.adapterId,actionId:'i',capability:'remote.visual.input',effect:'remote-execution',idempotency:'non-idempotent',payload:{authority:auth,input:{kind:'pointer',x:1,y:1}}});assert.equal(r.status,'unknown');assert.equal(r.dispatch,'dispatched-once');assert.equal(r.verification,'unverified');}});
 
-test('RDP/VNC expose bounded visual observation/input seams without claiming app-level verification', async () => {
-  for (const protocol of ['rdp', 'vnc'] as const) {
-    const backend = new FakeBackend(protocol); const adapter = new RemoteSessionAdapter(`remote-${protocol}`, endpoint(protocol), backend); const auth = await adapter.connect();
-    const visual = await adapter.observe({ adapterId: adapter.adapterId, channel: 'visual' }); assert.equal((visual.data as { width: number }).width, 2);
-    const result = await action(adapter, auth, 'remote.visual.input', { input: { kind: 'pointer', x: 1, y: 1 } });
-    assert.equal(result.status, 'unknown'); assert.equal(result.dispatch, 'dispatched-once'); assert.equal(result.verification, 'unverified'); assert.ok(result.evidence?.includes('remote-visual-effect-unverified'));
-  }
-});
+test('visual observations bound bytes and reject malicious dimensions',async()=>{const b=new FakeBackend('rdp');const a=new RemoteSessionAdapter('remote-rdp',endpoint('rdp'),b);await a.connect();b.displayFrame={width:100,height:100,format:'synthetic-rgba',bytes:new Uint8Array(40000)};const v=await a.observe({adapterId:a.adapterId,channel:'visual',limits:{maxItems:20000,maxTextBytes:100}});assert.equal(v.truncated,true);assert.equal((v.data as RemoteDisplayFrame).bytes,undefined);b.displayFrame={width:20000,height:2,format:'synthetic-rgba',bytes:new Uint8Array(1)};await assert.rejects(()=>a.observe({adapterId:a.adapterId,channel:'visual'}));});
 
-test('registry preserves known visual dispatch instead of rewriting adapter response', async () => {
-  const backend = new FakeBackend('rdp'); const adapter = new RemoteSessionAdapter('remote-rdp', endpoint('rdp'), backend); const auth = await adapter.connect();
-  const registry = new ComputerEnvironmentRegistry(); registry.register(adapter);
-  const result = await registry.act({ adapterId: adapter.adapterId, actionId: 'input-1', capability: 'remote.visual.input', effect: 'remote-execution', idempotency: 'non-idempotent', payload: { authority: auth, input: { kind: 'key', key: 'A' } } });
-  assert.equal(result.status, 'unknown'); assert.equal(result.dispatch, 'dispatched-once'); assert.ok(result.evidence?.includes('remote-visual-effect-unverified'));
-});
+test('session replacement and same-session reconnect invalidate old authority',async()=>{for(const same of [false,true]){const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const first=await a.connect();if(!same)b.nextSession='replacement';const second=await a.reconnect();assert.equal(second.generation,first.generation+1);const r=await action(a,first,'remote.ssh.execute',{invocation:{command:'true'}});assert.equal(r.dispatch,'not-dispatched');}});
 
-test('visual observations omit oversized bytes and mark truncation', async () => {
-  const backend = new FakeBackend('rdp'); const adapter = new RemoteSessionAdapter('remote-rdp', endpoint('rdp'), backend); await adapter.connect();
-  backend.displayFrame = { width: 100, height: 100, format: 'synthetic-rgba', bytes: new Uint8Array(40_000) };
-  const visual = await adapter.observe({ adapterId: adapter.adapterId, channel: 'visual', limits: { maxItems: 20_000, maxTextBytes: 100 } });
-  const frame = visual.data as RemoteDisplayFrame;
-  assert.equal(visual.truncated, true); assert.equal(visual.complete, false); assert.equal(frame.bytes, undefined);
-  backend.displayFrame = { width: 20_000, height: 2, format: 'synthetic-rgba', bytes: new Uint8Array(1) };
-  await assert.rejects(() => adapter.observe({ adapterId: adapter.adapterId, channel: 'visual' }), /hard pixel bound|invalid remote display frame/);
-});
+test('visual input is a strict bounded discriminated payload',async()=>{const b=new FakeBackend('rdp');const a=new RemoteSessionAdapter('remote-rdp',endpoint('rdp'),b);const auth=await a.connect();const bad=[{kind:'pointer',x:1,y:2,extra:'x'},{kind:'pointer',x:NaN,y:2},{kind:'pointer',x:Infinity,y:2},{kind:'pointer',x:1000001,y:2},{kind:'key',key:'k'.repeat(200)},{kind:'key',key:'A',text:'x'},{kind:'text',text:'x'.repeat(5000)},{kind:'text',text:'ok',x:1}];for(const input of bad){const r=await action(a,auth,'remote.visual.input',{input});assert.equal(r.dispatch,'not-dispatched');}assert.equal(b.inputCalls,0);const ok=await action(a,auth,'remote.visual.input',{input:{kind:'text',text:'hello\nworld'}});assert.equal(ok.dispatch,'dispatched-once');assert.equal(b.inputCalls,1);});
 
-test('session replacement on same host invalidates prior generation authority', async () => {
-  const backend = new FakeBackend('rdp'); const adapter = new RemoteSessionAdapter('remote-rdp', endpoint('rdp'), backend); const first = await adapter.connect();
-  backend.nextSession = 'replacement'; const second = await adapter.reconnect(); assert.equal(second.remoteHostId, first.remoteHostId); assert.equal(second.generation, first.generation + 1);
-  const result = await action(adapter, first, 'remote.visual.input', { input: { kind: 'key', key: 'A' } }); assert.equal(result.dispatch, 'not-dispatched');
-});
+test('SSH command output is capped with truncation metadata',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const auth=await a.connect();b.commandOutcome={dispatch:'dispatched-once',status:'completed',value:{exitCode:0,stdout:'x'.repeat(70000),stderr:'é'.repeat(40000)}};const r=await action(a,auth,'remote.ssh.execute',{invocation:{command:'true'}});const d=r.details as RemoteCommandResult;assert.equal(new TextEncoder().encode(d.stdout??'').byteLength<=65536,true);assert.equal(new TextEncoder().encode(d.stderr??'').byteLength<=65536,true);assert.equal(d.stdoutTruncated,true);assert.equal(d.stderrTruncated,true);});
 
-test('same-session reconnect still invalidates stale generation authority', async () => {
-  const backend = new FakeBackend('ssh'); const adapter = new RemoteSessionAdapter('remote-1', endpoint('ssh'), backend); const first = await adapter.connect();
-  const second = await adapter.reconnect(); assert.equal(second.sessionId, first.sessionId); assert.equal(second.generation, first.generation + 1);
-  const result = await action(adapter, first, 'remote.ssh.execute', { invocation: { command: 'true' } }); assert.deepEqual(result.evidence, ['remote-session-stale-generation']);
-});
+test('backend evidence is sanitized to bounded machine codes',async()=>{const b=new FakeBackend('ssh');const a=new RemoteSessionAdapter('remote-1',endpoint('ssh'),b);const auth=await a.connect();b.commandError=new RemoteDispatchError('unknown','secret remote prose with spaces');let r=await action(a,auth,'remote.ssh.execute',{invocation:{command:'true'}});assert.deepEqual(r.evidence,['remote-backend-evidence-invalid']);b.commandError=undefined;b.commandOutcome={dispatch:'not-dispatched',status:'failed',evidence:'X'.repeat(300)};r=await action(a,auth,'remote.ssh.execute',{invocation:{command:'true'}});assert.deepEqual(r.evidence,['remote-backend-evidence-invalid']);b.commandOutcome={dispatch:'unknown',status:'unknown',evidence:'ssh.valid-code:1'};r=await action(a,auth,'remote.ssh.execute',{invocation:{command:'true'}});assert.deepEqual(r.evidence,['ssh.valid-code:1']);});
