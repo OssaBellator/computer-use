@@ -119,6 +119,10 @@ function bytes(value: string): number { return Buffer.byteLength(value, 'utf8');
 function sha256(value: string): string { return `sha256-${createHash('sha256').update(value, 'utf8').digest('hex')}`; }
 function identityKey(identity: LocalComputeIdentity): string { return `${identity.jobId}:${identity.generation}`; }
 function artifactKey(identity: LocalComputeArtifactIdentity): string { return `${identity.artifactId}:${identity.generation}`; }
+function fileModuleUrl(value: string): boolean {
+  try { return new URL(value).protocol === 'file:'; }
+  catch { return false; }
+}
 function requestBinding(operation: Readonly<IsolatedLocalComputeOperationDefinition>, inputArtifact: LocalComputeArtifactIdentity, limits: LocalComputeResourceLimits): string {
   return sha256([
     operation.id,
@@ -279,6 +283,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (!ID.test(id)) throw new Error('invalid isolated local compute adapter id');
     for (const operation of options.operations) {
       if (!ID.test(operation.id) || !EXPORT_NAME.test(operation.exportName) || typeof operation.moduleUrl !== 'string' || operation.moduleUrl.length === 0 || operation.moduleUrl.length > 4096) throw new Error(`invalid isolated local compute operation: ${operation.id}`);
+      if (!fileModuleUrl(operation.moduleUrl)) throw new Error(`isolated local compute operation must use file: module URL: ${operation.id}`);
       if (operation.effect !== 'pure-read-only' && operation.effect !== 'local-artifact-creation') throw new Error(`unsafe isolated local compute operation effect: ${operation.effect}`);
       if (this.operations.has(operation.id)) throw new Error(`duplicate isolated local compute operation: ${operation.id}`);
       this.operations.set(operation.id, Object.freeze({ id: operation.id, effect: operation.effect, moduleUrl: operation.moduleUrl, exportName: operation.exportName }));
