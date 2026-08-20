@@ -6,10 +6,7 @@ import type {
   ComputerObservationRequest,
   ComputerSurfaceRef,
 } from './environmentAdapter.js';
-import {
-  validateComputerActionRequest,
-  validateComputerObservationRequest,
-} from './environmentAdapter.js';
+import { validateComputerActionRequest, validateComputerObservationRequest } from './environmentAdapter.js';
 
 export const REMOTE_PROTOCOL_KINDS = ['ssh', 'rdp', 'vnc'] as const;
 export type RemoteProtocolKind = typeof REMOTE_PROTOCOL_KINDS[number];
@@ -83,7 +80,7 @@ function snapshotWhitelistedRecord(value: unknown, allowed: readonly string[], r
   const out: Record<string, unknown> = {};
   for (const key of allowed) {
     let descriptor: PropertyDescriptor | undefined;
-    try { descriptor = Object.getOwnPropertyDescriptor(value,key); } catch { return undefined; }
+    try { descriptor = Object.getOwnPropertyDescriptor(value, key); } catch { return undefined; }
     if (!descriptor) { if (required.includes(key)) return undefined; continue; }
     if (!('value' in descriptor)) return undefined;
     out[key] = descriptor.value;
@@ -103,7 +100,7 @@ function snapshotActionRequest(value: unknown): Readonly<ComputerActionRequest> 
   const record = snapshotWhitelistedRecord(value, ['adapterId','actionId','capability','effect','idempotency','target','payload'], ['adapterId','actionId','capability','effect','idempotency']); if (!record) return undefined;
   const rawTarget = record.target, rawPayload = record.payload;
   const target = rawTarget === undefined ? undefined : snapshotWhitelistedRecord(rawTarget, ['adapterId','environment','kind','entityId','surfaceId','generation'], ['adapterId','environment','kind','entityId']);
-  const payload = rawPayload === undefined ? undefined : snapshotWhitelistedRecord(rawPayload,['authority','invocation','input']);
+  const payload = rawPayload === undefined ? undefined : snapshotWhitelistedRecord(rawPayload, ['authority','invocation','input']);
   if ((rawTarget !== undefined && !target) || (rawPayload !== undefined && !payload)) return undefined;
   return Object.freeze({adapterId:record.adapterId,actionId:record.actionId,capability:record.capability,effect:record.effect,idempotency:record.idempotency,...(target?{target}:{}),...(payload?{payload}:{})}) as unknown as Readonly<ComputerActionRequest>;
 }
@@ -122,9 +119,9 @@ function snapshotSecretHandle(value: unknown): Readonly<RemoteSecretHandle> | un
   return Object.freeze({ kind, handleId });
 }
 function snapshotAuthority(value: unknown): Readonly<RemoteSessionAuthority> | undefined {
-  const record = plainRecord(value);
-  if (!record || !exactOwnKeys(record, ['endpointId','remoteHostId','sessionId','generation'], ['endpointId','remoteHostId','sessionId','generation'])) return undefined;
-  const endpointId = ownData(record, 'endpointId'), remoteHostId = ownData(record, 'remoteHostId'), sessionId = ownData(record, 'sessionId'), generation = ownData(record, 'generation');
+  const record = snapshotWhitelistedRecord(value, ['endpointId','remoteHostId','sessionId','generation'], ['endpointId','remoteHostId','sessionId','generation']);
+  if (!record) return undefined;
+  const endpointId = record.endpointId, remoteHostId = record.remoteHostId, sessionId = record.sessionId, generation = record.generation;
   if (typeof endpointId !== 'string' || typeof remoteHostId !== 'string' || typeof sessionId !== 'string' || typeof generation !== 'number' || !bounded(endpointId) || !bounded(remoteHostId) || !bounded(sessionId) || !Number.isSafeInteger(generation) || generation < 0) return undefined;
   return Object.freeze({ endpointId, remoteHostId, sessionId, generation });
 }
@@ -147,22 +144,23 @@ function validatedConnectionCandidate(candidate: Readonly<RemoteSessionConnectio
   return Object.freeze({sessionId:candidate.sessionId,remoteHostId:candidate.remoteHostId,capabilities:safeCapabilities(candidate.capabilities)});
 }
 function snapshotStringArray(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > MAX_COMMAND_ARGS) return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const allowed = new Set(['length', ...Array.from({length:value.length}, (_,i)=>String(i))]);
-  for (const [key, descriptor] of Object.entries(descriptors)) if (!allowed.has(key) || !('value' in descriptor)) return undefined;
-  const out: string[] = [];
-  for (let i=0;i<value.length;i++) {
-    const descriptor=Object.getOwnPropertyDescriptor(value,String(i));
-    if(!descriptor||!('value' in descriptor)||typeof descriptor.value!=='string'||utf8Bytes(descriptor.value)>MAX_COMMAND_ARG_BYTES||/\0/.test(descriptor.value))return undefined;
+  if (!Array.isArray(value)) return undefined;
+  let proto: object | null, lengthDescriptor: PropertyDescriptor | undefined;
+  try { proto = Object.getPrototypeOf(value); lengthDescriptor = Object.getOwnPropertyDescriptor(value,'length'); } catch { return undefined; }
+  if (proto !== Array.prototype || !lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_COMMAND_ARGS) return undefined;
+  const length = lengthDescriptor.value as number, out: string[] = [];
+  for (let i=0;i<length;i++) {
+    let descriptor: PropertyDescriptor | undefined;
+    try { descriptor = Object.getOwnPropertyDescriptor(value,String(i)); } catch { return undefined; }
+    if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string' || utf8Bytes(descriptor.value) > MAX_COMMAND_ARG_BYTES || /\0/.test(descriptor.value)) return undefined;
     out.push(descriptor.value);
   }
   return Object.freeze(out);
 }
 function snapshotCommandInvocation(value: unknown): Readonly<RemoteCommandInvocation> | undefined {
-  const record = plainRecord(value);
-  if (!record || !exactOwnKeys(record, ['command','args'], ['command'])) return undefined;
-  const command = ownData(record, 'command'), rawArgs = ownData(record, 'args');
+  const record = snapshotWhitelistedRecord(value, ['command','args'], ['command']);
+  if (!record) return undefined;
+  const command = record.command, rawArgs = record.args;
   if (typeof command !== 'string' || !bounded(command, MAX_COMMAND_BYTES)) return undefined;
   const args = rawArgs === undefined ? undefined : snapshotStringArray(rawArgs);
   if (rawArgs !== undefined && !args) return undefined;
@@ -171,22 +169,23 @@ function snapshotCommandInvocation(value: unknown): Readonly<RemoteCommandInvoca
   return Object.freeze({ command, ...(args ? { args } : {}) });
 }
 function snapshotVisualInput(value: unknown): Readonly<RemoteVisualInput> | undefined {
-  const record = plainRecord(value); if (!record) return undefined;
-  const kind = ownData(record, 'kind');
+  const record = snapshotWhitelistedRecord(value, ['kind','x','y','key','text'], ['kind']); if (!record) return undefined;
+  const kind = record.kind;
+  const has = (key:string) => Object.prototype.hasOwnProperty.call(record,key);
   if (kind === 'pointer') {
-    if (!exactOwnKeys(record, ['kind','x','y'], ['kind','x','y'])) return undefined;
-    const x = ownData(record,'x'), y = ownData(record,'y');
+    if (!has('x') || !has('y') || has('key') || has('text')) return undefined;
+    const x = record.x, y = record.y;
     if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > MAX_VISUAL_COORDINATE || y > MAX_VISUAL_COORDINATE) return undefined;
     return Object.freeze({ kind, x, y });
   }
   if (kind === 'key') {
-    if (!exactOwnKeys(record, ['kind','key'], ['kind','key'])) return undefined;
-    const key = ownData(record,'key'); if (typeof key !== 'string' || !bounded(key, MAX_VISUAL_KEY_BYTES)) return undefined;
+    if (!has('key') || has('x') || has('y') || has('text')) return undefined;
+    const key = record.key; if (typeof key !== 'string' || !bounded(key, MAX_VISUAL_KEY_BYTES)) return undefined;
     return Object.freeze({ kind, key });
   }
   if (kind === 'text') {
-    if (!exactOwnKeys(record, ['kind','text'], ['kind','text'])) return undefined;
-    const text = ownData(record,'text'); if (typeof text !== 'string' || utf8Bytes(text) > MAX_VISUAL_TEXT_BYTES || /\0/.test(text)) return undefined;
+    if (!has('text') || has('x') || has('y') || has('key')) return undefined;
+    const text = record.text; if (typeof text !== 'string' || utf8Bytes(text) > MAX_VISUAL_TEXT_BYTES || /\0/.test(text)) return undefined;
     return Object.freeze({ kind, text });
   }
   return undefined;
@@ -217,7 +216,7 @@ function snapshotDisplayFrame(value: unknown): Readonly<RemoteDisplayFrame> | un
     if(!(rawBytes instanceof Uint8Array)||!ArrayBuffer.isView(rawBytes))return undefined;
     try{bytes=Uint8Array.prototype.slice.call(rawBytes) as Uint8Array;}catch{return undefined;}
   }
-  return Object.freeze({width,height,format,...(bytes?{bytes}:{}),...(frameId!==undefined?{frameId}:{}),...(truncated!==undefined?{truncated}:{})});
+  return Object.freeze({width,height,format,...(bytes?{bytes}:{}),...(frameId!==undefined?{frameId:frameId as string}:{}),...(truncated!==undefined?{truncated:truncated as boolean}:{})});
 }
 function safeCapabilities(values: readonly string[]): readonly string[] { const out:string[]=[]; for (const value of values) { if (out.length >= MAX_CAPABILITIES) break; if (typeof value === 'string' && REMOTE_CAPABILITY_PATTERN.test(value) && !out.includes(value)) out.push(value); } return Object.freeze(out); }
 function safeMetadata(items: readonly Readonly<RemoteMetadataItem>[], maxItems:number, maxTextBytes:number): {items:RemoteMetadataItem[];truncated:boolean} { const out:RemoteMetadataItem[]=[]; let bytes=0,truncated=items.length>maxItems; for(const item of items.slice(0,maxItems)){ if(!bounded(item.key,128)){truncated=true;continue;} const n=utf8Bytes(item.key)+utf8Bytes(item.value); if(bytes+n>maxTextBytes){truncated=true;break;} out.push({key:item.key,value:item.value});bytes+=n;} return {items:out,truncated}; }
@@ -246,7 +245,7 @@ function snapshotDispatchOutcome<T>(value: unknown, snapshotValue?: (value: unkn
   if(dispatch==='dispatched-once'){
     if(status!=='completed'||!exactOwnKeys(record,['dispatch','status','value','evidence'],['dispatch','status'])||(evidence!==undefined&&typeof evidence!=='string'))return undefined;
     let snappedValue:T|undefined;if(rawValue!==undefined){if(!snapshotValue)return undefined;snappedValue=snapshotValue(rawValue);if(snappedValue===undefined)return undefined;}
-    return Object.freeze({dispatch,status,...(snappedValue!==undefined?{value:snappedValue}:{}),...(evidence!==undefined?{evidence}: {})});
+    return Object.freeze({dispatch,status,...(snappedValue!==undefined?{value:snappedValue}:{}),...(evidence!==undefined?{evidence:evidence as string}:{})});
   }
   return undefined;
 }
