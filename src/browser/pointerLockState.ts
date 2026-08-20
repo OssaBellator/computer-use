@@ -1,4 +1,4 @@
-export type PointerLockPhase = 'unlocked' | 'requested' | 'locked' | 'lost';
+export type PointerLockPhase = 'unlocked' | 'requested' | 'pending' | 'locked' | 'lost';
 
 export type PointerLockLossReason =
   | 'focus-lost'
@@ -31,6 +31,12 @@ export interface PointerLockObservation {
   locked: boolean;
   focused?: boolean;
   owner?: PointerLockOwnerIdentity;
+  /**
+   * Set only when the observer could compare the locking element's backend node
+   * with the current game-region backend node. False means the browser is still
+   * locked, but not to the currently leased game surface.
+   */
+  gameRegionMatch?: boolean;
 }
 
 export interface PointerLockSnapshot {
@@ -65,6 +71,37 @@ function ownerHasIdentity(owner: PointerLockOwnerIdentity | undefined): boolean 
 function sameOwner(a: PointerLockOwnerIdentity | undefined, b: PointerLockOwnerIdentity | undefined): boolean {
   if (!ownerHasIdentity(a) && !ownerHasIdentity(b)) return true;
   return OWNER_KEYS.every((key) => a?.[key] === b?.[key]);
+}
+
+function changedWhenKnown<K extends keyof PointerLockOwnerIdentity>(
+  previous: PointerLockOwnerIdentity | undefined,
+  next: PointerLockOwnerIdentity | undefined,
+  key: K,
+): boolean {
+  return previous?.[key] !== undefined && next?.[key] !== undefined && previous[key] !== next[key];
+}
+
+function lockedOwnerDriftReason(
+  previous: PointerLockOwnerIdentity | undefined,
+  next: PointerLockOwnerIdentity | undefined,
+  gameRegionMatch: boolean | undefined,
+): PointerLockLossReason | undefined {
+  if (gameRegionMatch === false) return 'renderer-replaced';
+  if (
+    changedWhenKnown(previous, next, 'targetId') ||
+    changedWhenKnown(previous, next, 'sessionId') ||
+    changedWhenKnown(previous, next, 'frameId')
+  ) {
+    return 'target-changed';
+  }
+  if (
+    changedWhenKnown(previous, next, 'gameRegionBackendNodeId') ||
+    changedWhenKnown(previous, next, 'gameRegionGeneration')
+  ) {
+    return 'renderer-replaced';
+  }
+  if (changedWhenKnown(previous, next, 'backendNodeId')) return 'element-detached';
+  return undefined;
 }
 
 /**
@@ -109,7 +146,7 @@ export class PointerLockLifecycle {
     const previous = this.snapshot;
 
     if (!observation.supported) {
-      if (previous.phase === 'requested') {
+      if (previous.phase === 'requested' || previous.phase === 'pending') {
         this.snapshot = {
           phase: 'unlocked',
           generation: previous.generation,
@@ -131,15 +168,37 @@ export class PointerLockLifecycle {
     }
 
     if (observation.locked) {
-      const owner = cloneOwner(observation.owner ?? previous.requestedOwner ?? previous.owner);
-      const generation = previous.phase !== 'locked' || !sameOwner(previous.owner, owner)
-        ? previous.generation + 1
-        : previous.generation;
+      const observedOwner = cloneOwner(observation.owner);
+      if (previous.phase === 'locked') {
+        const driftReason = lockedOwnerDriftReason(
+          previous.owner,
+          observedOwner,
+          observation.gameRegionMatch,
+        );
+        if (driftReason) {
+          this.snapshot = {
+            phase: 'lost',
+            generation: previous.generation,
+            supported: true,
+            owner: cloneOwner(previous.owner),
+            lossReason: driftReason,
+          };
+          return this.current();
+        }
+        this.snapshot = {
+          phase: 'locked',
+          generation: previous.generation,
+          supported: true,
+          owner: observedOwner ?? cloneOwner(previous.owner),
+        };
+        return this.current();
+      }
+
       this.snapshot = {
         phase: 'locked',
-        generation,
+        generation: previous.generation + 1,
         supported: true,
-        owner,
+        owner: observedOwner ?? cloneOwner(previous.requestedOwner ?? previous.owner),
       };
       return this.current();
     }
@@ -156,6 +215,16 @@ export class PointerLockLifecycle {
     }
 
     if (previous.phase === 'requested') {
+      this.snapshot = {
+        phase: 'pending',
+        generation: previous.generation,
+        supported: true,
+        requestedOwner: cloneOwner(previous.requestedOwner),
+      };
+      return this.current();
+    }
+
+    if (previous.phase === 'pending') {
       this.snapshot = { ...previous, supported: true };
       return this.current();
     }
@@ -222,6 +291,8 @@ export interface PointerCaptureObservation {
   supported: boolean;
   captured: boolean;
   owner?: PointerLockOwnerIdentity;
+  /** Browser-observer classification for an already-lost capture, when known. */
+  lossReason?: PointerCaptureLossReason;
 }
 
 export interface PointerCaptureSnapshot {
@@ -259,7 +330,7 @@ export class PointerCaptureLifecycle {
         supported: false,
         ...(previous.owner ? { owner: cloneOwner(previous.owner) } : {}),
         ...(previous.phase === 'captured'
-          ? { lossReason: (lossReasonHint ?? 'unknown') as PointerCaptureLossReason }
+          ? { lossReason: observation.lossReason ?? lossReasonHint ?? 'unknown' }
           : {}),
       };
       this.captures.set(observation.pointerId, state);
@@ -288,7 +359,7 @@ export class PointerCaptureLifecycle {
         generation: previous.generation,
         supported: true,
         owner: cloneOwner(previous.owner),
-        lossReason: lossReasonHint ?? 'unknown',
+        lossReason: observation.lossReason ?? lossReasonHint ?? 'unknown',
       });
       return this.current(observation.pointerId);
     }

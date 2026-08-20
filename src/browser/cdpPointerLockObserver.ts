@@ -13,6 +13,7 @@ export interface PointerLockGameRegionIdentity {
 export interface CdpPointerLockObserverOptions {
   targetId?: string;
   sessionId?: string;
+  /** Owner metadata. For non-main frames, also use that frame's CDP session or executionContextId. */
   frameId?: string;
   executionContextId?: number;
   gameRegion?: () => PointerLockGameRegionIdentity | undefined;
@@ -76,35 +77,46 @@ export class CdpPointerLockObserver {
   }
 
   private baseOwner(): PointerLockOwnerIdentity {
-    const gameRegion = this.options.gameRegion?.();
     return {
       ...(this.options.targetId ? { targetId: this.options.targetId } : {}),
       ...(this.options.sessionId ? { sessionId: this.options.sessionId } : {}),
       ...(this.options.frameId ? { frameId: this.options.frameId } : {}),
-      ...(gameRegion?.backendNodeId === undefined
-        ? {}
-        : { gameRegionBackendNodeId: gameRegion.backendNodeId }),
-      ...(gameRegion?.generation === undefined
-        ? {}
-        : { gameRegionGeneration: gameRegion.generation }),
+    };
+  }
+
+  private gameRegionAssociation(
+    backendNodeId: number | undefined,
+    gameRegion: PointerLockGameRegionIdentity | undefined,
+  ): Pick<PointerLockOwnerIdentity, 'gameRegionBackendNodeId' | 'gameRegionGeneration'> {
+    if (
+      backendNodeId === undefined ||
+      gameRegion?.backendNodeId === undefined ||
+      backendNodeId !== gameRegion.backendNodeId
+    ) {
+      return {};
+    }
+    return {
+      gameRegionBackendNodeId: gameRegion.backendNodeId,
+      ...(gameRegion.generation === undefined ? {} : { gameRegionGeneration: gameRegion.generation }),
     };
   }
 
   private async describeOwner(
     params: { objectId?: string; backendNodeId?: number },
+    gameRegion: PointerLockGameRegionIdentity | undefined,
   ): Promise<PointerLockOwnerIdentity> {
     const described = await this.session.send('DOM.describeNode', params) as DescribedNodeResult;
     const node = described.node;
     const attributes = attributesObject(node?.attributes);
     const tag = (node?.localName || node?.nodeName || '').toLowerCase();
+    const backendNodeId = typeof node?.backendNodeId === 'number' ? node.backendNodeId : undefined;
     return {
       ...this.baseOwner(),
       ...(node?.frameId || this.options.frameId
         ? { frameId: node?.frameId ?? this.options.frameId }
         : {}),
-      ...(typeof node?.backendNodeId === 'number'
-        ? { backendNodeId: node.backendNodeId }
-        : {}),
+      ...(backendNodeId === undefined ? {} : { backendNodeId }),
+      ...this.gameRegionAssociation(backendNodeId, gameRegion),
       ...(tag ? { elementTag: tag } : {}),
       ...(attributes.id ? { elementId: attributes.id } : {}),
     };
@@ -142,13 +154,19 @@ export class CdpPointerLockObserver {
     ) as RuntimeEvaluateResult;
     const objectId = element.result?.objectId;
     if (!objectId) {
+      // Lock truth is still authoritative, but element/game-region identity
+      // could not be re-resolved, so do not inherit stale renderer identity.
       return { ...observation, owner: this.baseOwner() };
     }
 
+    const gameRegion = this.options.gameRegion?.();
     try {
+      const owner = await this.describeOwner({ objectId }, gameRegion);
+      const comparable = owner.backendNodeId !== undefined && gameRegion?.backendNodeId !== undefined;
       return {
         ...observation,
-        owner: await this.describeOwner({ objectId }),
+        owner,
+        ...(comparable ? { gameRegionMatch: owner.backendNodeId === gameRegion!.backendNodeId } : {}),
       };
     } finally {
       try {
@@ -176,9 +194,11 @@ export class CdpPointerLockObserver {
         supported: true,
         captured: false,
         owner: { ...this.baseOwner(), backendNodeId },
+        lossReason: 'element-detached',
       };
     }
 
+    const gameRegion = this.options.gameRegion?.();
     try {
       const called = await this.session.send('Runtime.callFunctionOn', {
         objectId,
@@ -197,7 +217,7 @@ export class CdpPointerLockObserver {
         pointerId,
         supported: value.supported,
         captured: value.captured,
-        owner: await this.describeOwner({ backendNodeId }),
+        owner: await this.describeOwner({ backendNodeId }, gameRegion),
       };
     } finally {
       try {
