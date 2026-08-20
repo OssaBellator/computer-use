@@ -112,38 +112,100 @@ function opaque(prefix:string, value:string):string {
 function cloneRect(value:{x:number;y:number;width:number;height:number}|undefined) {
   return value ? Object.freeze({x:value.x,y:value.y,width:value.width,height:value.height}) : undefined;
 }
-function freezeWindow(value:PlatformDesktopWindow):PlatformDesktopWindow {
-  return Object.freeze({
-    nativeId:String(value.nativeId), instanceToken:String(value.instanceToken),
-    ...(value.applicationId !== undefined ? {applicationId:String(value.applicationId)} : {}),
-    ...(value.processId !== undefined ? {processId:String(value.processId)} : {}),
-    ...(value.title !== undefined ? {title:String(value.title)} : {}),
-    ...(value.bounds ? {bounds:cloneRect(value.bounds)} : {}),
-    foreground:value.foreground === true, focused:value.focused === true,
-  });
+function objectValue(value:unknown,message:string):object {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(message);
+  return value;
 }
-
 function ownData(value:object,key:string):{present:boolean;value:unknown} {
-  const property = Object.getOwnPropertyDescriptor(value,key);
+  let property:PropertyDescriptor|undefined;
+  try { property = Object.getOwnPropertyDescriptor(value,key); }
+  catch { throw new Error('platform result field invalid'); }
   if (!property) return {present:false,value:undefined};
-  if (!('value' in property)) throw new Error('platform accessibility accessor field rejected');
+  if (!('value' in property) || property.get !== undefined || property.set !== undefined) throw new Error('platform result accessor field rejected');
   return {present:true,value:property.value};
+}
+function requiredData(value:object,key:string):unknown {
+  const property = ownData(value,key);
+  if (!property.present) throw new Error('platform result field missing');
+  return property.value;
 }
 function finiteString(value:unknown,maxBytes:number,allowEmpty=false):string {
   if (typeof value !== 'string' || (!allowEmpty && value.length === 0) || new TextEncoder().encode(value).byteLength > maxBytes) {
-    throw new Error('platform accessibility string invalid');
+    throw new Error('platform result string invalid');
   }
   return value;
 }
-function finiteControlRect(value:unknown):{x:number;y:number;width:number;height:number}|undefined {
+function finiteRect(value:unknown):{x:number;y:number;width:number;height:number}|undefined {
   if (value === undefined) return undefined;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('platform accessibility bounds invalid');
-  const x = ownData(value,'x'); const y = ownData(value,'y'); const width = ownData(value,'width'); const height = ownData(value,'height');
-  if (!x.present || !y.present || !width.present || !height.present) throw new Error('platform accessibility bounds invalid');
-  const numbers = [x.value,y.value,width.value,height.value];
+  const object = objectValue(value,'platform bounds invalid');
+  const x = requiredData(object,'x'); const y = requiredData(object,'y'); const width = requiredData(object,'width'); const height = requiredData(object,'height');
+  const numbers = [x,y,width,height];
   if (numbers.some((entry)=>typeof entry !== 'number' || !Number.isFinite(entry) || Math.abs(entry) > 1_000_000) ||
-      (width.value as number) < 0 || (height.value as number) < 0) throw new Error('platform accessibility bounds invalid');
-  return Object.freeze({x:x.value as number,y:y.value as number,width:width.value as number,height:height.value as number});
+      (width as number) < 0 || (height as number) < 0) throw new Error('platform bounds invalid');
+  return Object.freeze({x:x as number,y:y as number,width:width as number,height:height as number});
+}
+function capturedArray(value:unknown,maxItems:number,message:string):readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error(message);
+  let lengthProperty:PropertyDescriptor|undefined;
+  try { lengthProperty = Object.getOwnPropertyDescriptor(value,'length'); }
+  catch { throw new Error(message); }
+  if (!lengthProperty || !('value' in lengthProperty) || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0 || lengthProperty.value > maxItems) {
+    throw new Error(message);
+  }
+  const result:unknown[] = [];
+  for (let index=0;index<(lengthProperty.value as number);index+=1) {
+    let property:PropertyDescriptor|undefined;
+    try { property = Object.getOwnPropertyDescriptor(value,String(index)); }
+    catch { throw new Error(message); }
+    if (!property || !('value' in property) || property.get !== undefined || property.set !== undefined) throw new Error(message);
+    result.push(property.value);
+  }
+  return Object.freeze(result);
+}
+function captureWindow(value:unknown,addText:(value:string)=>void):PlatformDesktopWindow {
+  const object = objectValue(value,'platform window invalid');
+  const nativeId = finiteString(requiredData(object,'nativeId'),256);
+  const instanceToken = finiteString(requiredData(object,'instanceToken'),512);
+  const foreground = requiredData(object,'foreground');
+  const focused = requiredData(object,'focused');
+  if (typeof foreground !== 'boolean' || typeof focused !== 'boolean') throw new Error('platform window focus state invalid');
+  const applicationIdField = ownData(object,'applicationId');
+  const processIdField = ownData(object,'processId');
+  const titleField = ownData(object,'title');
+  const boundsField = ownData(object,'bounds');
+  const applicationId = applicationIdField.present && applicationIdField.value !== undefined ? finiteString(applicationIdField.value,256) : undefined;
+  const processId = processIdField.present && processIdField.value !== undefined ? finiteString(processIdField.value,256) : undefined;
+  const title = titleField.present && titleField.value !== undefined ? finiteString(titleField.value,4_096,true) : undefined;
+  addText(nativeId); addText(instanceToken);
+  if (applicationId !== undefined) addText(applicationId);
+  if (processId !== undefined) addText(processId);
+  if (title !== undefined) addText(title);
+  return Object.freeze({
+    nativeId,instanceToken,
+    ...(applicationId !== undefined ? {applicationId} : {}),
+    ...(processId !== undefined ? {processId} : {}),
+    ...(title !== undefined ? {title} : {}),
+    ...(boundsField.present && boundsField.value !== undefined ? {bounds:finiteRect(boundsField.value)!} : {}),
+    foreground,focused,
+  });
+}
+function captureSystemResult(value:unknown,limits:Required<ComputerObservationLimits>):{windows:readonly PlatformDesktopWindow[];truncated:boolean;focusedControlNativeId?:string} {
+  const object = objectValue(value,'platform window response invalid');
+  const windowsField = requiredData(object,'windows');
+  const truncated = requiredData(object,'truncated');
+  if (typeof truncated !== 'boolean') throw new Error('platform window response invalid');
+  let textBytes = 0;
+  const addText = (candidate:string) => {
+    textBytes += new TextEncoder().encode(candidate).byteLength;
+    if (textBytes > limits.maxTextBytes) throw new Error('platform bridge exceeded window text acquisition budget');
+  };
+  const rawWindows = capturedArray(windowsField,limits.maxItems,'platform bridge exceeded window acquisition budget');
+  const windows:PlatformDesktopWindow[] = [];
+  for (const rawWindow of rawWindows) windows.push(captureWindow(rawWindow,addText));
+  const focusedControlField = ownData(object,'focusedControlNativeId');
+  const focusedControlNativeId = focusedControlField.present && focusedControlField.value !== undefined ? finiteString(focusedControlField.value,256) : undefined;
+  if (focusedControlNativeId !== undefined) addText(focusedControlNativeId);
+  return Object.freeze({windows:Object.freeze(windows),truncated,...(focusedControlNativeId !== undefined ? {focusedControlNativeId} : {})});
 }
 function captureControlTree(value:unknown,limits:Required<ComputerObservationLimits>):PlatformDesktopControl {
   let items = 0;
@@ -154,51 +216,37 @@ function captureControlTree(value:unknown,limits:Required<ComputerObservationLim
     if (text > limits.maxTextBytes) throw new Error('platform bridge exceeded accessibility text budget');
   };
   const visit = (candidate:unknown,depth:number):PlatformDesktopControl => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new Error('platform accessibility control invalid');
+    const object = objectValue(candidate,'platform accessibility control invalid');
     if (depth > limits.maxDepth || items >= limits.maxItems) throw new Error('platform bridge exceeded accessibility acquisition budget');
-    if (seen.has(candidate)) throw new Error('platform accessibility cycle invalid');
-    seen.add(candidate);
-    const nativeIdField = ownData(candidate,'nativeId');
-    const instanceTokenField = ownData(candidate,'instanceToken');
-    if (!nativeIdField.present || !instanceTokenField.present) throw new Error('platform accessibility identity invalid');
-    const nativeId = finiteString(nativeIdField.value,256);
-    const instanceToken = finiteString(instanceTokenField.value,512);
+    if (seen.has(object)) throw new Error('platform accessibility cycle invalid');
+    seen.add(object);
+    const nativeId = finiteString(requiredData(object,'nativeId'),256);
+    const instanceToken = finiteString(requiredData(object,'instanceToken'),512);
     addText(nativeId); addText(instanceToken);
     items += 1;
 
-    const roleField = ownData(candidate,'role');
-    const nameField = ownData(candidate,'name');
-    const valueField = ownData(candidate,'value');
-    const enabledField = ownData(candidate,'enabled');
-    const focusedField = ownData(candidate,'focused');
-    const boundsField = ownData(candidate,'bounds');
-    const childrenField = ownData(candidate,'children');
+    const roleField = ownData(object,'role');
+    const nameField = ownData(object,'name');
+    const valueField = ownData(object,'value');
+    const enabledField = ownData(object,'enabled');
+    const focusedField = ownData(object,'focused');
+    const boundsField = ownData(object,'bounds');
+    const childrenField = ownData(object,'children');
     const role = roleField.present && roleField.value !== undefined ? finiteString(roleField.value,256,true) : undefined;
     const name = nameField.present && nameField.value !== undefined ? finiteString(nameField.value,4_096,true) : undefined;
     const controlValue = valueField.present && valueField.value !== undefined ? finiteString(valueField.value,4_096,true) : undefined;
     if (role !== undefined) addText(role); if (name !== undefined) addText(name); if (controlValue !== undefined) addText(controlValue);
     if (enabledField.present && enabledField.value !== undefined && typeof enabledField.value !== 'boolean') throw new Error('platform accessibility enabled invalid');
     if (focusedField.present && focusedField.value !== undefined && typeof focusedField.value !== 'boolean') throw new Error('platform accessibility focused invalid');
-    const bounds = boundsField.present ? finiteControlRect(boundsField.value) : undefined;
+    const bounds = boundsField.present && boundsField.value !== undefined ? finiteRect(boundsField.value) : undefined;
 
     let children:readonly PlatformDesktopControl[]|undefined;
     if (childrenField.present && childrenField.value !== undefined) {
-      const rawChildren = childrenField.value;
-      if (!Array.isArray(rawChildren)) throw new Error('platform accessibility children invalid');
-      const lengthProperty = Object.getOwnPropertyDescriptor(rawChildren,'length');
-      if (!lengthProperty || !('value' in lengthProperty) || !Number.isSafeInteger(lengthProperty.value) || lengthProperty.value < 0) {
-        throw new Error('platform accessibility children invalid');
-      }
-      const length = lengthProperty.value as number;
-      if ((depth >= limits.maxDepth && length > 0) || length > limits.maxItems - items) {
-        throw new Error('platform bridge exceeded accessibility acquisition budget');
-      }
+      const remaining = limits.maxItems - items;
+      const rawChildren = capturedArray(childrenField.value,remaining,'platform bridge exceeded accessibility acquisition budget');
+      if (depth >= limits.maxDepth && rawChildren.length > 0) throw new Error('platform bridge exceeded accessibility acquisition budget');
       const copied:PlatformDesktopControl[] = [];
-      for (let index=0;index<length;index+=1) {
-        const child = Object.getOwnPropertyDescriptor(rawChildren,String(index));
-        if (!child || !('value' in child)) throw new Error('platform accessibility child invalid');
-        copied.push(visit(child.value,depth + 1));
-      }
+      for (const child of rawChildren) copied.push(visit(child,depth + 1));
       children = Object.freeze(copied);
     }
     return Object.freeze({
@@ -213,6 +261,53 @@ function captureControlTree(value:unknown,limits:Required<ComputerObservationLim
     });
   };
   return visit(value,0);
+}
+function captureAccessibilityResult(value:unknown,limits:Required<ComputerObservationLimits>):PlatformDesktopAccessibilityObservation {
+  const object = objectValue(value,'platform accessibility response invalid');
+  const status = requiredData(object,'status');
+  const windowInstanceToken = finiteString(requiredData(object,'windowInstanceToken'),512);
+  const rootField = ownData(object,'root');
+  const reasonField = ownData(object,'reason');
+  if (status !== 'available' && status !== 'unavailable' && status !== 'unsupported') throw new Error('platform accessibility status invalid');
+  const reason = reasonField.present && reasonField.value !== undefined ? finiteString(reasonField.value,64) : undefined;
+  if (status === 'available') {
+    if (!rootField.present || rootField.value === undefined || reason !== undefined) throw new Error('platform accessibility response invalid');
+    return Object.freeze({status:'available',windowInstanceToken,root:captureControlTree(rootField.value,limits)});
+  }
+  if (rootField.present && rootField.value !== undefined) throw new Error('platform accessibility response invalid');
+  return Object.freeze({status,windowInstanceToken,...(reason !== undefined ? {reason} : {})});
+}
+function captureVisualResult(value:unknown,limits:DesktopVisualAcquisitionLimits):PlatformDesktopVisualObservation {
+  const object = objectValue(value,'platform visual response invalid');
+  const status = requiredData(object,'status');
+  const windowInstanceToken = finiteString(requiredData(object,'windowInstanceToken'),512);
+  const widthField = ownData(object,'width');
+  const heightField = ownData(object,'height');
+  const artifactField = ownData(object,'artifact');
+  const reasonField = ownData(object,'reason');
+  if (status !== 'available' && status !== 'unavailable' && status !== 'unsupported') throw new Error('platform visual status invalid');
+  const reason = reasonField.present && reasonField.value !== undefined ? finiteString(reasonField.value,64) : undefined;
+  if (status !== 'available') {
+    if ((widthField.present && widthField.value !== undefined) || (heightField.present && heightField.value !== undefined) || (artifactField.present && artifactField.value !== undefined)) {
+      throw new Error('platform visual response invalid');
+    }
+    return Object.freeze({status,windowInstanceToken,...(reason !== undefined ? {reason} : {})});
+  }
+  if (reason !== undefined || !widthField.present || !heightField.present || !Number.isSafeInteger(widthField.value) || !Number.isSafeInteger(heightField.value) ||
+      (widthField.value as number) <= 0 || (heightField.value as number) <= 0 || (widthField.value as number) * (heightField.value as number) > limits.maxPixels) {
+    throw new Error('platform visual acquisition budget exceeded');
+  }
+  if (!artifactField.present || artifactField.value === undefined) throw new Error('platform visual artifact invalid');
+  const artifactObject = objectValue(artifactField.value,'platform visual artifact invalid');
+  const token = finiteString(requiredData(artifactObject,'token'),256);
+  const byteLength = requiredData(artifactObject,'byteLength');
+  const mediaTypeField = ownData(artifactObject,'mediaType');
+  const mediaType = mediaTypeField.present && mediaTypeField.value !== undefined ? finiteString(mediaTypeField.value,128) : undefined;
+  if (!Number.isSafeInteger(byteLength) || (byteLength as number) < 0 || (byteLength as number) > limits.maxBytes) throw new Error('platform visual acquisition budget exceeded');
+  return Object.freeze({
+    status:'available',windowInstanceToken,width:widthField.value as number,height:heightField.value as number,
+    artifact:Object.freeze({token,...(mediaType !== undefined ? {mediaType} : {}),byteLength:byteLength as number}),
+  });
 }
 
 /**
@@ -232,8 +327,7 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
     this.supportsRelativePointer = bridge.supportsRelativePointer === true;
   }
 
-  private leaseWindow(raw:PlatformDesktopWindow):WindowLease {
-    const snapshot = freezeWindow(raw);
+  private leaseWindow(snapshot:PlatformDesktopWindow):WindowLease {
     const previous = this.windowsByNative.get(snapshot.nativeId);
     const generation = previous === undefined ? 0 : previous.instanceToken === snapshot.instanceToken ? previous.generation : previous.generation + 1;
     const publicId = previous?.publicId ?? opaque('window', `${this.identityNamespace}\0${this.bridge.platform}\0${snapshot.nativeId}`);
@@ -259,8 +353,7 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
   }
 
   async observeSystem(limits:Required<ComputerObservationLimits>):Promise<DesktopSystemObservation> {
-    const result = await this.bridge.enumerateWindows(Object.freeze({...limits}));
-    if (!Array.isArray(result.windows) || result.windows.length > limits.maxItems) throw new Error('platform bridge exceeded window acquisition budget');
+    const result = captureSystemResult(await this.bridge.enumerateWindows(Object.freeze({...limits})),limits);
     const leases = result.windows.map((window)=>this.leaseWindow(window));
     const windows = Object.freeze(leases.map((lease)=>this.snapshotWindow(lease)));
     const foreground = leases.find((lease)=>lease.snapshot.foreground);
@@ -268,7 +361,7 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
     let focusedControlId:string|undefined;
     if (focused && result.focusedControlNativeId) focusedControlId = this.controls.get(`${focused.publicId}@${focused.generation}`)?.get(result.focusedControlNativeId)?.publicId;
     return Object.freeze({
-      windows, truncated:result.truncated === true,
+      windows, truncated:result.truncated,
       ...(foreground ? {foregroundWindow:Object.freeze({nativeWindowId:foreground.publicId,generation:foreground.generation})} : {}),
       ...(focused ? {focusedWindow:Object.freeze({nativeWindowId:focused.publicId,generation:focused.generation})} : {}),
       ...(focusedControlId ? {focusedControlId} : {}),
@@ -306,23 +399,22 @@ export class PlatformDesktopUiBackend implements NativeDesktopUiBackend {
   async observeAccessibility(ref:DesktopNativeWindowRef, limits:Required<ComputerObservationLimits>):Promise<DesktopAccessibilityObservation> {
     const lease = this.current(ref);
     if (!lease) return Object.freeze({status:'unavailable',window:Object.freeze({...ref}),reason:'stale-window'});
-    const raw = await this.bridge.accessibility(lease.snapshot,Object.freeze({...limits}));
+    const raw = captureAccessibilityResult(await this.bridge.accessibility(lease.snapshot,Object.freeze({...limits})),limits);
     if (raw.windowInstanceToken !== lease.instanceToken) return Object.freeze({status:'unavailable',window:Object.freeze({...ref}),reason:'window-replaced'});
-    if (raw.status !== 'available' || !raw.root) return Object.freeze({status:raw.status,window:Object.freeze({...ref}),...(raw.reason ? {reason:String(raw.reason)} : {})});
-    const capturedRoot = captureControlTree(raw.root,limits);
-    const root = this.leaseControl(lease,capturedRoot);
+    if (raw.status !== 'available' || !raw.root) return Object.freeze({status:raw.status,window:Object.freeze({...ref}),...(raw.reason ? {reason:raw.reason} : {})});
+    const root = this.leaseControl(lease,raw.root);
     return Object.freeze({status:'available',window:Object.freeze({...ref}),root});
   }
 
   async observeVisual(ref:DesktopNativeWindowRef, limits:DesktopVisualAcquisitionLimits):Promise<DesktopVisualObservation> {
     const lease = this.current(ref);
     if (!lease) return Object.freeze({status:'unavailable',window:Object.freeze({...ref}),reason:'stale-window'});
-    const raw = await this.bridge.visual(lease.snapshot,Object.freeze({...limits}));
+    const raw = captureVisualResult(await this.bridge.visual(lease.snapshot,Object.freeze({...limits})),limits);
     if (raw.windowInstanceToken !== lease.instanceToken) return Object.freeze({status:'unavailable',window:Object.freeze({...ref}),reason:'window-replaced'});
     if (raw.status !== 'available' || !raw.artifact || raw.width === undefined || raw.height === undefined) {
-      return Object.freeze({status:raw.status,window:Object.freeze({...ref}),...(raw.reason ? {reason:String(raw.reason)} : {})});
+      return Object.freeze({status:raw.status,window:Object.freeze({...ref}),...(raw.reason ? {reason:raw.reason} : {})});
     }
-    return Object.freeze({status:'available',window:Object.freeze({...ref}),width:raw.width,height:raw.height,artifact:Object.freeze({...raw.artifact})});
+    return Object.freeze({status:'available',window:Object.freeze({...ref}),width:raw.width,height:raw.height,artifact:raw.artifact});
   }
 
   private dispatchTarget(ref:DesktopNativeWindowRef, controlId?:string):PlatformDispatchTarget|undefined {
