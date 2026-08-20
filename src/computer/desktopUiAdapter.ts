@@ -176,11 +176,13 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     if (!window) throw new Error('stale or missing desktop window');
     if (request.channel === 'visual') {
       const raw = await this.backend.observeVisual(ref);
+      if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
       const data:DesktopVisualObservationData = { status:raw.status, window, width:raw.width, height:raw.height, artifact:raw.artifact, reason:raw.reason };
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, data };
     }
     const l = limits(request.limits);
     const raw:DesktopAccessibilityObservation = await this.backend.observeAccessibility(ref, l);
+    if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop accessibility generation mismatch');
     if (raw.status !== 'available' || !raw.root) {
       const data:DesktopSemanticObservationData = { status:raw.status, window, itemCount:0, textBytes:0, reason:raw.reason };
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, data };
@@ -210,6 +212,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
     if (request.adapterId !== this.descriptor.id) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['adapter-id-mismatch']};
+    if (request.effect === 'observe-only') return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-input-effect-invalid']};
     const ref = this.requestedWindow(request);
     if (!ref) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['surface-generation-required']};
     let window:DesktopWindowSurface|undefined;
