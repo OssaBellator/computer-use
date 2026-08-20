@@ -2,13 +2,13 @@
 
 Version 0.41 gives the task runtime a bounded **pre-commit + post-commit** safety boundary around page actions that may finalize an external effect.
 
-The goal is not to infer every website's business semantics. The goal is to prevent a deterministic task program from treating a page-side **Place order**, **Confirm transfer**, **Publish**, **Delete account**, or similar action as an ordinary click, and then prevent a weak action verifier from causing that irreversible action to be retried automatically.
+The goal is not to infer every website's business semantics. The goal is to prevent a deterministic task program from treating a page-side **Place order**, **Confirm transfer**, **Publish**, **Delete account**, or similar action as an ordinary click, and then prevent a weak or stale result signal from causing an irreversible action to be repeated or falsely reported as successful.
 
 ## Architecture
 
 `TaskRuntime` still starts from the program's declared `risk`, `requiresApproval`, and `maxRisk` policy. Page-grounded commitment handling is additive; it does not replace static policy.
 
-For `activate` actions, and for `Enter`/`Space` on a focused activation control, the runtime performs two bounded phases.
+For `activate` actions, and for `Enter`/`Space` on a focused activation control, the runtime performs bounded pre-dispatch and post-dispatch phases.
 
 ### Before input dispatch
 
@@ -18,6 +18,10 @@ For `activate` actions, and for `Enter`/`Space` on a focused activation control,
 4. Ambiguous labels such as `Confirm`, `Submit`, `Continue`, or `Delete` request one bounded structured-document snapshot when that channel exists.
 5. Corroborate ambiguous actions against purchase, booking, transfer, subscription, publishing, destructive, security, or process-trigger context in the **same owning frame**.
 6. Invoke `TaskRuntimeOptions.approve` before browser input when a commitment is detected, or when available context is too incomplete to rule one out safely.
+7. **After approval, perform a fresh bounded result-baseline read immediately before input.** The earlier observation is not reused because the page may have changed while approval was pending.
+8. Require that fresh baseline to be result-neutral (`unknown`). A pre-existing confirmation, pending/adverse result, material mismatch, missing result channel, or failed fresh read blocks dispatch before any browser input.
+
+The fresh result-neutral baseline prevents a previous receipt or status banner in the same frame from being recycled as evidence that the new action succeeded.
 
 ### After approved input dispatch
 
@@ -57,10 +61,12 @@ The specialized verifier recognizes explicit result families for the detected co
 - **pending** — explicit processing/queued/pending state. The verifier polls briefly in case it settles, then returns pending if it remains unresolved.
 - **declined** — explicit declined/failed result.
 - **canceled** — explicit canceled/cancelled result.
-- **mismatch** — a material term visible after dispatch conflicts with the approved pre-commit term.
+- **mismatch** — a material term visible in the fresh baseline or after dispatch conflicts with the approved pre-commit term.
 - **unknown** — no sufficiently explicit result evidence is available.
 
-`TaskRuntime` exposes distinct terminal run statuses for unresolved side effects:
+A non-`unknown` baseline is a **pre-dispatch policy block**, not a post-action result. It means current page state is unsuitable for attributing a future result safely.
+
+`TaskRuntime` exposes distinct terminal run statuses for unresolved side effects after input has actually been dispatched:
 
 - `side-effect-pending`
 - `side-effect-declined`
@@ -88,13 +94,13 @@ A post-commit `confirmed` result is stronger evidence than the generic action ve
 
 `TaskRuntimeOptions.onCommitmentVerification` is the explicit channel for the detailed post-commit result, including observed material values.
 
-The ordinary task trace intentionally keeps less data. It records pre-commit status/kind/confidence, post-commit status, and only the **names** of mismatched material fields. Amounts, counterparties, schedules, and page excerpts are not copied into the trace.
+The ordinary task trace intentionally keeps less data. It records pre-commit status/kind/confidence, result classification, and only the **names** of mismatched material fields. Amounts, counterparties, schedules, and page excerpts are not copied into the trace.
 
 ## Bounds
 
-Both phases operate over bounded semantic/document state. Neither performs an unbounded DOM query.
+Every commitment phase operates over bounded semantic/document state. None performs an unbounded DOM query.
 
-The pre-commit and post-commit structured-document reads use fixed budgets:
+The contextual, fresh-baseline, and post-commit structured-document reads use fixed budgets:
 
 - at most 128 document blocks;
 - at most 32 KiB of retained document text fields;
@@ -111,14 +117,16 @@ If a strong commitment label is present, missing document context does not remov
 
 If an ambiguous commitment needs contextual reading and the runtime has a structured document channel, extraction failure or incomplete context is treated as uncertainty rather than proof that the action is safe.
 
-After an approved detected commitment is dispatched, missing result evidence is `side-effect-unverified`, not success. A pending result remains `side-effect-pending`; it is never converted into success by timeout.
+Approval alone is not enough to dispatch a detected commitment when specialized verification is enabled. A fresh, result-neutral, same-frame baseline must be available after approval and immediately before input. If the result channel is unavailable, extraction fails, material terms already conflict, or an explicit result state is already present, the action is `policy-blocked` before dispatch.
 
-For compatibility with custom engines, `commitmentDetection: 'off'` explicitly restores declaration-only pre-commit gating, and `commitmentVerification: 'off'` explicitly restores generic post-action behavior. Both are opt-outs, not the standalone defaults.
+After dispatch, missing result evidence is `side-effect-unverified`, not success. A pending result remains `side-effect-pending`; it is never converted into success by timeout.
+
+For compatibility with custom engines or callers that intentionally provide another result-verification layer, `commitmentDetection: 'off'` explicitly restores declaration-only pre-commit gating, and `commitmentVerification: 'off'` explicitly restores generic action/result behavior. Both are opt-outs, not the standalone defaults.
 
 ## Capability status
 
 The current standalone profile is `standalone-chromium-0.41`.
 
-`commitment-detection`, `external-side-effect-verification`, and `process-trigger-verification` remain **partial**. The runtime now has first-class bounded mechanics for approval-bound result classification and duplicate-side-effect prevention, but provider-specific receipt schemas, durable transaction/process identifiers, redirects across provider domains, and arbitrary keyboard/form submission semantics are not yet complete enough to claim full support.
+`commitment-detection`, `external-side-effect-verification`, and `process-trigger-verification` remain **partial**. The runtime now has first-class bounded mechanics for approval-bound fresh-baseline checks, result classification, and duplicate-side-effect prevention, but provider-specific receipt schemas, durable transaction/process identifiers, redirects across provider domains, and arbitrary keyboard/form submission semantics are not yet complete enough to claim full support.
 
-The next transaction-safety refinement should bind durable provider/result identifiers where available and distinguish expected result identity across cross-page or multi-provider handoffs without weakening the current fail-closed boundary.
+The next transaction-safety refinement should bind durable provider/result identifiers where available and distinguish expected result identity across cross-page or multi-provider handoffs without weakening the current fail-closed fresh-baseline boundary.
