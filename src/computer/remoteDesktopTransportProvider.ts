@@ -40,18 +40,32 @@ export interface RemoteDesktopTransportProvider {
   sendText(session: RemoteDesktopProviderSession, input: Readonly<{ kind: 'text'; text: string }>): Promise<RemoteDispatchOutcome<void>>;
 }
 
+const MAX_VISUAL_COORDINATE = 1_000_000;
+const MAX_VISUAL_KEY_BYTES = 128;
+const MAX_VISUAL_TEXT_BYTES = 4_096;
+function utf8Bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
+function validPointerCoordinate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_VISUAL_COORDINATE;
+}
+function validKey(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && utf8Bytes(value) <= MAX_VISUAL_KEY_BYTES && !/[\0\r\n]/.test(value);
+}
+function validText(value: unknown): value is string {
+  return typeof value === 'string' && utf8Bytes(value) <= MAX_VISUAL_TEXT_BYTES && !value.includes('\0');
+}
+
 export function dispatchRemoteDesktopInput(
   provider: RemoteDesktopTransportProvider,
   session: RemoteDesktopProviderSession,
   input: RemoteVisualInput,
 ): Promise<RemoteDispatchOutcome<void>> {
-  if (input.kind === 'pointer' && typeof input.x === 'number' && typeof input.y === 'number') {
+  if (input.kind === 'pointer' && validPointerCoordinate(input.x) && validPointerCoordinate(input.y)) {
     return provider.sendPointer(session, Object.freeze({ kind: 'pointer', x: input.x, y: input.y }));
   }
-  if (input.kind === 'key' && typeof input.key === 'string') {
+  if (input.kind === 'key' && validKey(input.key)) {
     return provider.sendKey(session, Object.freeze({ kind: 'key', key: input.key }));
   }
-  if (input.kind === 'text' && typeof input.text === 'string') {
+  if (input.kind === 'text' && validText(input.text)) {
     return provider.sendText(session, Object.freeze({ kind: 'text', text: input.text }));
   }
   return Promise.resolve(Object.freeze({ dispatch: 'not-dispatched', status: 'failed', evidence: 'remote-desktop.invalid-input' }));
