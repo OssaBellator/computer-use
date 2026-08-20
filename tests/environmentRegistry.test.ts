@@ -4,6 +4,8 @@ import {
   ComputerAdapterRoutingError,
   ComputerEnvironmentRegistry,
 } from '../src/computer/environmentRegistry.js';
+import { DesktopUiEnvironmentAdapter } from '../src/computer/desktopUiAdapter.js';
+import { SyntheticDesktopUiBackend } from '../src/computer/syntheticDesktopUiBackend.js';
 import type {
   ComputerActionRequest,
   ComputerActionResult,
@@ -151,6 +153,25 @@ test('observation routing rejects adapter identity drift', async () => {
     () => registry.observe({ adapterId: 'browser-primary', channel: 'semantic-ui' }),
     (error: unknown) => error instanceof ComputerAdapterRoutingError && error.code === 'invalid-observation-response',
   );
+});
+
+test('registry preserves targeted desktop surface and entity identity', async () => {
+  const backend = new SyntheticDesktopUiBackend();
+  backend.windows = [{nativeWindowId:'win-1',generation:3,foreground:true,focused:true}];
+  backend.accessibility.set('win-1@3', {
+    status:'available',
+    window:{nativeWindowId:'win-1',generation:3},
+    root:{controlId:'root',children:[{controlId:'field',role:'textbox'}]},
+  });
+  const adapter = new DesktopUiEnvironmentAdapter(backend, 'desktop-registry');
+  const registry = new ComputerEnvironmentRegistry();
+  registry.register(adapter);
+  const surface = {adapterId:'desktop-registry',environment:'desktop-ui' as const,surfaceId:'win-1',generation:3};
+  const target = {adapterId:'desktop-registry',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'field',surfaceId:'win-1',generation:3};
+
+  const observation = await registry.observe({adapterId:'desktop-registry',channel:'semantic-ui',surface,target});
+  assert.deepEqual(observation.surface, surface);
+  assert.deepEqual(observation.target, target);
 });
 
 test('registered descriptor authority is snapshotted and cannot be expanded later', async () => {
