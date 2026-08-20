@@ -124,6 +124,7 @@ interface ActionOptions {
   maxRetries?: number;
   onSuccess?: string;
   onFailure?: string;
+  payload?: unknown;
 }
 
 function action(options: ActionOptions = {}): ComputerTaskActionStep {
@@ -139,6 +140,7 @@ function action(options: ActionOptions = {}): ComputerTaskActionStep {
       effect: options.effect ?? 'local-reversible',
       idempotency: options.idempotency ?? 'non-idempotent',
       target: withTarget ? entity() : undefined,
+      payload: options.payload,
     },
     target: withTarget ? target : undefined,
     verification: options.verification,
@@ -353,6 +355,28 @@ test('checkpoint resume around unknown dispatch requires reconciliation and neve
   assert.equal(environment.fake.actCount, 0);
 });
 
+test('checkpoint resume after dispatched but mismatched verification never replays', async () => {
+  const first = setup();
+  const task = program([action({ verification: 'domain.verify' })]);
+  const hooks: ComputerTaskRuntimeHooks = {
+    revalidateTarget,
+    verifiers: { 'domain.verify': async () => ({ state: 'mismatch' }) },
+  };
+  const runtime = new ComputerTaskRuntime(task, first.registry, { executionId: EXECUTION_ID, hooks });
+  assert.equal((await runtime.run()).status, 'verification-mismatch');
+  const checkpoint = runtime.checkpoint();
+  assert.equal(checkpoint.actions[0]?.state, 'dispatched-unverified');
+
+  const resumed = setup();
+  const result = await new ComputerTaskRuntime(task, resumed.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+    hooks,
+  }).run();
+  assert.equal(result.status, 'reconciliation-required');
+  assert.equal(resumed.fake.actCount, 0);
+});
+
 test('adapter response coherence failure becomes unknown and is not retried', async () => {
   const environment = setup();
   environment.fake.plans = [{ status: 'completed', dispatch: 'unknown', verification: 'verified' }];
@@ -371,7 +395,8 @@ test('effectful dispatch cannot complete with not-applicable verification', asyn
 });
 
 test('neutral checkpoint codec round-trips metadata and rejects tampering without raw payloads', () => {
-  const task = program([action()]);
+  const secret = 'never-checkpoint-this-raw-value';
+  const task = program([action({ payload: secret })]);
   const checkpoint = createComputerTaskCheckpoint({
     program: task,
     executionId: EXECUTION_ID,
@@ -382,5 +407,5 @@ test('neutral checkpoint codec round-trips metadata and rejects tampering withou
   const encoded = encodeComputerTaskCheckpoint(checkpoint);
   assert.deepEqual(decodeComputerTaskCheckpoint(encoded), checkpoint);
   assert.throws(() => decodeComputerTaskCheckpoint(encoded.replace('not-started', 'completed')));
-  assert.equal(encoded.includes('payload'), false, 'checkpoint stores dispatch metadata, not action payload content');
+  assert.equal(encoded.includes(secret), false, 'checkpoint stores dispatch metadata, not raw action payload content');
 });
