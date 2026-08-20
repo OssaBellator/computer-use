@@ -45,6 +45,17 @@ test('registered operation authority rejects command-shaped and unregistered req
   assert.deepEqual(missing.evidence, ['compute-isolated-operation-unregistered']);
 });
 
+test('isolated worker rejects non-file registered module schemes', async () => {
+  const a = new IsolatedLocalComputeAdapter({
+    id: 'compute-isolated-test',
+    operations: [{ id: 'test.node-builtin', effect: 'pure-read-only', moduleUrl: 'node:child_process', exportName: 'exec' }],
+  });
+  const result = await a.act(request('builtin', 0, 'test.node-builtin', 'printf should-not-run'));
+  assert.equal(result.status, 'failed');
+  assert.equal(result.dispatch, 'dispatched-once');
+  assert.deepEqual(result.evidence, ['compute-isolated-execution-failed']);
+});
+
 test('hard deadline terminates CPU-bound isolated work', async () => {
   const result = await adapter().act(request('busy', 0, 'test.busy-forever', null, 'observe-only', 'read-only', { timeBudgetMs: 250 }));
   assert.equal(result.status, 'failed');
