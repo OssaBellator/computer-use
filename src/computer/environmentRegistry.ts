@@ -59,6 +59,31 @@ function validateDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): s
   return errors;
 }
 
+function snapshotDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): ComputerEnvironmentAdapterDescriptor {
+  const id = descriptor.id;
+  const kind = descriptor.kind;
+  const version = descriptor.version;
+  const capabilities = descriptor.capabilities;
+
+  if (!Array.isArray(capabilities)) {
+    return Object.freeze({ id, kind, version, capabilities }) as ComputerEnvironmentAdapterDescriptor;
+  }
+
+  const length = capabilities.length;
+  if (!Number.isSafeInteger(length) || length < 0 || length > 512) {
+    return Object.freeze({ id, kind, version, capabilities });
+  }
+
+  const copied: string[] = [];
+  for (let index = 0; index < length; index += 1) copied.push(capabilities[index]);
+  return Object.freeze({
+    id,
+    kind,
+    version,
+    capabilities: Object.freeze(copied),
+  });
+}
+
 function cloneDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): ComputerEnvironmentAdapterDescriptor {
   return Object.freeze({
     id: descriptor.id,
@@ -246,11 +271,11 @@ export class ComputerEnvironmentRegistry {
   private readonly adapters = new Map<string, RegisteredAdapter>();
 
   register(adapter: ComputerEnvironmentAdapter): void {
-    const errors = validateDescriptor(adapter.descriptor);
+    const descriptor = snapshotDescriptor(adapter.descriptor);
+    const errors = validateDescriptor(descriptor);
     if (errors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-descriptor', errors.join('; '));
     }
-    const descriptor = cloneDescriptor(adapter.descriptor);
     if (this.adapters.has(descriptor.id)) {
       throw new ComputerAdapterRoutingError('adapter-already-registered', `adapter already registered: ${descriptor.id}`);
     }
