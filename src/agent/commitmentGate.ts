@@ -85,20 +85,20 @@ export async function detectTaskStepCommitment(
   step: CommitmentCapableTaskStep,
   observation: TaskObservation,
 ): Promise<BrowserCommitmentSummary | undefined> {
-  let summary = initialDetection(step, observation);
-  if (!summary || summary.status === 'none') return undefined;
+  const initial = initialDetection(step, observation);
+  if (!initial || initial.status === 'none') return undefined;
 
   const shouldReadDocument = observation.document === undefined &&
     engine.documentContent !== undefined &&
-    (summary.status === 'detected' || summary.needsDocumentContext);
-  if (!shouldReadDocument) return summary;
+    (initial.status === 'detected' || initial.needsDocumentContext);
+  if (!shouldReadDocument) return initial;
 
   try {
     const document = await engine.documentContent(TASK_COMMITMENT_DOCUMENT_OPTIONS);
-    if (!document) return markBrowserCommitmentContextUnavailable(summary);
-    summary = withDocument(step, observation, document);
-    return summary && summary.status !== 'none' ? summary : undefined;
+    if (!document) return markBrowserCommitmentContextUnavailable(initial);
+    const enriched = withDocument(step, observation, document);
+    return enriched && enriched.status !== 'none' ? enriched : undefined;
   } catch {
-    return markBrowserCommitmentContextUnavailable(summary);
+    return markBrowserCommitmentContextUnavailable(initial);
   }
 }
