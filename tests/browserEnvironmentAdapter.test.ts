@@ -5,7 +5,8 @@ import {
   BrowserComputerEnvironmentAdapter,
   type BrowserComputerRuntime,
 } from '../src/computer/browserEnvironmentAdapter.js';
-import { computerActionMayAutoRetry, type ComputerActionRequest } from '../src/computer/environmentAdapter.js';
+import { computerActionMayAutoRetry, type ComputerActionRequest, type ComputerEntityRef } from '../src/computer/environmentAdapter.js';
+import { ComputerEnvironmentRegistry } from '../src/computer/environmentRegistry.js';
 import type { InteractionNode } from '../src/types.js';
 
 function node(overrides: Partial<InteractionNode> = {}): InteractionNode {
@@ -39,9 +40,16 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
   active = 'page-a';
   nodes: InteractionNode[] = [node()];
   documentText = 'Synthetic fixture content';
+  timeOrigin = 1;
   activationResult = 'verified';
   throwOnType = false;
   activateCalls = 0;
+  hoverCalls = 0;
+  typeCalls = 0;
+  scrollCalls = 0;
+  documentOptions: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number } | undefined;
+  visualOptions: { maxBytes?: number } | undefined;
+  mediaOptions: { maxMediaElements?: number; maxFrames?: number; maxTextLength?: number } | undefined;
 
   browserTargets(): BrowserTargetState[] { return this.targets.map((target) => ({ ...target })); }
   activePageTargetId(): string | undefined { return this.active; }
@@ -62,14 +70,19 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
     return { status: this.activationResult, target: this.nodes[0] ?? null };
   }
   async hover(): Promise<{ status: string; target: InteractionNode | null }> {
+    this.hoverCalls += 1;
     return { status: 'verified', target: this.nodes[0] ?? null };
   }
   async typeInto(): Promise<{ status: string; target: InteractionNode | null }> {
+    this.typeCalls += 1;
     if (this.throwOnType) throw new Error('transport failed after invocation');
     return { status: 'verified', target: this.nodes[0] ?? null };
   }
   async pressKey(): Promise<{ status: string }> { return { status: 'verified' }; }
-  async scrollViewport(): Promise<{ status: string }> { return { status: 'verified' }; }
+  async scrollViewport(): Promise<{ status: string }> {
+    this.scrollCalls += 1;
+    return { status: 'verified' };
+  }
   async browserState() {
     return {
       url: 'https://example.test/',
@@ -77,10 +90,11 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
       title: 'fixture',
       readyState: 'complete' as const,
       historyLength: 1,
-      timeOrigin: 1,
+      timeOrigin: this.timeOrigin,
     };
   }
-  async documentContent(_options?: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number }) {
+  async documentContent(options?: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number }) {
+    this.documentOptions = options;
     const text = this.documentText;
     return {
       frames: [{ frameId: 'main', title: 'fixture', includedBlocks: 1, browserExtractionTruncated: false }],
@@ -93,20 +107,38 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
   async documentContentForPage(_targetId: string, options?: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number }) {
     return this.documentContent(options);
   }
+  async visualSnapshot(_targetId: string | undefined, options?: { maxBytes?: number }) {
+    this.visualOptions = options;
+    return { mimeType: 'image/png' as const, data: 'AA==', byteLength: 1, width: 1, height: 1 };
+  }
+  async mediaSnapshot(_targetId: string | undefined, options?: { maxMediaElements?: number; maxFrames?: number; maxTextLength?: number }) {
+    this.mediaOptions = options;
+    return { frames: [], media: [], errors: [], truncated: false };
+  }
 }
 
-function localAction(adapter: BrowserComputerEnvironmentAdapter, capability: string, target = adapter.entityForNode(node())): ComputerActionRequest {
+async function observedTarget(adapter: BrowserComputerEnvironmentAdapter): Promise<ComputerEntityRef> {
+  const observed = await adapter.observe({
+    adapterId: adapter.descriptor.id,
+    channel: 'semantic-ui',
+    surface: adapter.currentSurface(),
+    limits: { maxItems: 5, maxTextBytes: 256 },
+  });
+  return (observed.data as Array<{ entity: ComputerEntityRef }>)[0].entity;
+}
+
+function localAction(adapter: BrowserComputerEnvironmentAdapter, capability: string, target?: ComputerEntityRef): ComputerActionRequest {
   return {
     adapterId: adapter.descriptor.id,
     actionId: 'test-action',
     capability,
     effect: 'local-reversible',
     idempotency: 'idempotent',
-    target,
+    ...(target ? { target } : {}),
   };
 }
 
-test('browser computer adapter preserves stable surface and target identity', async () => {
+test('browser computer adapter preserves stable surface and document-bound target identity', async () => {
   const runtime = new FakeBrowserRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
   const first = adapter.currentSurface();
@@ -116,26 +148,42 @@ test('browser computer adapter preserves stable surface and target identity', as
   assert.equal(first?.generation, 7);
 
   const observed = await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface: first, limits: { maxItems: 5, maxTextBytes: 256 } });
-  const item = (observed.data as Array<{ entity: { entityId: string; surfaceId?: string; generation?: number } }>)[0];
-  assert.equal(item.entity.entityId, 'main:backend:41');
+  const item = (observed.data as Array<{ entity: ComputerEntityRef }>)[0];
+  assert.match(item.entity.entityId, /^doc:[^:]+:frame:main:backend:41$/);
   assert.equal(item.entity.surfaceId, 'page-a');
   assert.equal(item.entity.generation, 7);
 });
 
-test('browser computer adapter rejects stale generation before observation or action dispatch', async () => {
+test('browser computer adapter rejects stale surface generation and document replacement before dispatch', async () => {
   const runtime = new FakeBrowserRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
   const surface = adapter.currentSurface()!;
-  const entity = adapter.entityForNode(runtime.nodes[0], surface);
+  const entity = await observedTarget(adapter);
   runtime.targets = [{ targetId: 'page-a', type: 'page', attached: true, sequence: 8 }];
 
   await assert.rejects(
     adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface }),
     /generation-mismatch/,
   );
-  const result = await adapter.act(localAction(adapter, 'browser.hover', entity));
-  assert.equal(result.dispatch, 'not-dispatched');
+  const staleGeneration = await adapter.act(localAction(adapter, 'browser.hover', entity));
+  assert.equal(staleGeneration.dispatch, 'not-dispatched');
+  assert.equal(staleGeneration.status, 'rejected');
+
+  runtime.targets = [{ targetId: 'page-a', type: 'page', attached: true, sequence: 7 }];
+  runtime.timeOrigin = 2;
+  const staleDocument = await adapter.act(localAction(adapter, 'browser.hover', entity));
+  assert.equal(staleDocument.dispatch, 'not-dispatched');
+  assert.equal(runtime.hoverCalls, 0);
+});
+
+test('browser computer adapter rejects generationless browser UI entities', async () => {
+  const runtime = new FakeBrowserRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const target = await observedTarget(adapter);
+  const result = await adapter.act(localAction(adapter, 'browser.hover', { ...target, generation: undefined }));
   assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.equal(runtime.hoverCalls, 0);
 });
 
 test('browser computer adapter preserves non-latest target identity from the full target list', () => {
@@ -171,6 +219,36 @@ test('browser computer adapter bounds semantic observations and reports truncati
   assert.equal(observed.complete, false);
 });
 
+test('browser computer adapter applies hard observation ceilings before backend calls', async () => {
+  const runtime = new FakeBrowserRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const huge = 1_000_000_000;
+  await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'document', surface: adapter.currentSurface(), limits: { maxItems: huge, maxTextBytes: huge, maxDepth: huge } });
+  assert.deepEqual(runtime.documentOptions, { maxBlocks: 256, maxTextBytes: 64 * 1024, maxDepth: 32 });
+
+  await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'visual', surface: adapter.currentSurface(), limits: { maxTextBytes: huge } });
+  assert.deepEqual(runtime.visualOptions, { maxBytes: 2 * 1024 * 1024 });
+
+  await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'media', surface: adapter.currentSurface(), limits: { maxItems: huge, maxTextBytes: huge, maxDepth: huge } });
+  assert.deepEqual(runtime.mediaOptions, { maxMediaElements: 64, maxFrames: 32, maxTextLength: 2048 });
+});
+
+test('browser computer adapter supports exact targeted semantic observation and rejects unsupported targeted channels before backend work', async () => {
+  const runtime = new FakeBrowserRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const target = await observedTarget(adapter);
+  const observed = await adapter.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', target });
+  assert.deepEqual(observed.target, target);
+  assert.equal((observed.data as unknown[]).length, 1);
+
+  runtime.documentOptions = undefined;
+  await assert.rejects(
+    adapter.observe({ adapterId: adapter.descriptor.id, channel: 'document', target }),
+    /target-unsupported/,
+  );
+  assert.equal(runtime.documentOptions, undefined);
+});
+
 test('browser computer adapter supports verified read-only no-op semantics', async () => {
   const runtime = new FakeBrowserRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
@@ -189,10 +267,10 @@ test('browser computer adapter supports verified read-only no-op semantics', asy
   });
 });
 
-test('browser computer adapter reports definite pre-dispatch failure for stale target', async () => {
+test('browser computer adapter reports definite pre-dispatch failure for disappeared target', async () => {
   const runtime = new FakeBrowserRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
-  const target = adapter.entityForNode(runtime.nodes[0], adapter.currentSurface());
+  const target = await observedTarget(adapter);
   runtime.nodes = [];
   const result = await adapter.act(localAction(adapter, 'browser.hover', target));
   assert.equal(result.status, 'rejected');
@@ -200,12 +278,52 @@ test('browser computer adapter reports definite pre-dispatch failure for stale t
   assert.equal(result.verification, 'not-applicable');
 });
 
+test('browser computer adapter rejects malformed and oversized action payloads before dispatch', async () => {
+  const runtime = new FakeBrowserRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const target = await observedTarget(adapter);
+  const cases: ComputerActionRequest[] = [
+    { ...localAction(adapter, 'browser.type', target), payload: { text: 'x'.repeat(64 * 1024 + 1) } },
+    { ...localAction(adapter, 'browser.type', target), payload: { text: 'x', expectedValue: 'x'.repeat(64 * 1024 + 1) } },
+    { ...localAction(adapter, 'browser.type', target), payload: { text: 'x', delayMs: 1001 } },
+    { ...localAction(adapter, 'browser.activate', target), payload: { method: 'synthetic' } },
+    { ...localAction(adapter, 'browser.press-key'), payload: { key: 'x'.repeat(65) } },
+    { ...localAction(adapter, 'browser.scroll-viewport'), payload: { deltaY: 100_001 } },
+  ];
+  for (const request of cases) {
+    const result = await adapter.act(request);
+    assert.equal(result.dispatch, 'not-dispatched');
+  }
+  assert.equal(runtime.activateCalls, 0);
+  assert.equal(runtime.typeCalls, 0);
+  assert.equal(runtime.scrollCalls, 0);
+});
+
+test('browser computer adapter rejects high-risk effects on direct input paths', async () => {
+  const runtime = new FakeBrowserRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const target = await observedTarget(adapter);
+  for (const request of [
+    { ...localAction(adapter, 'browser.hover', target), effect: 'external-transaction' as const },
+    { ...localAction(adapter, 'browser.type', target), effect: 'security-sensitive' as const, payload: { text: 'x' } },
+    { ...localAction(adapter, 'browser.scroll-viewport'), effect: 'external-communication' as const, payload: { deltaY: 1 } },
+  ]) {
+    const result = await adapter.act(request);
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.dispatch, 'not-dispatched');
+  }
+  assert.equal(runtime.hoverCalls, 0);
+  assert.equal(runtime.typeCalls, 0);
+  assert.equal(runtime.scrollCalls, 0);
+});
+
 test('browser computer adapter converts adapter exception after invocation into unknown dispatch and blocks retry', async () => {
   const runtime = new FakeBrowserRuntime();
   runtime.throwOnType = true;
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const target = await observedTarget(adapter);
   const request = {
-    ...localAction(adapter, 'browser.type'),
+    ...localAction(adapter, 'browser.type', target),
     payload: { text: 'synthetic' },
   };
   const result = await adapter.act(request);
@@ -221,7 +339,7 @@ test('browser computer adapter delegates ordinary activation through TaskRuntime
   const adapter = new BrowserComputerEnvironmentAdapter(runtime, {
     runtimeOptions: { maxRisk: 'interaction' },
   });
-  const target = adapter.entityForNode(runtime.nodes[0], adapter.currentSurface());
+  const target = await observedTarget(adapter);
   const result = await adapter.act({
     ...localAction(adapter, 'browser.activate', target),
     payload: { method: 'pointer' },
@@ -243,7 +361,7 @@ test('browser computer adapter cannot bypass commitment neutral-baseline verific
       commitmentVerificationPollIntervalMs: 0,
     },
   });
-  const target = adapter.entityForNode(runtime.nodes[0], adapter.currentSurface());
+  const target = await observedTarget(adapter);
   const result = await adapter.act({
     adapterId: adapter.descriptor.id,
     actionId: 'synthetic-purchase',
@@ -255,6 +373,38 @@ test('browser computer adapter cannot bypass commitment neutral-baseline verific
   assert.equal(runtime.activateCalls, 0);
   assert.equal(result.dispatch, 'not-dispatched');
   assert.notEqual(result.status, 'completed');
+});
+
+test('computer environment registry integrates browser descriptor, target identity, stale rejection, and coherent results', async () => {
+  const runtime = new FakeBrowserRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime);
+  const registry = new ComputerEnvironmentRegistry();
+  registry.register(adapter);
+  assert.ok(registry.descriptor(adapter.descriptor.id)?.capabilities.includes('browser.semantic-ui.observe'));
+
+  const initial = await registry.observe({
+    adapterId: adapter.descriptor.id,
+    channel: 'semantic-ui',
+    surface: adapter.currentSurface(),
+  });
+  const target = (initial.data as Array<{ entity: ComputerEntityRef }>)[0].entity;
+  const targeted = await registry.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', target });
+  assert.deepEqual(targeted.target, target);
+  assert.deepEqual(targeted.surface, adapter.currentSurface());
+
+  const generationless = await registry.act(localAction(adapter, 'browser.hover', { ...target, generation: undefined }));
+  assert.equal(generationless.dispatch, 'not-dispatched');
+
+  runtime.timeOrigin = 2;
+  const stale = await registry.act(localAction(adapter, 'browser.hover', target));
+  assert.equal(stale.dispatch, 'not-dispatched');
+
+  const freshObservation = await registry.observe({ adapterId: adapter.descriptor.id, channel: 'semantic-ui', surface: adapter.currentSurface() });
+  const fresh = (freshObservation.data as Array<{ entity: ComputerEntityRef }>)[0].entity;
+  const result = await registry.act({ ...localAction(adapter, 'browser.type', fresh), payload: { text: 'x' } });
+  assert.deepEqual({ status: result.status, dispatch: result.dispatch, verification: result.verification }, {
+    status: 'completed', dispatch: 'dispatched-once', verification: 'verified',
+  });
 });
 
 test('unknown dispatch is never retry eligible for side-effecting browser request', () => {
