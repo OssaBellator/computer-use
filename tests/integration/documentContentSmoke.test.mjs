@@ -32,7 +32,7 @@ test('standalone CDP observer reads bounded structured document content includin
       expression: `(() => {
         document.documentElement.lang = 'en';
         document.title = 'Research Fixture';
-        document.head.innerHTML = '<meta name="description" content="fixture description"><link rel="canonical" href="https://example.test/research">';
+        document.head.innerHTML = '<base href="https://example.test/"><meta name="description" content="fixture description"><link rel="canonical" href="/research">';
         document.body.innerHTML = ` + "`" + `
           <main aria-label="Research">
             <article>
