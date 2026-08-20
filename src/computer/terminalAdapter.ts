@@ -99,6 +99,7 @@ export interface ProcessSpawner {
   spawn(executable: string, argv: readonly string[], options: SpawnOptions): SpawnedProcessLike;
 }
 
+/** Stable path metadata used only for pre-dispatch identity comparison. */
 export interface ExecutionPathIdentity {
   realPath: string;
   kind: 'file' | 'directory';
@@ -115,6 +116,10 @@ export interface ExecutionPathBinder {
   bind(path: string, kind: 'file' | 'directory'): Promise<ExecutionPathIdentity | undefined>;
 }
 
+/**
+ * Trusted adapter-composition hook. The caller-controlled payload cannot grant a
+ * narrower effect by itself. The resolver receives a frozen payload snapshot.
+ */
 export interface TerminalExecutionEffectResolver {
   requiredEffect(payload: Readonly<TerminalExecutionPayload>): ComputerEffectClass | undefined;
 }
@@ -137,7 +142,10 @@ const hostPathBinder: ExecutionPathBinder = {
         dev: value.dev.toString(),
         ino: value.ino.toString(),
         mode: value.mode.toString(),
-        ...(kind === 'file' ? { size: value.size.toString(), mtimeNs: value.mtimeNs.toString() } : {}),
+        ...(kind === 'file' ? {
+          size: value.size.toString(),
+          mtimeNs: value.mtimeNs.toString(),
+        } : {}),
         birthtimeNs: value.birthtimeNs.toString(),
         ctimeNs: value.ctimeNs.toString(),
       };
@@ -159,54 +167,146 @@ function sameExecutionPath(left: ExecutionPathIdentity, right: ExecutionPathIden
     left.mtimeNs === right.mtimeNs;
 }
 
+/**
+ * Arbitrary commands are not safe merely because the payload labels them local
+ * compute. The default therefore requires security-sensitive approval for all
+ * local commands. Declared remote execution may only escalate to remote-execution.
+ * Narrower authorization requires an injected trusted resolver.
+ */
 const conservativeEffectResolver: TerminalExecutionEffectResolver = {
   requiredEffect(payload) {
     return payload.classification === 'remote-execution' ? 'remote-execution' : 'security-sensitive';
   },
 };
 
-function isExecutionPayload(value: unknown): value is TerminalExecutionPayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Partial<TerminalExecutionPayload>;
-  return payload.mode === 'argv' || payload.mode === 'shell';
+type OwnDescriptors = Record<string, PropertyDescriptor>;
+
+function ownDataDescriptors(value: unknown, allowedKeys: readonly string[]): OwnDescriptors | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return undefined;
+  if (Object.getOwnPropertySymbols(value).length > 0) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const allowed = new Set(allowedKeys);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!allowed.has(key) || !('value' in descriptor)) return undefined;
+  }
+  return descriptors;
 }
 
-function cloneEnv(value: unknown): Readonly<Record<string, string>> | undefined | null {
+function descriptorValue(descriptors: OwnDescriptors, key: string): unknown {
+  const descriptor = descriptors[key];
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function snapshotStringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length > 0) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value) as Record<string, PropertyDescriptor>;
+  const lengthDescriptor = descriptors['length'];
+  if (!lengthDescriptor || !('value' in lengthDescriptor)) return undefined;
+  const rawLength = lengthDescriptor.value;
+  if (typeof rawLength !== 'number' || !Number.isSafeInteger(rawLength) || rawLength < 0) return undefined;
+  const length = rawLength;
+  if (length > MAX_ARGV_ITEMS) return undefined;
+  const items: string[] = [];
+  for (const key of Object.keys(descriptors)) {
+    if (key === 'length') continue;
+    if (!/^\d+$/u.test(key) || !('value' in descriptors[key]!)) return undefined;
+    const index = Number(key);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= length) return undefined;
+  }
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string') return undefined;
+    items.push(descriptor.value);
+  }
+  return Object.freeze(items);
+}
+
+function snapshotEnv(value: unknown): Readonly<Record<string, string>> | undefined | null {
   if (value === undefined) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return Object.freeze({ ...(value as Record<string, string>) });
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  if (Object.getOwnPropertySymbols(value).length > 0) return null;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const copied: Record<string, string> = Object.create(null);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!('value' in descriptor) || typeof descriptor.value !== 'string') return null;
+    copied[key] = descriptor.value;
+  }
+  return Object.freeze(copied);
 }
 
+function snapshotEntityRef(value: unknown): ComputerEntityRef | undefined | null {
+  if (value === undefined) return undefined;
+  const descriptors = ownDataDescriptors(value, ['adapterId', 'environment', 'kind', 'entityId', 'surfaceId', 'generation']);
+  if (!descriptors) return null;
+  return Object.freeze({
+    adapterId: descriptorValue(descriptors, 'adapterId') as ComputerEntityRef['adapterId'],
+    environment: descriptorValue(descriptors, 'environment') as ComputerEntityRef['environment'],
+    kind: descriptorValue(descriptors, 'kind') as ComputerEntityRef['kind'],
+    entityId: descriptorValue(descriptors, 'entityId') as ComputerEntityRef['entityId'],
+    ...(descriptors.surfaceId ? { surfaceId: descriptorValue(descriptors, 'surfaceId') as string } : {}),
+    ...(descriptors.generation ? { generation: descriptorValue(descriptors, 'generation') as number } : {}),
+  });
+}
+
+/** Descriptor-snapshot all caller-owned execution material without invoking accessors. */
 function snapshotExecutionPayload(value: unknown): TerminalExecutionPayload | undefined {
-  if (!isExecutionPayload(value)) return undefined;
-  const raw = value as TerminalExecutionPayload;
-  const env = cloneEnv(raw.env);
+  const descriptors = ownDataDescriptors(value, [
+    'mode', 'executable', 'argv', 'shellExecutable', 'shellArgs', 'command', 'cwd', 'env', 'timeoutMs', 'maxOutputBytes', 'classification',
+  ]);
+  if (!descriptors) return undefined;
+  const mode = descriptorValue(descriptors, 'mode');
+  const env = snapshotEnv(descriptorValue(descriptors, 'env'));
   if (env === null) return undefined;
-  if (raw.mode === 'argv') {
-    const snapshot: ArgvExecutionPayload = {
+  if (mode === 'argv') {
+    const argv = snapshotStringArray(descriptorValue(descriptors, 'argv'));
+    if (!argv) return undefined;
+    return Object.freeze({
       mode: 'argv',
-      executable: raw.executable,
-      argv: Object.freeze(Array.isArray(raw.argv) ? [...raw.argv] : raw.argv),
-      cwd: raw.cwd,
+      executable: descriptorValue(descriptors, 'executable') as string,
+      argv,
+      cwd: descriptorValue(descriptors, 'cwd') as string,
       ...(env === undefined ? {} : { env }),
-      ...(raw.timeoutMs === undefined ? {} : { timeoutMs: raw.timeoutMs }),
-      ...(raw.maxOutputBytes === undefined ? {} : { maxOutputBytes: raw.maxOutputBytes }),
-      classification: raw.classification,
-    };
-    return Object.freeze(snapshot);
+      ...(descriptors.timeoutMs ? { timeoutMs: descriptorValue(descriptors, 'timeoutMs') as number } : {}),
+      ...(descriptors.maxOutputBytes ? { maxOutputBytes: descriptorValue(descriptors, 'maxOutputBytes') as number } : {}),
+      classification: descriptorValue(descriptors, 'classification') as TerminalCommandClassification,
+    });
   }
-  const snapshot: ShellExecutionPayload = {
+  if (mode !== 'shell') return undefined;
+  const shellArgs = snapshotStringArray(descriptorValue(descriptors, 'shellArgs'));
+  if (!shellArgs) return undefined;
+  return Object.freeze({
     mode: 'shell',
-    shellExecutable: raw.shellExecutable,
-    shellArgs: Object.freeze(Array.isArray(raw.shellArgs) ? [...raw.shellArgs] : raw.shellArgs),
-    command: raw.command,
-    cwd: raw.cwd,
+    shellExecutable: descriptorValue(descriptors, 'shellExecutable') as string,
+    shellArgs,
+    command: descriptorValue(descriptors, 'command') as string,
+    cwd: descriptorValue(descriptors, 'cwd') as string,
     ...(env === undefined ? {} : { env }),
-    ...(raw.timeoutMs === undefined ? {} : { timeoutMs: raw.timeoutMs }),
-    ...(raw.maxOutputBytes === undefined ? {} : { maxOutputBytes: raw.maxOutputBytes }),
-    classification: raw.classification,
-  };
-  return Object.freeze(snapshot);
+    ...(descriptors.timeoutMs ? { timeoutMs: descriptorValue(descriptors, 'timeoutMs') as number } : {}),
+    ...(descriptors.maxOutputBytes ? { maxOutputBytes: descriptorValue(descriptors, 'maxOutputBytes') as number } : {}),
+    classification: descriptorValue(descriptors, 'classification') as TerminalCommandClassification,
+  });
+}
+
+function snapshotActionRequest(value: unknown): ComputerActionRequest | undefined {
+  const descriptors = ownDataDescriptors(value, ['adapterId', 'actionId', 'capability', 'effect', 'idempotency', 'target', 'payload']);
+  if (!descriptors) return undefined;
+  const target = snapshotEntityRef(descriptorValue(descriptors, 'target'));
+  if (target === null) return undefined;
+  const payload = snapshotExecutionPayload(descriptorValue(descriptors, 'payload'));
+  if (!payload) return undefined;
+  return Object.freeze({
+    adapterId: descriptorValue(descriptors, 'adapterId') as string,
+    actionId: descriptorValue(descriptors, 'actionId') as string,
+    capability: descriptorValue(descriptors, 'capability') as string,
+    effect: descriptorValue(descriptors, 'effect') as ComputerEffectClass,
+    idempotency: descriptorValue(descriptors, 'idempotency') as ComputerActionRequest['idempotency'],
+    ...(target === undefined ? {} : { target }),
+    payload,
+  });
 }
 
 function validateString(value: unknown, maxBytes: number): value is string {
@@ -331,10 +431,12 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    const invalid = validateComputerActionRequest(request, this.descriptor);
+    const snapshot = snapshotActionRequest(request);
+    if (!snapshot) return this.prelaunchFailure('terminal.action.invalid');
+    const invalid = validateComputerActionRequest(snapshot, this.descriptor);
     if (invalid.length > 0) return this.prelaunchFailure('terminal.action.invalid');
-    const capability = request.capability;
-    const requestedEffect = request.effect;
+    const capability = snapshot.capability;
+    const requestedEffect = snapshot.effect;
     if (capability !== 'terminal.execute.argv' && capability !== 'terminal.execute.shell') {
       return {
         status: 'unsupported',
@@ -344,8 +446,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
       };
     }
 
-    const payload = snapshotExecutionPayload(request.payload);
-    if (!payload) return this.prelaunchFailure('terminal.payload.invalid');
+    const payload = snapshot.payload as TerminalExecutionPayload;
     if ((capability === 'terminal.execute.argv') !== (payload.mode === 'argv')) {
       return this.prelaunchFailure('terminal.mode.mismatch');
     }
@@ -355,6 +456,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     if (!requiredEffect || requestedEffect !== requiredEffect) return this.prelaunchFailure('terminal.effect.mismatch');
     const exitStatusVerifiesDomain = requiredEffect === 'process-execution';
 
+    // Everything below is derived only from the immutable snapshot.
     const executableInput = payload.mode === 'argv' ? payload.executable : payload.shellExecutable;
     const cwdInput = payload.cwd;
     const argv = payload.mode === 'argv' ? [...payload.argv] : [...payload.shellArgs, payload.command];
