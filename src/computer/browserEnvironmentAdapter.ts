@@ -224,11 +224,14 @@ function plainDataRecord(value: unknown, label: string, knownKeys: readonly stri
   if (!isRecord(value)) throw new TypeError(`${label} must be a plain data object`);
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} must be a plain data object`);
+  const captured = Object.create(null) as Record<string, unknown>;
   for (const key of knownKeys) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    if (descriptor && !('value' in descriptor)) throw new TypeError(`${label}.${key} must be a data property`);
+    if (!descriptor) continue;
+    if (!('value' in descriptor)) throw new TypeError(`${label}.${key} must be a data property`);
+    captured[key] = descriptor.value;
   }
-  return value;
+  return Object.freeze(captured);
 }
 function dataProperty(record: Record<string, unknown>, key: string): unknown {
   return Object.getOwnPropertyDescriptor(record, key)?.value;
