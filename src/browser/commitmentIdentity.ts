@@ -166,9 +166,12 @@ function canonicalIdentifier(value: string): string {
   return value.normalize('NFKC').trim().replace(/^#+/, '').toLocaleUpperCase('en-US');
 }
 
-function safeIdentifier(value: string, maxBytes: number): string | undefined {
+function safeIdentifier(value: string, maxBytes: number, explicitSeparator: boolean): string | undefined {
   const trimmed = value.trim().replace(/[),.;]+$/, '');
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{1,63}$/.test(trimmed)) return undefined;
+  // Whitespace-only labels are common ("Order ID ABC-42"), but ordinary prose
+  // such as "Order number will be assigned" must not turn the next word into an ID.
+  if (!explicitSeparator && !/[0-9._:/-]/.test(trimmed)) return undefined;
   // Avoid retaining values shaped like payment-card or long account numbers even
   // when a page applies an unsafe generic label to them.
   if (/^\d{12,19}$/.test(trimmed.replace(/[- ]/g, ''))) return undefined;
@@ -187,11 +190,11 @@ function extractFromText(
 ): BrowserCommitmentIdentifier[] {
   const found: BrowserCommitmentIdentifier[] = [];
   for (const descriptor of labels) {
-    const label = escapeRegExp(descriptor.label).replace(/\\ /g, '\\s+');
-    const pattern = new RegExp(`(?:^|\\b)${label}\\s*(?:[:#=]|[-–—])?\\s*#?([A-Za-z0-9][A-Za-z0-9._:/-]{1,63})`, 'ig');
+    const label = escapeRegExp(descriptor.label).replace(/ /g, '\\s+');
+    const pattern = new RegExp(`(?:^|\\b)${label}\\s*([:#=]|[-–—])?\\s*#?([A-Za-z0-9][A-Za-z0-9._:/-]{1,63})`, 'ig');
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text)) !== null) {
-      const value = safeIdentifier(match[1]!, maxBytes);
+      const value = safeIdentifier(match[2]!, maxBytes, match[1] !== undefined);
       if (value) found.push({ type: descriptor.type, value });
       if (match.index === pattern.lastIndex) pattern.lastIndex += 1;
     }
@@ -270,8 +273,12 @@ export function evaluateBrowserCommitmentIdentity(
 ): BrowserCommitmentIdentityEvaluation {
   const baselineValues = new Set(baseline.identifiers.map((identifier) => canonicalIdentifier(identifier.value)));
   const currentValues = new Set(current.identifiers.map((identifier) => canonicalIdentifier(identifier.value)));
-  const matchedValues = new Set([...currentValues].filter((value) => baselineValues.has(value)));
-  const freshValues = new Set([...currentValues].filter((value) => !baselineValues.has(value)));
+  const baselineHasOneUniqueValue = baselineValues.size === 1;
+  const baselineIsEmpty = baselineValues.size === 0;
+  const matchedValues = baselineHasOneUniqueValue
+    ? new Set([...currentValues].filter((value) => baselineValues.has(value)))
+    : new Set<string>();
+  const freshValues = baselineIsEmpty ? new Set(currentValues) : new Set<string>();
 
   const baselineByType = new Map<BrowserCommitmentIdentifierType, Set<string>>();
   const currentByType = new Map<BrowserCommitmentIdentifierType, Set<string>>();
@@ -287,11 +294,13 @@ export function evaluateBrowserCommitmentIdentity(
   }
 
   const conflictingTypes: BrowserCommitmentIdentifierType[] = [];
-  for (const [type, expected] of baselineByType) {
-    const observed = currentByType.get(type);
-    if (!observed?.size) continue;
-    const intersects = [...expected].some((value) => observed.has(value));
-    if (!intersects) conflictingTypes.push(type);
+  if (baselineHasOneUniqueValue) {
+    for (const [type, expected] of baselineByType) {
+      const observed = currentByType.get(type);
+      if (!observed?.size) continue;
+      const intersects = [...expected].some((value) => observed.has(value));
+      if (!intersects) conflictingTypes.push(type);
+    }
   }
 
   const relation: BrowserCommitmentIdentityRelation = conflictingTypes.length
