@@ -146,14 +146,11 @@ function captureOwnDataObject(value: unknown, allowed: readonly string[]): Reado
   try {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return undefined;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const keys = Reflect.ownKeys(descriptors);
-    if (keys.some((key) => typeof key === 'symbol')) return undefined;
     const captured: Record<string, unknown> = Object.create(null);
-    for (const key of keys as string[]) {
-      if (!allowed.includes(key)) return undefined;
-      const descriptor = descriptors[key];
-      if (!descriptor || !('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
+    for (const key of allowed) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined) continue;
+      if (!('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
       captured[key] = descriptor.value;
     }
     return Object.freeze(captured);
@@ -167,23 +164,7 @@ function exactCapturedKeys(value: Readonly<Record<string, unknown>>, allowed: re
 }
 
 function captureKnownDataObject(value: unknown, allowed: readonly string[]): Readonly<Record<string, unknown>> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  try {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return undefined;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const keys = Reflect.ownKeys(descriptors);
-    if (keys.some((key) => typeof key === 'symbol')) return undefined;
-    const captured: Record<string, unknown> = Object.create(null);
-    for (const key of keys as string[]) {
-      const descriptor = descriptors[key];
-      if (!descriptor || !('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
-      if (allowed.includes(key)) captured[key] = descriptor.value;
-    }
-    return Object.freeze(captured);
-  } catch {
-    return undefined;
-  }
+  return captureOwnDataObject(value, allowed);
 }
 
 function captureArrayLength(value: unknown, maxLength: number): number | undefined {
@@ -213,12 +194,6 @@ function capturePlainArray(value: unknown, maxLength: number): readonly unknown[
   const length = captureArrayLength(value, maxLength);
   if (length === undefined) return undefined;
   try {
-    const keys = Reflect.ownKeys(value as object);
-    if (keys.some((key) => typeof key === 'symbol')) return undefined;
-    for (const key of keys as string[]) {
-      if (key === 'length') continue;
-      if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= length) return undefined;
-    }
     const captured: unknown[] = [];
     for (let index = 0; index < length; index += 1) {
       const entry = captureArrayElement(value, index);
@@ -798,8 +773,6 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     return {
       status:captured.status,
       dispatch:captured.dispatched?'dispatched-once':'not-dispatched',
-      // Backend verification can prove low-level delivery for local-reversible input only.
-      // Higher-risk effects require a separate domain verifier.
       verification:captured.status==='completed'?(nativeVerification?'verified':'not-applicable'):'unverified',
       evidence:captured.evidence,
     };
@@ -825,8 +798,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     let absoluteInput: DesktopAbsolutePointerInput | undefined;
     let relativeInput: DesktopRelativePointerInput | undefined;
     switch (authority.capability) {
-      case 'desktop.focus':
-        break;
+      case 'desktop.focus': break;
       case 'desktop.keyboard':
         keyboardInput = validateKeyboardPayload(captured.payload);
         if (!keyboardInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
@@ -877,5 +849,4 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['desktop-backend-threw-after-invocation']};
     }
   }
-
 }
