@@ -4,7 +4,10 @@ import type {
   ComputerObservationEnvelope,
   ComputerObservationRequest,
 } from './environmentAdapter.js';
-import { ComputerEnvironmentRegistry } from './environmentRegistry.js';
+import {
+  ComputerAdapterRoutingError,
+  ComputerEnvironmentRegistry,
+} from './environmentRegistry.js';
 import type { ComputerTaskProgram } from './computerTask.js';
 import {
   ComputerTaskRuntime,
@@ -27,12 +30,12 @@ function snapshotAdapter(
   });
 }
 
-function validateAndSnapshotAdapter(adapter: ComputerEnvironmentAdapter): ComputerEnvironmentAdapter {
+function validatedDescriptor(adapter: ComputerEnvironmentAdapter): ComputerEnvironmentAdapterDescriptor {
   const validationRegistry = new ComputerEnvironmentRegistry();
   validationRegistry.register(adapter);
   const [descriptor] = validationRegistry.descriptors();
   if (!descriptor) throw new Error('registered adapter descriptor unavailable');
-  return snapshotAdapter(adapter, descriptor);
+  return descriptor;
 }
 
 /**
@@ -68,9 +71,17 @@ export class ComputerRuntimeComposition {
   }
 
   register(adapter: ComputerEnvironmentAdapter): this {
-    const snapshot = validateAndSnapshotAdapter(adapter);
+    const descriptor = validatedDescriptor(adapter);
+    if (this.registry.descriptor(descriptor.id)) {
+      throw new ComputerAdapterRoutingError(
+        'adapter-already-registered',
+        `adapter already registered: ${descriptor.id}`,
+      );
+    }
+
+    const snapshot = snapshotAdapter(adapter, descriptor);
     this.registry.register(snapshot);
-    this.runtimeAdapters.set(snapshot.descriptor.id, snapshot);
+    this.runtimeAdapters.set(descriptor.id, snapshot);
     return this;
   }
 
