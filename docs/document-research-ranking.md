@@ -63,10 +63,12 @@ The raw snapshot does not currently retain `scope`, `headers`, `rowspan`, or `co
 
 `diffDocumentContent(previous, current, options)` keeps exact identity changes separate from derived guesses:
 
-- `addedBlockIds` and `removedBlockIds` are exact ID-set differences;
+- `addedBlockIds` and `removedBlockIds` are exact ID-set differences only for frames that were successfully observed on both sides;
 - `changedBlocks` compare same-ID source fields and distinguish semantic/content changes from presentation/viewport changes;
 - `relocatedBlocks` deterministically pair removed/added blocks only when frame, kind, tag, and normalized semantic payload are identical; and
 - `likelyContentUpdates` use the ranking layer to prioritize content-like additions, removals, and same-ID semantic modifications.
+
+If a frame has an extraction error in either snapshot, that frame is excluded from exact add/remove/change/relocation assertions and from exact frame-add/frame-remove assertions. A failed observation is not evidence that the page deleted or created content. The result is marked `truncated` and receives a `frame-error` refresh hint instead.
 
 Relocation pairing never erases exact added/removed results. It only prevents a structurally moved but semantically identical block from being misreported as a likely content update.
 
@@ -80,7 +82,7 @@ Hints identify:
 
 - frame-local changed-content regions when source rectangles are available;
 - structural-change regions for deterministic relocations;
-- whole frames with extraction errors; and
+- whole frames with extraction errors on either side of the diff; and
 - whole frames/affected regions when extraction was truncated.
 
 Region grouping uses generic semantic ancestors such as `main`, `article`, `section`, and `table`, or the nearest available structural parent. Rectangles remain frame-local document coordinates, matching `DocumentContentBlock.rect`.
@@ -89,7 +91,7 @@ A future targeted-refresh implementation can consume these hints without changin
 
 ## Determinism and safety boundaries
 
-The algorithms contain no randomness, current-time inputs, network calls, remote models, browser automation frameworks, anti-bot behavior, or side effects. Equal input snapshots and options produce equal structured output.
+The algorithms contain no randomness, current-time inputs, network calls, remote models, browser automation frameworks, anti-bot behavior, or side effects. Equal input snapshots and options produce equal structured output. Ordering uses locale-independent code-unit comparisons rather than locale/ICU collation so deterministic output does not depend on host locale.
 
 This layer is research/content analysis only. It does not modify commitment detection, verification, `TaskRuntime`, or raw CDP extraction.
 
@@ -100,4 +102,4 @@ Synthetic snapshot coverage lives in:
 - `tests/documentRanking.test.ts`
 - `tests/documentDiff.test.ts`
 
-The tests cover main-content versus boilerplate ranking, identity preservation, reading/section order, table header associations, deterministic relocation/content diffing, viewport-only changes, refresh hints, and output bounds. No live sites or transaction-like actions are involved.
+The tests cover main-content versus boilerplate ranking, identity preservation, reading/section order, table header associations, deterministic relocation/content diffing, viewport-only changes, uncertain frame failures in both directions, locale-independent refresh ordering, refresh hints, and output bounds. No live sites or transaction-like actions are involved.
