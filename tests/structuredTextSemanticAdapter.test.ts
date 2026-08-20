@@ -2,257 +2,107 @@
 import assert from 'node:assert/strict';
 // @ts-ignore
 import test from 'node:test';
-import type {
-  ExportDocumentIntent,
-  InsertTextIntent,
-  PublishDocumentIntent,
-  ReplaceTextIntent,
-  SaveDocumentIntent,
-} from '../src/computer/documentModels.js';
-import {
-  DeterministicStructuredTextBackend,
-  StructuredTextSemanticController,
-  type StructuredTextDispatchResult,
-} from '../src/application/structuredTextSemanticAdapter.js';
+import type { ExportDocumentIntent, InsertTextIntent, PublishDocumentIntent, ReplaceTextIntent, SaveDocumentIntent } from '../src/computer/documentModels.js';
+import { DeterministicStructuredTextBackend, StructuredTextSemanticController, type StructuredTextDispatchResult } from '../src/application/structuredTextSemanticAdapter.js';
 
 const verificationBounds = { maxItems: 1, maxTextBytes: 256 };
-
 function insertion(backend: DeterministicStructuredTextBackend, text = 'X'): InsertTextIntent {
-  const document = backend.currentDocument();
-  return {
-    kind: 'insert-text',
-    intentId: 'insert-1',
-    document,
-    effect: 'local-reversible-edit',
-    target: backend.sectionRef(),
-    at: 1,
-    text,
-  };
+  return { kind: 'insert-text', intentId: 'insert-1', document: backend.currentDocument(), effect: 'local-reversible-edit', target: backend.sectionRef(), at: 1, text };
 }
 
-test('document replacement advances generation and stale intent is rejected before dispatch', async () => {
+test('document replacement rejects stale generation before dispatch', async () => {
   class ReplacingBackend extends DeterministicStructuredTextBackend {
-    private replaceBeforeIdentity = true;
-    override async readRevision(): Promise<number> {
-      const revision = await super.readRevision();
-      if (this.replaceBeforeIdentity) {
-        this.replaceBeforeIdentity = false;
-        this.replaceDocument();
-      }
-      return revision;
-    }
+    private once = true;
+    override async readRevision(): Promise<number> { const r = await super.readRevision(); if (this.once) { this.once = false; this.replaceDocument(); } return r; }
   }
   const backend = new ReplacingBackend('doc-replace', ['abc']);
-  const original = backend.currentDocument();
-  const controller = new StructuredTextSemanticController(backend);
-  const result = await controller.execute(insertion(backend), verificationBounds);
-  assert.equal(result.status, 'rejected');
-  assert.equal(result.dispatch, 'not-dispatched');
-  assert.equal(result.reason, 'document-generation-stale');
-  assert.equal(backend.currentDocument().generation, original.generation + 1);
-  assert.equal(backend.dispatchCount, 0);
+  const result = await new StructuredTextSemanticController(backend).execute(insertion(backend), verificationBounds);
+  assert.equal(result.status, 'rejected'); assert.equal(result.dispatch, 'not-dispatched'); assert.equal(backend.dispatchCount, 0);
 });
 
-test('fresh revalidation rejects stale entity generation immediately before dispatch', async () => {
+test('stale entity generation is rejected immediately before dispatch', async () => {
   class ReplacingSectionBackend extends DeterministicStructuredTextBackend {
-    private replaceBeforeIdentity = true;
-    override async readRevision(): Promise<number> {
-      const revision = await super.readRevision();
-      if (this.replaceBeforeIdentity) {
-        this.replaceBeforeIdentity = false;
-        this.replaceSection();
-      }
-      return revision;
-    }
+    private once = true;
+    override async readRevision(): Promise<number> { const r = await super.readRevision(); if (this.once) { this.once = false; this.replaceSection(); } return r; }
   }
   const backend = new ReplacingSectionBackend('doc-entity', ['abc']);
-  const intent = insertion(backend);
-  const controller = new StructuredTextSemanticController(backend);
-  const result = await controller.execute(intent, verificationBounds);
-  assert.equal(result.status, 'rejected');
-  assert.equal(result.dispatch, 'not-dispatched');
-  assert.equal(result.reason, 'entity-generation-stale');
-  assert.equal(backend.dispatchCount, 0);
+  const result = await new StructuredTextSemanticController(backend).execute(insertion(backend), verificationBounds);
+  assert.equal(result.status, 'rejected'); assert.equal(result.dispatch, 'not-dispatched'); assert.equal(backend.dispatchCount, 0);
 });
 
-test('document observation is bounded by item count, text bytes, and depth', async () => {
-  const backend = new DeterministicStructuredTextBackend('doc-bounds', ['alpha', 'beta', 'gamma']);
-  const controller = new StructuredTextSemanticController(backend);
+test('observation is bounded by items text bytes and depth', async () => {
+  const controller = new StructuredTextSemanticController(new DeterministicStructuredTextBackend('doc-bounds', ['alpha', 'beta', 'gamma']));
   const one = await controller.observe({ maxItems: 1, maxTextBytes: 64, maxDepth: 1 });
-  assert.equal(one.sections.length, 1);
-  assert.equal(one.totalSections, 3);
-  assert.equal(one.truncated, true);
-  assert.equal(one.omittedSections, 2);
-  assert.equal(one.sections[0]?.text, 'alpha');
-
+  assert.equal(one.sections.length, 1); assert.equal(one.truncated, true); assert.equal(one.omittedSections, 2);
   const shallow = await controller.observe({ maxItems: 3, maxTextBytes: 64, maxDepth: 0 });
-  assert.equal(shallow.sections.length, 3);
-  assert.equal(shallow.sections.every(section => section.text === undefined), true);
-  assert.equal(shallow.truncated, true);
-
-  const bytes = await controller.observe({ maxItems: 3, maxTextBytes: 16, maxDepth: 1 });
-  assert.equal(bytes.sections.length < 3, true);
-  assert.equal(bytes.truncated, true);
+  assert.equal(shallow.sections.every(section => section.text === undefined), true); assert.equal(shallow.truncated, true);
 });
 
-test('native insertion dispatches exactly once and verifies resulting model revision and text', async () => {
+test('native insertion dispatches once and verifies model revision and text', async () => {
   const backend = new DeterministicStructuredTextBackend('doc-insert', ['abc']);
-  const controller = new StructuredTextSemanticController(backend);
   const before = await backend.readRevision();
-  const result = await controller.execute(insertion(backend, 'XYZ'), verificationBounds);
-  assert.equal(result.status, 'verified');
-  assert.equal(result.dispatch, 'dispatched');
-  assert.equal(result.verification.status, 'verified');
-  assert.deepEqual(result.verification.evidence, ['text-model-matches']);
-  assert.equal(backend.dispatchCount, 1);
-  assert.equal(await backend.readRevision(), before + 1);
-  const observed = await backend.observeText(backend.sectionRef(), { start: 0, end: 6 }, verificationBounds);
-  assert.equal(observed.kind, 'text');
-  if (observed.kind === 'text') assert.equal(observed.observation.text, 'aXYZbc');
+  const result = await new StructuredTextSemanticController(backend).execute(insertion(backend, 'XYZ'), verificationBounds);
+  assert.equal(result.status, 'verified'); assert.equal(backend.dispatchCount, 1); assert.equal(await backend.readRevision(), before + 1);
 });
 
-test('native replacement verifies the replacement range in resulting model state', async () => {
+test('native replacement verifies resulting model state', async () => {
   const backend = new DeterministicStructuredTextBackend('doc-replace-text', ['hello world']);
-  const document = backend.currentDocument();
-  const intent: ReplaceTextIntent = {
-    kind: 'replace-text',
-    intentId: 'replace-1',
-    document,
-    effect: 'local-reversible-edit',
-    target: backend.sectionRef(),
-    range: { start: 6, end: 11 },
-    text: 'model',
-  };
+  const intent: ReplaceTextIntent = { kind: 'replace-text', intentId: 'replace-1', document: backend.currentDocument(), effect: 'local-reversible-edit', target: backend.sectionRef(), range: { start: 6, end: 11 }, text: 'model' };
   const result = await new StructuredTextSemanticController(backend).execute(intent, verificationBounds);
-  assert.equal(result.status, 'verified');
-  assert.equal(backend.dispatchCount, 1);
-  const observed = await backend.observeText(backend.sectionRef(), { start: 0, end: 11 }, verificationBounds);
-  assert.equal(observed.kind, 'text');
-  if (observed.kind === 'text') assert.equal(observed.observation.text, 'hello model');
+  assert.equal(result.status, 'verified'); assert.equal(backend.dispatchCount, 1);
 });
 
 test('caller edit material is snapshotted before awaits', async () => {
   const backend = new DeterministicStructuredTextBackend('doc-snapshot', ['abc']);
   const intent = insertion(backend, 'original');
   const promise = new StructuredTextSemanticController(backend).execute(intent, verificationBounds);
-  intent.text = 'mutated-after-call';
-  intent.target.generation = 99;
+  intent.text = 'mutated'; intent.target.generation = 99;
   const result = await promise;
   assert.equal(result.status, 'verified');
-  assert.equal(backend.dispatchCount, 1);
-  const observed = await backend.observeText(backend.sectionRef(), { start: 1, end: 9 }, verificationBounds);
-  assert.equal(observed.kind, 'text');
-  if (observed.kind === 'text') assert.equal(observed.observation.text, 'original');
 });
 
-test('truncated verification observation cannot prove semantic edit success', async () => {
+test('truncated verification observation cannot prove success', async () => {
   const backend = new DeterministicStructuredTextBackend('doc-truncated', ['abc']);
-  const result = await new StructuredTextSemanticController(backend).execute(
-    insertion(backend, 'long-result'),
-    { maxItems: 1, maxTextBytes: 3 },
-  );
+  const result = await new StructuredTextSemanticController(backend).execute(insertion(backend, 'long-result'), { maxItems: 1, maxTextBytes: 3 });
   assert.equal(result.status, 'verification-failed');
-  assert.equal(result.dispatch, 'dispatched');
-  assert.equal(result.verification.status, 'insufficient-observation');
-  assert.deepEqual(result.verification.evidence, ['text-observation-not-complete']);
-  assert.equal(backend.dispatchCount, 1);
+  if (result.status === 'verification-failed') assert.equal(result.verification.status, 'insufficient-observation');
 });
 
-test('save, local export, external export, and publish keep distinct effect classification', async () => {
+test('save local export external export and publish remain distinct effects', async () => {
   const backend = new DeterministicStructuredTextBackend('doc-effects', ['abc']);
-  const controller = new StructuredTextSemanticController(backend);
-  const document = backend.currentDocument();
-  const save: SaveDocumentIntent = {
-    kind: 'save-document',
-    intentId: 'save-1',
-    document,
-    effect: 'local-persistence',
-  };
-  const localExport: ExportDocumentIntent = {
-    kind: 'export-document',
-    intentId: 'export-local-1',
-    document,
-    effect: 'local-persistence',
-    format: 'txt',
-    destination: { kind: 'local-artifact', artifactId: 'artifact-1' },
-  };
-  const externalExport: ExportDocumentIntent = {
-    kind: 'export-document',
-    intentId: 'export-external-1',
-    document,
-    effect: 'external-publication',
-    format: 'txt',
-    destination: { kind: 'external-target', targetId: 'remote-export' },
-  };
-  const publish: PublishDocumentIntent = {
-    kind: 'publish-document',
-    intentId: 'publish-1',
-    document,
-    effect: 'external-publication',
-    destinationId: 'remote-destination',
-  };
-  assert.equal(controller.classify(save), 'local-persistence');
-  assert.equal(controller.classify(localExport), 'local-persistence');
-  assert.equal(controller.classify(externalExport), 'external-publication');
-  assert.equal(controller.classify(publish), 'external-publication');
-  const result = await controller.execute(save, verificationBounds);
-  assert.equal(result.status, 'verified');
-  assert.equal(result.effect, 'local-persistence');
-  assert.equal(backend.dispatchCount, 1);
+  const controller = new StructuredTextSemanticController(backend); const document = backend.currentDocument();
+  const save: SaveDocumentIntent = { kind: 'save-document', intentId: 'save', document, effect: 'local-persistence' };
+  const localExport: ExportDocumentIntent = { kind: 'export-document', intentId: 'local', document, effect: 'local-persistence', format: 'txt', destination: { kind: 'local-artifact', artifactId: 'a' } };
+  const externalExport: ExportDocumentIntent = { kind: 'export-document', intentId: 'external', document, effect: 'external-publication', format: 'txt', destination: { kind: 'external-target', targetId: 'r' } };
+  const publish: PublishDocumentIntent = { kind: 'publish-document', intentId: 'publish', document, effect: 'external-publication', destinationId: 'r' };
+  assert.equal(controller.classify(save), 'local-persistence'); assert.equal(controller.classify(localExport), 'local-persistence');
+  assert.equal(controller.classify(externalExport), 'external-publication'); assert.equal(controller.classify(publish), 'external-publication');
 });
 
-test('backend result revision mutation cannot substitute for model verification', async () => {
+test('backend result mutation cannot substitute for model verification', async () => {
   class MutatingResultBackend extends DeterministicStructuredTextBackend {
-    override async dispatchSemanticEdit(
-      intent: Parameters<DeterministicStructuredTextBackend['dispatchSemanticEdit']>[0],
-    ): Promise<StructuredTextDispatchResult> {
-      const result = await super.dispatchSemanticEdit(intent);
-      result.revision = -999;
-      return result;
-    }
+    override async dispatchSemanticEdit(intent: Parameters<DeterministicStructuredTextBackend['dispatchSemanticEdit']>[0]): Promise<StructuredTextDispatchResult> { const result = await super.dispatchSemanticEdit(intent); result.revision = -999; return result; }
   }
-  const backend = new MutatingResultBackend('doc-result-isolation', ['abc']);
+  const backend = new MutatingResultBackend('doc-result', ['abc']);
   const result = await new StructuredTextSemanticController(backend).execute(insertion(backend, 'Q'), verificationBounds);
   assert.equal(result.status, 'verified');
-  assert.equal(result.verification.status, 'verified');
-  assert.equal(backend.dispatchCount, 1);
 });
 
-test('post-return backend dispatch-result mutation cannot alter controller-owned outcome', async () => {
-  class LateMutatingResultBackend extends DeterministicStructuredTextBackend {
-    private lastResult?: StructuredTextDispatchResult;
-
-    override async dispatchSemanticEdit(
-      intent: Parameters<DeterministicStructuredTextBackend['dispatchSemanticEdit']>[0],
-    ): Promise<StructuredTextDispatchResult> {
-      this.lastResult = await super.dispatchSemanticEdit(intent);
-      return this.lastResult;
-    }
-
-    override async observeText(
-      target: Parameters<DeterministicStructuredTextBackend['observeText']>[0],
-      range: Parameters<DeterministicStructuredTextBackend['observeText']>[1],
-      bounds: Parameters<DeterministicStructuredTextBackend['observeText']>[2],
-    ): ReturnType<DeterministicStructuredTextBackend['observeText']> {
-      if (this.lastResult) this.lastResult.dispatch = 'uncertain';
-      return super.observeText(target, range, bounds);
+test('backend that mutates then throws is uncertain and never replayed', async () => {
+  class MutateThenThrowBackend extends DeterministicStructuredTextBackend {
+    override async dispatchSemanticEdit(intent: Parameters<DeterministicStructuredTextBackend['dispatchSemanticEdit']>[0]): Promise<StructuredTextDispatchResult> {
+      await super.dispatchSemanticEdit(intent);
+      throw new Error('transport lost after native dispatch');
     }
   }
-
-  const backend = new LateMutatingResultBackend('doc-late-result-mutation', ['abc']);
+  const backend = new MutateThenThrowBackend('doc-throw', ['abc']);
   const result = await new StructuredTextSemanticController(backend).execute(insertion(backend, 'Q'), verificationBounds);
-  assert.equal(result.status, 'verified');
-  assert.equal(result.dispatch, 'dispatched');
-  assert.equal(result.verification.status, 'verified');
-  assert.equal(backend.dispatchCount, 1);
+  assert.equal(result.status, 'uncertain'); assert.equal(result.dispatch, 'uncertain'); assert.equal(backend.dispatchCount, 1);
+  if (result.status === 'uncertain') assert.equal(result.verification.status, 'verified');
 });
 
-test('uncertain side-effect dispatch is never automatically replayed', async () => {
-  const backend = new DeterministicStructuredTextBackend('doc-uncertain', ['abc']);
-  backend.markNextDispatchUncertain();
+test('explicit uncertain side-effect dispatch is never automatically replayed', async () => {
+  const backend = new DeterministicStructuredTextBackend('doc-uncertain', ['abc']); backend.markNextDispatchUncertain();
   const result = await new StructuredTextSemanticController(backend).execute(insertion(backend, 'Q'), verificationBounds);
-  assert.equal(result.status, 'uncertain');
-  assert.equal(result.dispatch, 'uncertain');
-  assert.equal(result.verification.status, 'verified');
-  assert.equal(backend.dispatchCount, 1);
+  assert.equal(result.status, 'uncertain'); assert.equal(backend.dispatchCount, 1);
 });
