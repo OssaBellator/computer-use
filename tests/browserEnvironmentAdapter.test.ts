@@ -144,7 +144,7 @@ test('browser computer adapter supports verified read-only no-op semantics', asy
   });
 });
 
-test('browser computer adapter rejects observe-only activation and key dispatch before native input', async () => {
+test('browser computer adapter rejects observe-only activation and key dispatch before native input and retry', async () => {
   const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), target = await observedTarget(adapter);
   const activateRequest: ComputerActionRequest = {
     adapterId: adapter.descriptor.id, actionId: 'observe-activate', capability: 'browser.activate',
@@ -157,6 +157,7 @@ test('browser computer adapter rejects observe-only activation and key dispatch 
   for (const request of [activateRequest, keyRequest]) {
     const result = await adapter.act(request);
     assert.equal(result.status, 'rejected'); assert.equal(result.dispatch, 'not-dispatched');
+    assert.equal(adapter.mayAutoRetry(request, result), false);
   }
   assert.equal(runtime.activateCalls, 0); assert.equal(runtime.pressKeyCalls, 0);
 });
