@@ -1,4 +1,8 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
+import type {
+  BoundedSemanticSnapshotLimits,
+  BoundedSemanticSnapshotResult,
+} from '../browser/boundedSemanticSnapshot.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
 import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
@@ -95,6 +99,14 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
   ): Promise<Readonly<Record<string, string>> | undefined> {
     const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
     return engine?.frameDocumentTokens(limits);
+  }
+
+  async semanticSnapshot(
+    targetId: string | undefined,
+    limits: BoundedSemanticSnapshotLimits,
+  ): Promise<BoundedSemanticSnapshotResult | undefined> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.semanticSnapshot(limits);
   }
 
   async documentContentForPage(
