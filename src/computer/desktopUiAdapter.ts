@@ -20,6 +20,7 @@ import type {
   DesktopNativeWindowRef,
   DesktopRelativePointerInput,
   DesktopSystemObservation,
+  DesktopVisualAcquisitionLimits,
   DesktopVisualArtifactRef,
   NativeDesktopUiBackend,
 } from './desktopUiBackend.js';
@@ -37,6 +38,9 @@ const MAX_ACCESSIBILITY_ROLE_BYTES = 256;
 const MAX_ACCESSIBILITY_TEXT_BYTES = 4_096;
 const MAX_RECT_MAGNITUDE = 1_000_000;
 const MAX_VISUAL_DIMENSION = 100_000;
+const MAX_VISUAL_PIXELS = 4_194_304;
+const MAX_VISUAL_BYTES = 16_777_216;
+const VISUAL_PIXELS_PER_ITEM = 4_096;
 const MAX_BACKEND_EVIDENCE = 16;
 const PREFLIGHT_LIMITS: Required<ComputerObservationLimits> = { maxItems: MAX_LIMIT, maxTextBytes: 1_000_000, maxDepth: 1 };
 const MAX_ABSOLUTE_COORDINATE = 1_000_000;
@@ -103,6 +107,14 @@ function limits(input?: ComputerObservationLimits): Required<ComputerObservation
     maxTextBytes: Math.min(1_000_000, input?.maxTextBytes ?? DEFAULT_LIMITS.maxTextBytes),
     maxDepth: Math.min(128, input?.maxDepth ?? DEFAULT_LIMITS.maxDepth),
   };
+}
+
+function visualAcquisitionLimits(input?: ComputerObservationLimits): DesktopVisualAcquisitionLimits {
+  const bounded = limits(input);
+  return Object.freeze({
+    maxPixels: Math.min(MAX_VISUAL_PIXELS, Math.max(1, bounded.maxItems) * VISUAL_PIXELS_PER_ITEM),
+    maxBytes: Math.min(MAX_VISUAL_BYTES, Math.max(1, bounded.maxTextBytes)),
+  });
 }
 
 function textBytes(value: string | undefined): number {
@@ -706,11 +718,14 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     const window = await this.currentWindow(ref);
     if (!window) throw new Error('stale or missing desktop window');
     if (snapshotRequest.channel === 'visual') {
-      const raw = captureVisualObservation(await this.backend.observeVisual(ref));
+      const acquisition = visualAcquisitionLimits(snapshotRequest.limits);
+      const raw = captureVisualObservation(await this.backend.observeVisual(ref, acquisition));
       if (!raw) throw new Error('desktop visual observation invalid');
       if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
       if (!validVisualDimension(raw.width) || !validVisualDimension(raw.height)) throw new Error('desktop visual dimensions invalid');
+      if (raw.width !== undefined && raw.height !== undefined && raw.width * raw.height > acquisition.maxPixels) throw new Error('desktop visual capture budget exceeded');
       const artifact = cloneVisualArtifact(raw.artifact);
+      if (artifact?.byteLength !== undefined && artifact.byteLength > acquisition.maxBytes) throw new Error('desktop visual capture budget exceeded');
       if (!validReasonCode(raw.reason)) throw new Error('desktop visual reason code invalid');
       const data:DesktopVisualObservationData = Object.freeze({ status:raw.status, window, width:raw.width, height:raw.height, ...(artifact ? {artifact} : {}), reason:raw.reason });
       return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:snapshotRequest.target, data };
