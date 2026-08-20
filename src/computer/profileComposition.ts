@@ -8,23 +8,23 @@ import {
 } from './computerCapabilities.js';
 
 export const COMPUTER_USE_CORE_CAPABILITY_PROFILE: ComputerCapabilityProfile = {
-  id: 'computer-use-core-0.1',
+  id: 'computer-use-core-0.2',
   capabilities: {
     'adapter-routing': {
       support: 'supported',
       note: 'ComputerEnvironmentRegistry routes explicit adapter IDs and fails closed on cross-adapter identity mismatch',
     },
     'explicit-confirmation-gate': {
-      support: 'partial',
-      note: 'environment-neutral effect classification exists; TaskRuntime approval integration is still browser-specific',
+      support: 'supported',
+      note: 'ComputerTaskRuntime applies environment-neutral effect approval gates before dispatch for effects that require approval',
     },
     'task-checkpointing': {
-      support: 'unsupported',
-      note: 'existing checkpoint codec has not yet been generalized across environment adapters',
+      support: 'supported',
+      note: 'ComputerTaskRuntime validates execution-bound checkpoints, restores the cursor/action ledger, fails closed on unresolved dispatch, and emits deterministic checkpoints',
     },
     'side-effect-verification': {
-      support: 'unsupported',
-      note: 'verification remains domain/controller-specific and has not yet been wired into a neutral runtime',
+      support: 'partial',
+      note: 'ComputerTaskRuntime preserves adapter verification state and supports named verifier hooks, but domain/application verification remains adapter- or verifier-specific',
     },
   },
 };
