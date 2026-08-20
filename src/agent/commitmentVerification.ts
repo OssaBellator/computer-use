@@ -1,4 +1,7 @@
-import type { BrowserCommitmentSummary } from '../browser/commitmentDetector.js';
+import {
+  detectBrowserCommitment,
+  type BrowserCommitmentSummary,
+} from '../browser/commitmentDetector.js';
 import {
   verifyBrowserCommitment,
   type BrowserCommitmentVerificationSummary,
@@ -77,16 +80,48 @@ async function freshVerificationDocument(
   return document ? documentForFrame(document, frameId) : undefined;
 }
 
+function freshCommitment(
+  step: CommitmentCapableTaskStep,
+  target: InteractionNode,
+  document: DocumentContentSnapshot,
+): BrowserCommitmentSummary {
+  return detectBrowserCommitment({
+    action: step.kind,
+    ...(step.kind === 'press-key' ? { key: step.key } : {}),
+    target,
+    document,
+  });
+}
+
+function approvedCommitmentStillMatches(
+  approved: BrowserCommitmentSummary,
+  current: BrowserCommitmentSummary,
+): boolean {
+  if (current.status !== 'detected' || current.kind !== approved.kind) return false;
+  if (approved.commitmentClass !== undefined && current.commitmentClass !== approved.commitmentClass) return false;
+  if (approved.amount?.value !== undefined && current.amount?.value !== approved.amount.value) return false;
+  if (approved.amount?.currency !== undefined && current.amount?.currency !== approved.amount.currency) return false;
+  if (approved.counterparty !== undefined && current.counterparty !== approved.counterparty) return false;
+  if (approved.schedule !== undefined && current.schedule !== approved.schedule) return false;
+  if (approved.recurrence === 'recurring' && current.recurrence !== 'recurring') return false;
+  if (approved.irreversible && !current.irreversible) return false;
+  if (approved.securitySensitive && !current.securitySensitive) return false;
+  return true;
+}
+
 /**
- * Capture a fresh result baseline after approval but before browser input. The
- * earlier TaskObservation is used only to retain the approved target frame; its
- * document snapshot is intentionally not reused because the page may have
- * changed while approval was pending.
+ * Capture a fresh result baseline after approval but before browser input.
  *
- * TaskRuntime requires this baseline to be result-neutral (`unknown`) before
- * dispatch. A pre-existing confirmation, adverse result, pending state, or
- * material mismatch would make later result attribution ambiguous and blocks
- * the action before any browser input is sent.
+ * The target is re-observed and must retain the same stable interaction identity
+ * and owning frame as the approved target. The commitment is then re-detected
+ * from a fresh bounded document read and must still contain every material term
+ * that was present in the approved summary. Finally, the result verifier must be
+ * neutral (`unknown`) so a stale receipt/status cannot be attributed to the new
+ * action.
+ *
+ * Any failure returns undefined; TaskRuntime treats that as a pre-dispatch policy
+ * block. The earlier TaskObservation's document is never reused because the page
+ * may have changed while approval was pending.
  */
 export async function captureTaskStepCommitmentVerificationBaseline(
   engine: TaskRuntimeEngine,
@@ -94,13 +129,24 @@ export async function captureTaskStepCommitmentVerificationBaseline(
   step: CommitmentCapableTaskStep,
   before: TaskObservation,
 ): Promise<TaskCommitmentVerificationBaseline | undefined> {
-  const frameId = activationTarget(step, before)?.frameId;
-  if (!frameId) return undefined;
+  const originalTarget = activationTarget(step, before);
+  if (!originalTarget) return undefined;
+  const expectedTargetId = approved.target?.id ?? originalTarget.id;
+
   try {
-    const document = await freshVerificationDocument(engine, frameId);
+    const freshNodes = await engine.refresh();
+    const freshTarget = activationTarget(step, { ...before, nodes: freshNodes });
+    if (!freshTarget || freshTarget.id !== expectedTargetId || freshTarget.frameId !== originalTarget.frameId) {
+      return undefined;
+    }
+
+    const document = await freshVerificationDocument(engine, freshTarget.frameId);
     if (!document) return undefined;
+    const currentCommitment = freshCommitment(step, freshTarget, document);
+    if (!approvedCommitmentStillMatches(approved, currentCommitment)) return undefined;
+
     return {
-      frameId,
+      frameId: freshTarget.frameId,
       verification: verifyBrowserCommitment(approved, document),
     };
   } catch {
