@@ -13,13 +13,20 @@ import type {
   DesktopAccessibilityNode,
   DesktopAccessibilityObservation,
   DesktopBackendActionResult,
+  DesktopKeyboardInput,
   DesktopNativeWindowRef,
   DesktopSystemObservation,
+  DesktopVisualArtifactRef,
   NativeDesktopUiBackend,
 } from './desktopUiBackend.js';
 
 const DEFAULT_LIMITS: Required<ComputerObservationLimits> = { maxItems: 256, maxTextBytes: 16_384, maxDepth: 16 };
 const MAX_LIMIT = 10_000;
+const MAX_KEY_BYTES = 128;
+const MAX_TEXT_INPUT_BYTES = 4_096;
+const MAX_VISUAL_TOKEN_BYTES = 256;
+const MAX_MEDIA_TYPE_BYTES = 128;
+const KEY_MODIFIERS = new Set(['alt', 'control', 'meta', 'shift']);
 
 export interface DesktopWindowSurface {
   surface: ComputerSurfaceRef;
@@ -57,12 +64,14 @@ export interface DesktopVisualObservationData {
   window: DesktopWindowSurface;
   width?: number;
   height?: number;
-  artifact?: unknown;
+  artifact?: DesktopVisualArtifactRef;
   reason?: string;
 }
 
 export interface DesktopSystemObservationData {
   windows: readonly DesktopWindowSurface[];
+  itemCount: number;
+  textBytes: number;
   foregroundSurface?: ComputerSurfaceRef;
   focusedSurface?: ComputerSurfaceRef;
   focusedControl?: ComputerEntityRef;
@@ -81,6 +90,38 @@ function textBytes(value: string | undefined): number {
 }
 
 function validFiniteNumber(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value); }
+
+function validBoundedString(value: unknown, maxBytes: number, allowEmpty = false): value is string {
+  return typeof value === 'string' && (allowEmpty || value.length > 0) && textBytes(value) <= maxBytes && !value.includes('\0');
+}
+
+function validVisualArtifact(value: DesktopVisualArtifactRef | undefined): boolean {
+  if (value === undefined) return true;
+  if (!validBoundedString(value.token, MAX_VISUAL_TOKEN_BYTES)) return false;
+  if (value.mediaType !== undefined && !validBoundedString(value.mediaType, MAX_MEDIA_TYPE_BYTES)) return false;
+  return value.byteLength === undefined || (Number.isSafeInteger(value.byteLength) && value.byteLength >= 0);
+}
+
+function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const p = payload as { kind?:unknown; key?:unknown; text?:unknown; modifiers?:unknown };
+  if (p.kind === 'text') {
+    if (!validBoundedString(p.text, MAX_TEXT_INPUT_BYTES)) return undefined;
+    if (p.key !== undefined || p.modifiers !== undefined) return undefined;
+    return { kind: 'text', text: p.text };
+  }
+  if (p.kind !== 'key-down' && p.kind !== 'key-up') return undefined;
+  if (!validBoundedString(p.key, MAX_KEY_BYTES) || /[\r\n]/.test(p.key)) return undefined;
+  if (p.text !== undefined) return undefined;
+  if (p.modifiers === undefined) return { kind: p.kind, key: p.key };
+  if (!Array.isArray(p.modifiers) || p.modifiers.length > KEY_MODIFIERS.size) return undefined;
+  const seen = new Set<string>();
+  for (const modifier of p.modifiers) {
+    if (typeof modifier !== 'string' || !KEY_MODIFIERS.has(modifier) || seen.has(modifier)) return undefined;
+    seen.add(modifier);
+  }
+  return { kind: p.kind, key: p.key, modifiers: [...seen] as DesktopKeyboardInput extends infer _T ? readonly ('alt'|'control'|'meta'|'shift')[] : never };
+}
 
 export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor;
@@ -117,6 +158,43 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     return { raw, windows: raw.windows.map((window) => this.surface(window)) };
   }
 
+  private boundSystem(raw: DesktopSystemObservation, windows: DesktopWindowSurface[], l: Required<ComputerObservationLimits>): { data:DesktopSystemObservationData; truncated:boolean } {
+    const bounded: DesktopWindowSurface[] = [];
+    let bytes = 0;
+    let truncated = false;
+    for (const window of windows) {
+      if (bounded.length >= l.maxItems) { truncated = true; break; }
+      const ownBytes = textBytes(window.nativeWindowId) + textBytes(window.title) + textBytes(window.application?.applicationId) + textBytes(window.application?.processId);
+      if (bytes + ownBytes > l.maxTextBytes) { truncated = true; break; }
+      bytes += ownBytes;
+      bounded.push(window);
+    }
+    if (bounded.length < windows.length) truncated = true;
+    const byRef = (ref:DesktopNativeWindowRef|undefined) => ref ? bounded.find((w) => w.nativeWindowId===ref.nativeWindowId && w.generation===ref.generation)?.surface : undefined;
+    const focusedWindow = raw.focusedWindow ? bounded.find((w)=>w.nativeWindowId===raw.focusedWindow!.nativeWindowId && w.generation===raw.focusedWindow!.generation) : undefined;
+    let focusedControl: ComputerEntityRef | undefined;
+    if (focusedWindow && raw.focusedControlId) {
+      const controlBytes = textBytes(raw.focusedControlId);
+      if (bytes + controlBytes <= l.maxTextBytes) {
+        bytes += controlBytes;
+        focusedControl = this.controlRef(focusedWindow, raw.focusedControlId);
+      } else {
+        truncated = true;
+      }
+    }
+    return {
+      data: {
+        windows: bounded,
+        itemCount: bounded.length,
+        textBytes: bytes,
+        foregroundSurface: byRef(raw.foregroundWindow),
+        focusedSurface: byRef(raw.focusedWindow),
+        focusedControl,
+      },
+      truncated,
+    };
+  }
+
   private requestedWindow(request: ComputerObservationRequest | ComputerActionRequest): DesktopNativeWindowRef | undefined {
     const source = 'surface' in request ? request.surface : undefined;
     const target = request.target;
@@ -141,7 +219,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     let truncated = false;
     const visit = (node:DesktopAccessibilityNode, depth:number): DesktopControlEntity | undefined => {
       if (itemCount >= l.maxItems || depth > l.maxDepth) { truncated = true; return undefined; }
-      const ownBytes = textBytes(node.role) + textBytes(node.name) + textBytes(node.value);
+      const ownBytes = textBytes(node.controlId) + textBytes(node.role) + textBytes(node.name) + textBytes(node.value);
       if (bytes + ownBytes > l.maxTextBytes) { truncated = true; return undefined; }
       itemCount += 1; bytes += ownBytes;
       const children: DesktopControlEntity[] = [];
@@ -159,15 +237,8 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     if (request.adapterId !== this.descriptor.id) throw new Error('desktop adapter id mismatch');
     if (request.channel === 'system') {
       const { raw, windows } = await this.system();
-      const byRef = (ref:DesktopNativeWindowRef|undefined) => ref ? windows.find((w) => w.nativeWindowId===ref.nativeWindowId && w.generation===ref.generation)?.surface : undefined;
-      const focusedWindow = raw.focusedWindow ? windows.find((w)=>w.nativeWindowId===raw.focusedWindow!.nativeWindowId && w.generation===raw.focusedWindow!.generation) : undefined;
-      const data:DesktopSystemObservationData = {
-        windows,
-        foregroundSurface: byRef(raw.foregroundWindow),
-        focusedSurface: byRef(raw.focusedWindow),
-        focusedControl: focusedWindow && raw.focusedControlId ? this.controlRef(focusedWindow, raw.focusedControlId) : undefined,
-      };
-      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'system', sequence:this.sequence++, complete:true, truncated:false, data };
+      const bounded = this.boundSystem(raw, windows, limits(request.limits));
+      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'system', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, data:bounded.data };
     }
     if (request.channel !== 'semantic-ui' && request.channel !== 'visual') throw new Error(`desktop observation channel unsupported: ${request.channel}`);
     const ref = this.requestedWindow(request);
@@ -177,24 +248,26 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     if (request.channel === 'visual') {
       const raw = await this.backend.observeVisual(ref);
       if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop visual generation mismatch');
+      if (!validVisualArtifact(raw.artifact)) throw new Error('desktop visual artifact metadata invalid');
       const data:DesktopVisualObservationData = { status:raw.status, window, width:raw.width, height:raw.height, artifact:raw.artifact, reason:raw.reason };
-      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, data };
+      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'visual', sequence:this.sequence++, complete:raw.status==='available', truncated:false, surface:window.surface, target:request.target, data };
     }
     const l = limits(request.limits);
     const raw:DesktopAccessibilityObservation = await this.backend.observeAccessibility(ref, l);
     if (raw.window.nativeWindowId !== ref.nativeWindowId || raw.window.generation !== ref.generation) throw new Error('desktop accessibility generation mismatch');
     if (raw.status !== 'available' || !raw.root) {
       const data:DesktopSemanticObservationData = { status:raw.status, window, itemCount:0, textBytes:0, reason:raw.reason };
-      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, data };
+      return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:raw.status !== 'available', truncated:false, surface:window.surface, target:request.target, data };
     }
     const bounded = this.boundTree(window, raw.root, l);
     const data:DesktopSemanticObservationData = { status:'available', window, root:bounded.root, itemCount:bounded.itemCount, textBytes:bounded.textBytes };
-    return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, surface:window.surface, data };
+    return { adapterId:this.descriptor.id, environment:'desktop-ui', channel:'semantic-ui', sequence:this.sequence++, complete:!bounded.truncated, truncated:bounded.truncated, surface:window.surface, target:request.target, data };
   }
 
   private async controlExists(window:DesktopWindowSurface, target:ComputerEntityRef): Promise<boolean> {
     if (target.kind !== 'ui-control' || target.surfaceId !== window.nativeWindowId || target.generation !== window.generation) return false;
     const raw = await this.backend.observeAccessibility({nativeWindowId:window.nativeWindowId,generation:window.generation}, DEFAULT_LIMITS);
+    if (raw.window.nativeWindowId !== window.nativeWindowId || raw.window.generation !== window.generation) return false;
     if (raw.status !== 'available' || !raw.root) return false;
     const queue = [raw.root];
     let seen = 0;
@@ -233,9 +306,9 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
           return this.map(await this.backend.focus({window:ref,controlId:request.target.kind === 'ui-control' ? request.target.entityId : undefined}, request.effect));
         }
         case 'desktop.keyboard': {
-          const p = request.payload as {kind?:unknown;key?:unknown;text?:unknown;modifiers?:unknown}|undefined;
-          if (!p || !['key-down','key-up','text'].includes(String(p.kind))) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
-          return this.map(await this.backend.keyboard(ref, p as never, request.effect));
+          const input = validateKeyboardPayload(request.payload);
+          if (!input) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
+          return this.map(await this.backend.keyboard(ref, input, request.effect));
         }
         case 'desktop.pointer.absolute': {
           const p = request.payload as {x?:unknown;y?:unknown;kind?:unknown}|undefined;
