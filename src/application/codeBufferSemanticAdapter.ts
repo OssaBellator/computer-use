@@ -1,6 +1,6 @@
 import {
   checkDocumentFreshness, checkEntityFreshness, classifyIntentEffect, observeTextRange, sameStructuredEntityRef,
-  validateCodeRange, validateIntent, verifyPostEdit,
+  validateCodeRange, validateIntent, validateObservationBounds, verifyPostEdit,
   type CodeBufferRef, type CodeRange, type DocumentIdentityState, type DocumentRef, type EditCodeBufferIntent,
   type ModelObservation, type ObservationBounds, type PostEditVerification, type SemanticEffectClass,
   type TextRange, type VerificationExpectation,
@@ -25,13 +25,14 @@ const cloneBuffer = (ref: CodeBufferRef): CodeBufferRef => ({ ...ref, document: 
 const cloneCodeRange = (range: CodeRange): CodeRange => ({ buffer: cloneBuffer(range.buffer), start: { ...range.start }, end: { ...range.end } });
 function snapshotIntent(intent: EditCodeBufferIntent): EditCodeBufferIntent { return { ...intent, document: cloneDocument(intent.document), target: cloneBuffer(intent.target), range: cloneCodeRange(intent.range), text: `${intent.text}` }; }
 function expectationFor(intent: EditCodeBufferIntent, resolved: TextRange): VerificationExpectation { return { kind: 'text-equals', target: intent.target, range: { start: resolved.start, end: resolved.start + intent.text.length }, expected: intent.text }; }
+const failedVerification = (): PostEditVerification => ({ status: 'insufficient-observation', evidence: ['post-dispatch-observation-failed'] });
 
 export class CodeBufferSemanticController {
   constructor(private readonly backend: CodeBufferNativeBackend) {}
   classify(intent: EditCodeBufferIntent): SemanticEffectClass { return classifyIntentEffect(intent); }
   execute(intent: EditCodeBufferIntent, verificationBounds: ObservationBounds): Promise<CodeBufferExecution> { return this.executeSnapshot(snapshotIntent(intent), { ...verificationBounds }); }
   private async executeSnapshot(intent: EditCodeBufferIntent, verificationBounds: ObservationBounds): Promise<CodeBufferExecution> {
-    const errors = [...validateIntent(intent), ...validateCodeRange(intent.range)];
+    const errors = [...validateIntent(intent), ...validateCodeRange(intent.range), ...validateObservationBounds(verificationBounds)];
     if (errors.length) return { status: 'rejected', dispatch: 'not-dispatched', reason: errors.join('; ') };
     const effect = classifyIntentEffect(intent);
     const beforeRevision = await this.backend.readRevision();
@@ -54,8 +55,13 @@ export class CodeBufferSemanticController {
     }
 
     const expectation = expectationFor(intent, resolved.range);
-    const observation = await this.backend.observeText(intent.target, expectation.range, verificationBounds);
-    const verification = verifyPostEdit({ identity: await this.backend.readIdentity(), beforeRevision, expectation, observation });
+    let verification: PostEditVerification;
+    try {
+      const observation = await this.backend.observeText(intent.target, expectation.range, verificationBounds);
+      verification = verifyPostEdit({ identity: await this.backend.readIdentity(), beforeRevision, expectation, observation });
+    } catch {
+      verification = failedVerification();
+    }
     if (dispatch === 'uncertain') return { status: 'uncertain', effect, dispatch, verification };
     return verification.status === 'verified' ? { status: 'verified', effect, dispatch, verification } : { status: 'verification-failed', effect, dispatch, verification };
   }
