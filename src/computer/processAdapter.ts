@@ -55,10 +55,8 @@ export interface BoundedProcessPidBatch {
   truncated: boolean;
 }
 
-export type ProcessPidBatch = BoundedProcessPidBatch | readonly number[];
-
 export interface ProcessSnapshotSource {
-  listPids(maxCandidates: number): Promise<ProcessPidBatch>;
+  listPids(maxCandidates: number): Promise<BoundedProcessPidBatch>;
   inspect(pid: number): Promise<ProcessRecord | undefined>;
 }
 
@@ -132,9 +130,10 @@ export class ProcessIdentityStore {
       Math.max(limit + 1, limit * PROCESS_CANDIDATE_MULTIPLIER),
     );
     const acquired = await this.source.listPids(candidateLimit);
-    const batch: BoundedProcessPidBatch = Array.isArray(acquired)
-      ? { pids: acquired.slice(0, candidateLimit), truncated: acquired.length > candidateLimit }
-      : acquired as BoundedProcessPidBatch;
+    const batch: BoundedProcessPidBatch = {
+      pids: acquired.pids.slice(0, candidateLimit),
+      truncated: acquired.truncated || acquired.pids.length > candidateLimit,
+    };
     const items: BoundedProcessSnapshot[] = [];
     let inspected = 0;
     for (const pid of batch.pids) {
