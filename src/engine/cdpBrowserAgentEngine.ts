@@ -1,23 +1,38 @@
+import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } from '../agent/taskRuntime.js';
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
 import type { CdpSessionLike } from '../browser/cdpIdentity.js';
+import { DocumentSelectionObserver } from '../browser/documentSelection.js';
 import { CdpDownloadController, type BrowserDownloadControllerOptions, type BrowserDownloadSummary } from '../browser/downloadController.js';
 import { CdpDialogController, isCdpEventSessionLike, type BrowserDialogController, type BrowserDialogHandleResult, type BrowserDialogState } from '../browser/dialogController.js';
+import type { SnapshotPageLike } from '../browser/domSnapshot.js';
 import { CdpFileUploadController, type BrowserFileUploadControllerOptions, type BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import { CdpHistoryController, type BrowserHistoryAction, type BrowserHistoryController, type BrowserHistoryOptions, type BrowserHistoryResult } from '../browser/historyController.js';
 import { CdpNavigationGuard } from '../browser/navigationGuard.js';
 import { CdpNavigationController, type BrowserNavigationOptions, type BrowserNavigationResult, type BrowserNavigator, type NavigationPolicy } from '../browser/navigationController.js';
 import { CdpNetworkActivityMonitor, type NetworkIdleOptions, type NetworkIdleResult } from '../browser/networkActivityMonitor.js';
 import { CdpSelectController, type BrowserSelectMatch, type BrowserSelectResult } from '../browser/selectController.js';
-import type { SnapshotPageLike } from '../browser/domSnapshot.js';
 import { CdpTargetController, type BrowserTargetSummary, type CloseBrowserTargetResult, type CreateBrowserTargetResult } from '../browser/targetController.js';
+import { RichTextController } from '../controller/richTextController.js';
 import type { TargetQuery, TargetResolution } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
-import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } from '../agent/taskRuntime.js';
 import { createCdpInteractionEngine, type CdpInteractionEngineOptions } from './cdpInteractionEngine.js';
 import type { InteractionEngine } from './interactionEngine.js';
 
 export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
-  constructor(readonly interaction: InteractionEngine, private readonly session: CdpSessionLike, readonly navigator: BrowserNavigator = new CdpNavigationController(session), readonly dialogs?: BrowserDialogController, readonly targets?: CdpTargetController, readonly downloads?: CdpDownloadController, readonly historyController: BrowserHistoryController = new CdpHistoryController(session), readonly uploads?: CdpFileUploadController, readonly navigationGuard?: CdpNavigationGuard, readonly networkActivity?: CdpNetworkActivityMonitor, readonly selects: CdpSelectController = new CdpSelectController(session)) {}
+  constructor(
+    readonly interaction: InteractionEngine,
+    private readonly session: CdpSessionLike,
+    readonly navigator: BrowserNavigator = new CdpNavigationController(session),
+    readonly dialogs?: BrowserDialogController,
+    readonly targets?: CdpTargetController,
+    readonly downloads?: CdpDownloadController,
+    readonly historyController: BrowserHistoryController = new CdpHistoryController(session),
+    readonly uploads?: CdpFileUploadController,
+    readonly navigationGuard?: CdpNavigationGuard,
+    readonly networkActivity?: CdpNetworkActivityMonitor,
+    readonly selects: CdpSelectController = new CdpSelectController(session),
+    readonly richText?: RichTextController,
+  ) {}
   async prepare(): Promise<void> { await Promise.all([this.dialogs?.start(), this.targets?.start(), this.downloads?.start(), this.uploads?.start(), this.navigationGuard?.start(), this.networkActivity?.start()]); }
   refresh(): Promise<InteractionNode[]> { return this.interaction.refresh(); }
   browserState(): Promise<BrowserStateSnapshot> { return captureCdpBrowserState(this.session); }
@@ -74,5 +89,20 @@ export function createCdpBrowserAgentEngine(page: SnapshotPageLike, session: Cdp
   const { navigationPolicy, enforceNavigationPolicyAtRequestBoundary, downloadOptions, uploadOptions, networkActivity, ...interactionOptions } = options;
   const eventSession = isCdpEventSessionLike(session) ? session : undefined;
   const useNavigationGuard = eventSession !== undefined && (enforceNavigationPolicyAtRequestBoundary ?? navigationPolicy !== undefined);
-  return new CdpBrowserAgentEngine(createCdpInteractionEngine(page, session, interactionOptions), session, new CdpNavigationController(session, navigationPolicy), eventSession ? new CdpDialogController(eventSession) : undefined, eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined, eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined, new CdpHistoryController(session, navigationPolicy), uploadOptions ? new CdpFileUploadController(session, uploadOptions) : undefined, useNavigationGuard ? new CdpNavigationGuard(eventSession, navigationPolicy) : undefined, eventSession && networkActivity === true ? new CdpNetworkActivityMonitor(eventSession) : undefined);
+  const interaction = createCdpInteractionEngine(page, session, interactionOptions);
+  const richText = new RichTextController(interaction.input, new DocumentSelectionObserver(page));
+  return new CdpBrowserAgentEngine(
+    interaction,
+    session,
+    new CdpNavigationController(session, navigationPolicy),
+    eventSession ? new CdpDialogController(eventSession) : undefined,
+    eventSession ? new CdpTargetController(eventSession, { navigationPolicy }) : undefined,
+    eventSession && downloadOptions ? new CdpDownloadController(eventSession, downloadOptions) : undefined,
+    new CdpHistoryController(session, navigationPolicy),
+    uploadOptions ? new CdpFileUploadController(session, uploadOptions) : undefined,
+    useNavigationGuard ? new CdpNavigationGuard(eventSession, navigationPolicy) : undefined,
+    eventSession && networkActivity === true ? new CdpNetworkActivityMonitor(eventSession) : undefined,
+    new CdpSelectController(session),
+    richText,
+  );
 }
