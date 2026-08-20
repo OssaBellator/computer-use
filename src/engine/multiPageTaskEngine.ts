@@ -49,6 +49,11 @@ interface ObservationActionOptions {
   pollIntervalMs?: number;
 }
 
+interface FrameDocumentTokenLimits {
+  maxFrames: number;
+  maxTextBytes: number;
+}
+
 /**
  * TaskRuntimeEngine adapter over MultiPageCdpAgent. With no active page, passive
  * root target topology remains available while page-bound channels stay empty.
@@ -84,9 +89,12 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     return (await this.pages.inspectEngine(targetId))?.browserState();
   }
 
-  async frameDocumentTokens(targetId: string | undefined): Promise<Readonly<Record<string, string>> | undefined> {
+  async frameDocumentTokens(
+    targetId: string | undefined,
+    limits: FrameDocumentTokenLimits,
+  ): Promise<Readonly<Record<string, string>> | undefined> {
     const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
-    return engine?.frameDocumentTokens();
+    return engine?.frameDocumentTokens(limits);
   }
 
   async documentContentForPage(
