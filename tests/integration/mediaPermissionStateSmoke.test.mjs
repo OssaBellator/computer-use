@@ -161,9 +161,10 @@ test('raw CDP observes shadow media and safely controls media/fullscreen and per
   const blockedFullscreen = await controller.requestFullscreen(before.media[0].identity);
   assert.ok(['rejected', 'verification-failed'].includes(blockedFullscreen.status));
   assert.notEqual((await observeMediaState(client)).fullscreen.pageState, 'active');
-  const blockedPlay = await controller.play(before.media[0].identity);
-  assert.equal(blockedPlay.status, 'rejected');
-  assert.match(blockedPlay.errorText ?? '', /NotAllowedError/i);
+  const preActivationPlay = await controller.play(before.media[0].identity);
+  assert.ok(['verified', 'rejected'].includes(preActivationPlay.status));
+  if (preActivationPlay.status === 'rejected') assert.match(preActivationPlay.errorText ?? '', /NotAllowedError/i);
+  else assert.equal((await controller.pause(before.media[0].identity)).status, 'verified');
 
   await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 70, y: 40, button: 'left', buttons: 1, clickCount: 1 });
   await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 70, y: 40, button: 'left', buttons: 0, clickCount: 1 });

@@ -117,3 +117,33 @@ test('media controller surfaces native activation rejection instead of manufactu
   assert.equal(result.status, 'rejected');
   assert.equal(result.errorText, 'NotAllowedError');
 });
+
+test('generic fullscreen controller verifies non-media elements and treats already-inactive exit as verified', async () => {
+  const { CdpFullscreenController } = await import('../src/browser/fullscreenController.js');
+  const calls: Array<[string, Record<string, unknown> | undefined]> = [];
+  const session = {
+    async send(method: string, params?: Record<string, unknown>): Promise<any> {
+      calls.push([method, params]);
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 11 };
+      if (method === 'DOM.resolveNode') return { object: { objectId: 'generic-element' } };
+      if (method === 'Runtime.callFunctionOn') {
+        assert.equal(String(params?.functionDeclaration).includes('HTMLMediaElement'), false);
+        assert.equal(Object.prototype.hasOwnProperty.call(params ?? {}, 'userGesture'), false);
+        return { result: { value: { fullscreen: true } } };
+      }
+      if (method === 'Runtime.evaluate') {
+        assert.equal(Object.prototype.hasOwnProperty.call(params ?? {}, 'userGesture'), false);
+        return { result: { value: { fullscreen: false } } };
+      }
+      if (method === 'Runtime.releaseObject') return {};
+      throw new Error(`Unexpected ${method}`);
+    },
+  };
+  const controller = new CdpFullscreenController(session);
+  const entered = await controller.requestFullscreen({ frameId: 'main', backendNodeId: 77 });
+  assert.equal(entered.status, 'verified');
+  assert.equal(entered.backendNodeId, 77);
+  const exited = await controller.exitFullscreen('main');
+  assert.equal(exited.status, 'verified');
+  assert.equal(calls.some(([method]) => method === 'Input.dispatchMouseEvent'), false);
+});

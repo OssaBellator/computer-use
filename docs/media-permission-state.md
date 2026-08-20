@@ -29,7 +29,7 @@ The same snapshot observes two distinct fullscreen concepts:
 
 ## Media/fullscreen controller
 
-`CdpMediaController` provides narrowly scoped ordinary controls:
+`CdpMediaController` provides narrowly scoped ordinary media controls, while `CdpFullscreenController` handles fullscreen for any observed element identity containing a frame id and `backendNodeId`:
 
 - play / pause;
 - mute and volume;
@@ -37,9 +37,9 @@ The same snapshot observes two distinct fullscreen concepts:
 - playback rate;
 - request / exit document fullscreen.
 
-The controller resolves the observed `backendNodeId` in the owning frame and calls native `HTMLMediaElement` / Fullscreen APIs through CDP. It does **not** synthesize `dispatchEvent()` behavior and does **not** set CDP `userGesture`; autoplay/fullscreen user-activation policy therefore remains the browser's decision. Operations return only after the requested state is verified or a bounded rejection/verification failure is available. A real browser input can supply activation when a caller intentionally performs one through the normal input layer.
+The controllers resolve the observed `backendNodeId` in the owning frame and call native `HTMLMediaElement` / Fullscreen APIs through CDP. They do **not** synthesize `dispatchEvent()` behavior and do **not** set CDP `userGesture`; autoplay/fullscreen user-activation policy therefore remains the browser's decision. Operations return only after the requested state is verified or a bounded rejection/verification failure is available. A real browser input can supply activation when a caller intentionally performs one through the normal input layer.
 
-Fullscreen verification is shadow-root aware for observed media elements. Fullscreen or playback can legitimately return `rejected` when browser policy requires activation or otherwise disallows the operation.
+Fullscreen verification is shadow-root aware, and generic fullscreen requests are not restricted to media elements. Exiting fullscreen is idempotent: an already-inactive document is a verified final state. Fullscreen or playback can legitimately return `rejected` when browser policy requires activation or otherwise disallows the operation.
 
 These controls do not grant permissions and do not automate credentials, passkeys, MFA, CAPTCHA, or other authentication ceremonies.
 
@@ -69,7 +69,7 @@ Coverage is deterministic and synthetic/local:
 
 - unit fixtures exercise media bounds/privacy, active media selection, nested fullscreen ownership, no synthetic user-activation elevation, native rejection propagation, custom Permissions Policy matching, and browser-level uncertainty;
 - a local raw-CDP Chromium smoke test uses an in-memory WAV inside an open shadow root and a local `srcdoc` iframe policy fixture;
-- the Chromium smoke proves playback/fullscreen are rejected without user activation in the fixture, then uses ordinary CDP mouse input to create real activation before verifying playback succeeds;
+- the Chromium smoke proves fullscreen is not silently elevated without user activation, allows the browser to decide pre-activation playback policy, then uses ordinary CDP mouse input to create real activation before verifying playback succeeds;
 - no external sites or transaction-like effects are used.
 
 No real purchase, payment, booking, transfer, publication, account/security change, deletion, deployment, or external process trigger is used by these tests.
