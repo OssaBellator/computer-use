@@ -15,7 +15,7 @@ function node(id = 'commit'): InteractionNode {
   };
 }
 
-function documentWith(amount: string): DocumentContentSnapshot {
+function documentWith(amount: string, truncated = false): DocumentContentSnapshot {
   const texts = ['Review your order', `Order total AUD ${amount}`, 'Merchant: Synthetic Shop'];
   return {
     frames: [{ frameId: 'main', title: 'Synthetic checkout', includedBlocks: texts.length, browserExtractionTruncated: false }],
@@ -24,7 +24,7 @@ function documentWith(amount: string): DocumentContentSnapshot {
       text, rendered: true, inViewport: true, truncated: false,
     })),
     totalTextBytes: texts.join('').length,
-    truncated: false,
+    truncated,
     frameErrors: [],
   };
 }
@@ -80,4 +80,17 @@ test('same target and approved material terms produce a neutral dispatchable bas
   const baseline = await captureTaskStepCommitmentVerificationBaseline(engine, approved, step, before());
   assert.equal(baseline?.frameId, 'main');
   assert.equal(baseline?.verification.status, 'unknown');
+  assert.equal(baseline?.verification.documentContext, 'available');
+});
+
+test('truncated fresh baseline remains explicitly incomplete for runtime policy blocking', async () => {
+  const engine: TaskRuntimeEngine = {
+    async refresh() { return [node()]; },
+    async documentContent() { return documentWith('49.95', true); },
+    async activate() { throw new Error('not used'); },
+    async typeInto() { throw new Error('not used'); },
+  };
+  const baseline = await captureTaskStepCommitmentVerificationBaseline(engine, approved, step, before());
+  assert.equal(baseline?.verification.status, 'unknown');
+  assert.equal(baseline?.verification.documentContext, 'incomplete');
 });
