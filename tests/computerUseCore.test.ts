@@ -78,6 +78,9 @@ test('browser bridge preserves browser strengths without pretending to be a gene
   assert.equal(computerCapabilityState(profile, 'document-observation').support, 'supported');
   assert.equal(computerCapabilityState(profile, 'relative-pointer-input').support, 'supported');
   assert.equal(computerCapabilityState(profile, 'document-editing').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'clipboard-read').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'clipboard-write').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'drag-drop').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'media-playback').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'game-control').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'communication-control').support, 'partial');
