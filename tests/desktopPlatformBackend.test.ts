@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DesktopUiEnvironmentAdapter, type DesktopSemanticObservationData, type DesktopSystemObservationData } from '../src/computer/desktopUiAdapter.js';
 import { PlatformDesktopUiBackend, type DesktopPlatformBridge, type PlatformDesktopDispatch, type PlatformDesktopWindow } from '../src/computer/desktopPlatformBackend.js';
-import type { ComputerEffectClass, ComputerObservationLimits } from '../src/computer/environmentAdapter.js';
+import { computerActionMayAutoRetry, type ComputerEffectClass, type ComputerObservationLimits } from '../src/computer/environmentAdapter.js';
 import type { DesktopBackendActionResult, DesktopVisualAcquisitionLimits } from '../src/computer/desktopUiBackend.js';
 
 class ContractBridge implements DesktopPlatformBridge {
@@ -31,7 +31,7 @@ class ContractBridge implements DesktopPlatformBridge {
   async dispatch(action:PlatformDesktopDispatch,_effect:ComputerEffectClass):Promise<DesktopBackendActionResult> {
     this.dispatches.push(action);
     if (this.throwOnDispatch) throw new Error('native helper lost after possible dispatch');
-    if (this.malformedDispatch) return {status:'completed',dispatched:true,verified:true,evidence:['bad evidence with spaces']} as DesktopBackendActionResult;
+    if (this.malformedDispatch) return null as unknown as DesktopBackendActionResult;
     const liveWindow = this.windows.find((candidate)=>candidate.nativeId === action.target.nativeWindowId);
     if (!liveWindow || liveWindow.instanceToken !== action.target.expectedWindowInstanceToken) return {status:'rejected',dispatched:false,verified:false,evidence:['native-window-stale']};
     if (action.target.nativeControlId && this.controlInstance !== action.target.expectedControlInstanceToken) return {status:'rejected',dispatched:false,verified:false,evidence:['native-control-stale']};
@@ -89,23 +89,26 @@ test('native acquisition receives caller bounds before enumeration/tree material
   assert.equal(bridge.lastAccessibilityLimits?.maxDepth,1);
 });
 
-test('malformed native dispatch result is never upgraded to success',async()=>{
+test('malformed native dispatch result maps conservatively to unknown',async()=>{
   const bridge = new ContractBridge(); bridge.malformedDispatch = true;
   const adapter = new DesktopUiEnvironmentAdapter(new PlatformDesktopUiBackend(bridge),'desktop:contract');
   const window = await observed(adapter);
   const result = await adapter.act({adapterId:adapter.descriptor.id,actionId:'native-key',capability:'desktop.keyboard',effect:'local-reversible',idempotency:'non-idempotent',target:surfaceTarget(adapter,window),payload:{kind:'key-down',key:'Enter'}});
-  assert.equal(result.status,'completed');
-  assert.equal(result.dispatch,'dispatched-once');
-  assert.deepEqual(result.evidence,['desktop-backend-evidence-invalid']);
+  assert.equal(result.status,'unknown');
+  assert.equal(result.dispatch,'unknown');
+  assert.equal(result.verification,'unverified');
+  assert.deepEqual(result.evidence,['desktop-backend-result-invalid']);
 });
 
 test('native exception after invocation remains uncertain and is not retry-safe',async()=>{
   const bridge = new ContractBridge(); bridge.throwOnDispatch = true;
   const adapter = new DesktopUiEnvironmentAdapter(new PlatformDesktopUiBackend(bridge),'desktop:contract');
   const window = await observed(adapter);
-  const result = await adapter.act({adapterId:adapter.descriptor.id,actionId:'native-click',capability:'desktop.pointer.absolute',effect:'local-reversible',idempotency:'non-idempotent',target:surfaceTarget(adapter,window),payload:{kind:'click',x:10,y:20,button:'left'}});
+  const request = {adapterId:adapter.descriptor.id,actionId:'native-click',capability:'desktop.pointer.absolute',effect:'local-reversible' as const,idempotency:'non-idempotent' as const,target:surfaceTarget(adapter,window),payload:{kind:'click',x:10,y:20,button:'left'}};
+  const result = await adapter.act(request);
   assert.equal(result.status,'unknown');
   assert.equal(result.dispatch,'unknown');
   assert.equal(result.verification,'unverified');
   assert.deepEqual(result.evidence,['desktop-backend-threw-after-invocation']);
+  assert.equal(computerActionMayAutoRetry(request,result),false);
 });
