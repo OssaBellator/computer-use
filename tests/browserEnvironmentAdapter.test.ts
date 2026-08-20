@@ -32,6 +32,7 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
   activateCalls = 0;
   hoverCalls = 0;
   typeCalls = 0;
+  pressKeyCalls = 0;
   scrollCalls = 0;
   documentOptions: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number } | undefined;
   visualOptions: { maxBytes?: number } | undefined;
@@ -48,7 +49,7 @@ class FakeBrowserRuntime implements BrowserComputerRuntime {
   async activate(): Promise<{ status: string; target: InteractionNode | null }> { this.activateCalls += 1; return { status: this.activationResult, target: this.nodes[0] ?? null }; }
   async hover(): Promise<{ status: string; target: InteractionNode | null }> { this.hoverCalls += 1; return { status: 'verified', target: this.nodes[0] ?? null }; }
   async typeInto(): Promise<{ status: string; target: InteractionNode | null }> { this.typeCalls += 1; if (this.throwOnType) throw new Error('transport failed after invocation'); return { status: 'verified', target: this.nodes[0] ?? null }; }
-  async pressKey(): Promise<{ status: string }> { return { status: 'verified' }; }
+  async pressKey(): Promise<{ status: string }> { this.pressKeyCalls += 1; return { status: 'verified' }; }
   async scrollViewport(): Promise<{ status: string }> { this.scrollCalls += 1; return { status: 'verified' }; }
   async browserState() { return { url: 'https://example.test/', origin: 'https://example.test', title: 'fixture', readyState: 'complete' as const, historyLength: 1, timeOrigin: this.timeOrigin }; }
   async documentContent(options?: { maxBlocks?: number; maxTextBytes?: number; maxDepth?: number }) {
@@ -143,6 +144,33 @@ test('browser computer adapter supports verified read-only no-op semantics', asy
   });
 });
 
+test('browser computer adapter rejects observe-only activation and key dispatch before native input', async () => {
+  const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), target = await observedTarget(adapter);
+  const activateRequest: ComputerActionRequest = {
+    adapterId: adapter.descriptor.id, actionId: 'observe-activate', capability: 'browser.activate',
+    effect: 'observe-only', idempotency: 'read-only', target, payload: { method: 'pointer' },
+  };
+  const keyRequest: ComputerActionRequest = {
+    adapterId: adapter.descriptor.id, actionId: 'observe-key', capability: 'browser.press-key',
+    effect: 'observe-only', idempotency: 'read-only', payload: { key: 'Enter' },
+  };
+  for (const request of [activateRequest, keyRequest]) {
+    const result = await adapter.act(request);
+    assert.equal(result.status, 'rejected'); assert.equal(result.dispatch, 'not-dispatched');
+  }
+  assert.equal(runtime.activateCalls, 0); assert.equal(runtime.pressKeyCalls, 0);
+});
+
+test('browser computer adapter rejects targets on targetless key and viewport actions', async () => {
+  const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), target = await observedTarget(adapter);
+  runtime.timeOrigin = 2;
+  const key = await adapter.act({ ...localAction(adapter, 'browser.press-key', target), payload: { key: 'Enter' } });
+  const scroll = await adapter.act({ ...localAction(adapter, 'browser.scroll-viewport', target), payload: { deltaY: 1 } });
+  assert.equal(key.status, 'rejected'); assert.equal(key.dispatch, 'not-dispatched');
+  assert.equal(scroll.status, 'rejected'); assert.equal(scroll.dispatch, 'not-dispatched');
+  assert.equal(runtime.pressKeyCalls, 0); assert.equal(runtime.scrollCalls, 0);
+});
+
 test('browser computer adapter reports definite pre-dispatch failure for disappeared target', async () => {
   const runtime = new FakeBrowserRuntime(), adapter = new BrowserComputerEnvironmentAdapter(runtime), target = await observedTarget(adapter); runtime.nodes = [];
   const result = await adapter.act(localAction(adapter, 'browser.hover', target));
@@ -160,7 +188,7 @@ test('browser computer adapter rejects malformed and oversized action payloads b
     { ...localAction(adapter, 'browser.scroll-viewport'), payload: { deltaY: 100_001 } },
   ];
   for (const request of cases) assert.equal((await adapter.act(request)).dispatch, 'not-dispatched');
-  assert.equal(runtime.activateCalls, 0); assert.equal(runtime.typeCalls, 0); assert.equal(runtime.scrollCalls, 0);
+  assert.equal(runtime.activateCalls, 0); assert.equal(runtime.typeCalls, 0); assert.equal(runtime.pressKeyCalls, 0); assert.equal(runtime.scrollCalls, 0);
 });
 
 test('browser computer adapter rejects high-risk effects on direct input paths', async () => {
