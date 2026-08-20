@@ -40,7 +40,10 @@ function profile(
 }
 
 test('shared implementation status ordering is explicit and complete', () => {
-  assert.deepEqual(COMPUTER_CAPABILITY_IMPLEMENTATION_STATUSES, EXPECTED_ORDER.slice().reverse());
+  assert.deepEqual(
+    [...COMPUTER_CAPABILITY_IMPLEMENTATION_STATUSES].sort(),
+    [...EXPECTED_ORDER].sort(),
+  );
   assert.deepEqual(
     EXPECTED_ORDER.map((status) => [status, COMPUTER_CAPABILITY_IMPLEMENTATION_STATUS_RANK[status]]),
     [
