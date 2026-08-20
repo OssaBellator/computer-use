@@ -94,31 +94,45 @@ function cloneDescriptor(descriptor: ComputerEnvironmentAdapterDescriptor): Comp
 }
 
 function snapshotSurface(surface: ComputerSurfaceRef): ComputerSurfaceRef {
+  const adapterId = surface.adapterId;
+  const environment = surface.environment;
+  const surfaceId = surface.surfaceId;
+  const generation = surface.generation;
+  const parentSurfaceId = surface.parentSurfaceId;
   return Object.freeze({
-    adapterId: surface.adapterId,
-    environment: surface.environment,
-    surfaceId: surface.surfaceId,
-    ...(surface.generation === undefined ? {} : { generation: surface.generation }),
-    ...(surface.parentSurfaceId === undefined ? {} : { parentSurfaceId: surface.parentSurfaceId }),
+    adapterId,
+    environment,
+    surfaceId,
+    ...(generation === undefined ? {} : { generation }),
+    ...(parentSurfaceId === undefined ? {} : { parentSurfaceId }),
   });
 }
 
 function snapshotEntity(entity: ComputerEntityRef): ComputerEntityRef {
+  const adapterId = entity.adapterId;
+  const environment = entity.environment;
+  const kind = entity.kind;
+  const entityId = entity.entityId;
+  const surfaceId = entity.surfaceId;
+  const generation = entity.generation;
   return Object.freeze({
-    adapterId: entity.adapterId,
-    environment: entity.environment,
-    kind: entity.kind,
-    entityId: entity.entityId,
-    ...(entity.surfaceId === undefined ? {} : { surfaceId: entity.surfaceId }),
-    ...(entity.generation === undefined ? {} : { generation: entity.generation }),
+    adapterId,
+    environment,
+    kind,
+    entityId,
+    ...(surfaceId === undefined ? {} : { surfaceId }),
+    ...(generation === undefined ? {} : { generation }),
   });
 }
 
 function snapshotLimits(limits: ComputerObservationLimits): ComputerObservationLimits {
+  const maxItems = limits.maxItems;
+  const maxTextBytes = limits.maxTextBytes;
+  const maxDepth = limits.maxDepth;
   return Object.freeze({
-    ...(limits.maxItems === undefined ? {} : { maxItems: limits.maxItems }),
-    ...(limits.maxTextBytes === undefined ? {} : { maxTextBytes: limits.maxTextBytes }),
-    ...(limits.maxDepth === undefined ? {} : { maxDepth: limits.maxDepth }),
+    ...(maxItems === undefined ? {} : { maxItems }),
+    ...(maxTextBytes === undefined ? {} : { maxTextBytes }),
+    ...(maxDepth === undefined ? {} : { maxDepth }),
   });
 }
 
