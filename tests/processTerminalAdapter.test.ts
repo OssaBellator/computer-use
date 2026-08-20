@@ -14,6 +14,8 @@ import {
 } from '../src/computer/processAdapter.js';
 import {
   HostTerminalAdapter,
+  type ExecutionPathBinder,
+  type ExecutionPathIdentity,
   type ProcessSpawner,
   type SpawnedProcessLike,
   type TerminalExecutionDetails,
@@ -22,9 +24,9 @@ import {
 class FakeProcessSource implements ProcessSnapshotSource {
   pids = [10, 11, 12];
   records = new Map<number, ProcessRecord>([
-    [10, { pid: 10, startTicks: 100, name: 'a'.repeat(300), state: 'running', rssBytes: 10 }],
-    [11, { pid: 11, startTicks: 110, name: 'beta', state: 'sleeping', rssBytes: 20 }],
-    [12, { pid: 12, startTicks: 120, name: 'gamma', state: 'waiting', rssBytes: 30 }],
+    [10, { pid: 10, startTicks: 100, name: 'a'.repeat(300), executable: 'alpha-bin', state: 'running', rssBytes: 10 }],
+    [11, { pid: 11, startTicks: 110, name: 'beta', executable: 'beta-bin', state: 'sleeping', rssBytes: 20 }],
+    [12, { pid: 12, startTicks: 120, name: 'gamma', executable: 'gamma-bin', state: 'waiting', rssBytes: 30 }],
   ]);
   async listPids(): Promise<readonly number[]> { return this.pids; }
   async inspect(pid: number): Promise<ProcessRecord | undefined> { return this.records.get(pid); }
@@ -43,10 +45,17 @@ function argvRequest(cwd: string, overrides: Record<string, unknown> = {}) {
       argv: ['-e', 'process.stdout.write("ok")'],
       cwd,
       classification: 'local-compute' as const,
-      approvedEffects: ['process-execution' as const],
       ...overrides,
     },
   };
+}
+
+class FakeChild extends EventEmitter implements SpawnedProcessLike {
+  pid: number | undefined = 424242;
+  stdout = new PassThrough();
+  stderr = new PassThrough();
+  constructor(private readonly killResult = true) { super(); }
+  kill(): boolean { return this.killResult; }
 }
 
 test('process observation is bounded and metadata excludes command lines/environment', async () => {
@@ -59,6 +68,26 @@ test('process observation is bounded and metadata excludes command lines/environ
   assert.ok(Buffer.byteLength(String(data.processes[0]?.name), 'utf8') <= 160);
   assert.equal('commandLine' in data.processes[0]!, false);
   assert.equal('env' in data.processes[0]!, false);
+});
+
+test('process observation honors total text budget deterministically', async () => {
+  const source = new FakeProcessSource();
+  const adapter = new HostProcessAdapter(new ProcessIdentityStore('process:test', source));
+  const observation = await adapter.observe({
+    adapterId: 'process:test',
+    channel: 'process',
+    limits: { maxItems: 3, maxTextBytes: 12 },
+  });
+  const data = observation.data as { processes: Array<{ name: string; executable?: string }> };
+  const textBytes = data.processes.reduce(
+    (sum, item) => sum + Buffer.byteLength(item.name) + Buffer.byteLength(item.executable ?? ''),
+    0,
+  );
+  assert.ok(textBytes <= 12);
+  assert.equal(observation.truncated, true);
+  assert.equal(data.processes[0]?.name, 'a'.repeat(12));
+  assert.equal(data.processes[0]?.executable, undefined);
+  assert.equal(data.processes[1]?.name, '');
 });
 
 test('process target detects PID generation replacement', async () => {
@@ -130,6 +159,38 @@ test('timeout is dispatched once and verified as timed out', async () => {
   }
 });
 
+test('timeout kill=false is bounded cleanup ambiguity', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    const spawner: ProcessSpawner = { spawn() { return new FakeChild(false); } };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner);
+    const started = Date.now();
+    const result = await adapter.act(argvRequest(cwd, { timeoutMs: 20 }));
+    assert.ok(Date.now() - started < 500);
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.dispatch, 'dispatched-once');
+    assert.deepEqual(result.evidence, ['terminal.timeout.cleanup-ambiguous']);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('timeout missing close is bounded by cleanup deadline', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    const spawner: ProcessSpawner = { spawn() { return new FakeChild(true); } };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner);
+    const started = Date.now();
+    const result = await adapter.act(argvRequest(cwd, { timeoutMs: 20 }));
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 20 && elapsed < 600);
+    assert.equal(result.status, 'unknown');
+    assert.deepEqual(result.evidence, ['terminal.timeout.cleanup-ambiguous']);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test('definite validation failure before spawn is not dispatched', async () => {
   let calls = 0;
   const spawner: ProcessSpawner = { spawn() { calls += 1; throw new Error('must not run'); } };
@@ -138,6 +199,58 @@ test('definite validation failure before spawn is not dispatched', async () => {
   const result = await adapter.act(request);
   assert.equal(result.dispatch, 'not-dispatched');
   assert.equal(calls, 0);
+});
+
+test('executable identity replacement before invocation fails closed', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    let fileBind = 0;
+    const identity = (kind: 'file' | 'directory', ino: number, path: string): ExecutionPathIdentity => ({
+      realPath: path, kind, dev: 1, ino, mode: kind === 'file' ? 0o100755 : 0o40755,
+      birthtimeMs: 1, ...(kind === 'file' ? { size: 10, mtimeMs: 1 } : {}),
+    });
+    const binder: ExecutionPathBinder = {
+      async bind(path, kind) {
+        if (kind === 'file') return identity(kind, ++fileBind, path);
+        return identity(kind, 99, path);
+      },
+    };
+    let calls = 0;
+    const spawner: ProcessSpawner = { spawn() { calls += 1; return new FakeChild(); } };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner, binder);
+    const result = await adapter.act(argvRequest(cwd));
+    assert.equal(result.dispatch, 'not-dispatched');
+    assert.deepEqual(result.evidence, ['terminal.executable.replaced']);
+    assert.equal(calls, 0);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('cwd identity replacement before invocation fails closed', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    let directoryBind = 0;
+    const identity = (kind: 'file' | 'directory', ino: number, path: string): ExecutionPathIdentity => ({
+      realPath: path, kind, dev: 1, ino, mode: kind === 'file' ? 0o100755 : 0o40755,
+      birthtimeMs: 1, ...(kind === 'file' ? { size: 10, mtimeMs: 1 } : {}),
+    });
+    const binder: ExecutionPathBinder = {
+      async bind(path, kind) {
+        if (kind === 'directory') return identity(kind, ++directoryBind, path);
+        return identity(kind, 77, path);
+      },
+    };
+    let calls = 0;
+    const spawner: ProcessSpawner = { spawn() { calls += 1; return new FakeChild(); } };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner, binder);
+    const result = await adapter.act(argvRequest(cwd));
+    assert.equal(result.dispatch, 'not-dispatched');
+    assert.deepEqual(result.evidence, ['terminal.cwd.replaced']);
+    assert.equal(calls, 0);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 test('throw after invocation is dispatch unknown and not auto-retry eligible', async () => {
@@ -157,12 +270,21 @@ test('throw after invocation is dispatch unknown and not auto-retry eligible', a
   }
 });
 
-class FakeChild extends EventEmitter implements SpawnedProcessLike {
-  pid = 424242;
-  stdout = new PassThrough();
-  stderr = new PassThrough();
-  kill(): boolean { return true; }
-}
+test('caller payload cannot self-authorize stronger effects', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    let calls = 0;
+    const spawner: ProcessSpawner = { spawn() { calls += 1; return new FakeChild(); } };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner);
+    const request = argvRequest(cwd, { classification: 'package-installation' as const });
+    const result = await adapter.act({ ...request, effect: 'system-configuration' });
+    assert.equal(result.dispatch, 'not-dispatched');
+    assert.deepEqual(result.evidence, ['terminal.effect.mismatch']);
+    assert.equal(calls, 0);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
 
 test('argv and shell are separate capabilities and shell stays explicit', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
@@ -195,12 +317,47 @@ test('argv and shell are separate capabilities and shell stays explicit', async 
         command: 'process.stdout.write("shell")',
         cwd,
         classification: 'local-compute',
-        approvedEffects: ['process-execution', 'security-sensitive'],
       },
     });
     assert.equal(shellResult.status, 'completed');
     assert.deepEqual(calls[1]?.argv, ['-e', 'process.stdout.write("shell")']);
     assert.equal(calls[1]?.shell, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('shell argv plus command aggregate bytes are bounded', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    let calls = 0;
+    const spawner: ProcessSpawner = { spawn() { calls += 1; return new FakeChild(); } };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner);
+    const result = await adapter.act({
+      adapterId: 'terminal:test', actionId: 'shell-large', capability: 'terminal.execute.shell',
+      effect: 'security-sensitive', idempotency: 'non-idempotent',
+      payload: {
+        mode: 'shell', shellExecutable: process.execPath, shellArgs: Array(9).fill('x'.repeat(4000)),
+        command: 'echo', cwd, classification: 'local-compute',
+      },
+    });
+    assert.equal(result.dispatch, 'not-dispatched');
+    assert.deepEqual(result.evidence, ['terminal.shell.invalid']);
+    assert.equal(calls, 0);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('non-zero exit is a verified command failure', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
+  try {
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'));
+    const result = await adapter.act(argvRequest(cwd, { argv: ['-e', 'process.exit(7)'] }));
+    assert.equal(result.status, 'failed');
+    assert.equal(result.verification, 'verified');
+    assert.deepEqual(result.evidence, ['terminal.execution.nonzero-exit']);
+    assert.equal((result.details as TerminalExecutionDetails).exitCode, 7);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -224,23 +381,37 @@ test('generic evidence never contains command output or secrets', async () => {
   }
 });
 
-test('unacknowledged spawn failure stays unknown without an unhandled child error', async () => {
+test('unacknowledged returned child stays dispatch unknown', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'terminal-adapter-'));
   try {
-    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'));
-    const result = await adapter.act(argvRequest(cwd, { executable: join(cwd, 'definitely-missing-executable') }));
+    const spawner: ProcessSpawner = {
+      spawn() {
+        const child = new FakeChild();
+        child.pid = undefined;
+        return child;
+      },
+    };
+    const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'), spawner);
+    const result = await adapter.act(argvRequest(cwd));
     assert.equal(result.dispatch, 'unknown');
     assert.equal(result.status, 'unknown');
   } finally {
-    await new Promise((resolve) => setImmediate(resolve));
     await rm(cwd, { recursive: true, force: true });
   }
 });
 
-test('terminal observation exposes a generation-aware session entity', async () => {
+test('terminal observation exposes and validates generation-aware session identity', async () => {
   const adapter = new HostTerminalAdapter('terminal:test', new ProcessIdentityStore('process:test'));
   const observation = await adapter.observe({ adapterId: 'terminal:test', channel: 'terminal' });
-  const data = observation.data as { session: { kind: string; generation?: number } };
+  const data = observation.data as { session: { adapterId: string; environment: 'terminal'; kind: 'terminal-session'; entityId: string; generation?: number } };
   assert.equal(data.session.kind, 'terminal-session');
   assert.equal(data.session.generation, 0);
+
+  const current = await adapter.observe({ adapterId: 'terminal:test', channel: 'terminal', target: data.session });
+  assert.equal(current.complete, true);
+  const stale = await adapter.observe({
+    adapterId: 'terminal:test', channel: 'terminal', target: { ...data.session, generation: 1 },
+  });
+  assert.equal(stale.complete, false);
+  assert.deepEqual(stale.data, { code: 'terminal.session.stale' });
 });
