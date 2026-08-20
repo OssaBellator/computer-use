@@ -8,6 +8,9 @@ export interface LocalComputeGuaranteeProfile {
   readonly timeoutTermination: 'not-enforceable' | 'forced-child-termination-with-confirmation';
   readonly serializedInputOutput: 'canonical-json-bounded';
   readonly dispatchLedger: 'non-evicted-adapter-lifetime-capacity-fails-closed';
+  readonly ledgerPersistence: 'in-memory-adapter-lifetime-only';
+  readonly retainedJobState: 'bounded-evictable-ledger-remains';
+  readonly retainedArtifacts: 'bounded-evictable';
   readonly memory: 'hint-only-not-enforced';
   readonly filesystem: 'trusted-operation-authority-not-sandboxed';
   readonly network: 'trusted-operation-authority-not-sandboxed';
@@ -21,6 +24,9 @@ export const LOCAL_COMPUTE_GUARANTEES: Readonly<LocalComputeGuaranteeProfile> = 
   timeoutTermination: 'not-enforceable',
   serializedInputOutput: 'canonical-json-bounded',
   dispatchLedger: 'non-evicted-adapter-lifetime-capacity-fails-closed',
+  ledgerPersistence: 'in-memory-adapter-lifetime-only',
+  retainedJobState: 'bounded-evictable-ledger-remains',
+  retainedArtifacts: 'bounded-evictable',
   memory: 'hint-only-not-enforced',
   filesystem: 'trusted-operation-authority-not-sandboxed',
   network: 'trusted-operation-authority-not-sandboxed',
@@ -34,6 +40,9 @@ export const ISOLATED_LOCAL_COMPUTE_GUARANTEES: Readonly<LocalComputeGuaranteePr
   timeoutTermination: 'forced-child-termination-with-confirmation',
   serializedInputOutput: 'canonical-json-bounded',
   dispatchLedger: 'non-evicted-adapter-lifetime-capacity-fails-closed',
+  ledgerPersistence: 'in-memory-adapter-lifetime-only',
+  retainedJobState: 'bounded-evictable-ledger-remains',
+  retainedArtifacts: 'bounded-evictable',
   memory: 'hint-only-not-enforced',
   filesystem: 'trusted-operation-authority-not-sandboxed',
   network: 'trusted-operation-authority-not-sandboxed',
