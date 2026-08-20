@@ -61,24 +61,21 @@ function verificationCapacityError(intent: SpreadsheetNativeEdit, bounds: Observ
   }
   return undefined;
 }
-function verifyRange(
-  identity: DocumentIdentityState,
-  beforeRevision: number,
-  intent: SpreadsheetNativeEdit,
-  observation: ModelObservation,
-): PostEditVerification {
+function verifyRange(identity: DocumentIdentityState, beforeRevision: number, intent: SpreadsheetNativeEdit, observation: ModelObservation): PostEditVerification {
   const expected = expectedInput(intent);
   let firstVerified: PostEditVerification | undefined;
-  for (const address of addresses(intent.target)) {
+  const targetAddresses = addresses(intent.target);
+  for (const address of targetAddresses) {
     const expectation: VerificationExpectation = { kind: 'cell-input-equals', target: intent.target.sheet, address, expected };
     const result = verifyPostEdit({ identity, beforeRevision, expectation, observation });
     if (result.status !== 'verified') return result;
     firstVerified ??= result;
   }
-  return addresses(intent.target).length === 1
+  return targetAddresses.length === 1
     ? firstVerified ?? { status: 'insufficient-observation', evidence: ['target-cell-not-observed'] }
     : { status: 'verified', evidence: ['cell-range-model-matches'] };
 }
+const failedVerification = (): PostEditVerification => ({ status: 'insufficient-observation', evidence: ['post-dispatch-observation-failed'] });
 
 export class SpreadsheetSemanticController {
   constructor(private readonly backend: SpreadsheetNativeBackend) {}
@@ -110,8 +107,13 @@ export class SpreadsheetSemanticController {
       dispatch = 'uncertain';
     }
 
-    const observation = await this.backend.observeCells(intent.target, verificationBounds);
-    const verification = verifyRange(await this.backend.readIdentity(), beforeRevision, intent, observation);
+    let verification: PostEditVerification;
+    try {
+      const observation = await this.backend.observeCells(intent.target, verificationBounds);
+      verification = verifyRange(await this.backend.readIdentity(), beforeRevision, intent, observation);
+    } catch {
+      verification = failedVerification();
+    }
     if (dispatch === 'uncertain') return { status: 'uncertain', effect, dispatch, verification };
     return verification.status === 'verified' ? { status: 'verified', effect, dispatch, verification } : { status: 'verification-failed', effect, dispatch, verification };
   }
