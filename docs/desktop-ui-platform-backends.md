@@ -4,9 +4,9 @@
 
 ## Identity and replacement rules
 
-Window handles and accessibility element handles are locators, not authority. A platform bridge must expose an `instanceToken` for the exact live window/control instance behind each native locator.
+Window handles and accessibility element handles are locators, not authority. A platform bridge must expose an `instanceToken` for the exact live window/control instance behind each native locator. That token must remain stable for that exact live instance and **must never be reused for a distinct replacement instance**.
 
-`PlatformDesktopUiBackend` keeps a stable public window ID for a native window slot and increments its generation whenever that slot's instance token changes. A generation-bearing surface reference therefore cannot silently authorize a replacement window.
+`PlatformDesktopUiBackend` scopes public window/control IDs to one backend-instance namespace, so restarting/recreating the production backend cannot accidentally recreate stale authority from an earlier lease. Within one backend instance it keeps a stable public window ID for a native window slot and increments its generation whenever that slot's instance token changes. A generation-bearing surface reference therefore cannot silently authorize a replacement window.
 
 Control identity is stricter: within one window generation, each returned `controlId` is bound to one exact control instance. If the OS recycles a native control locator for a replacement control, the backend emits a new opaque `controlId`; the old ID is never reused. Replacement invalidates any prior focus/input authority for that control. When the window generation changes, all control leases for the previous generation are discarded.
 
@@ -22,15 +22,17 @@ No platform bridge may use browser/page-side `dispatchEvent()` or equivalent syn
 
 Window enumeration, accessibility traversal, and visual capture receive hard acquisition limits before native work begins. Native helpers must stop enumeration/traversal before exceeding those limits. Visual helpers must reject or down-scope capture before allocating pixel/encoded buffers beyond `maxPixels`/`maxBytes`.
 
-The JSON process bridge also caps helper stdout and execution time. Returned backend-owned objects are rebuilt/frozen again by `PlatformDesktopUiBackend` and then defensively rebuilt/frozen by `DesktopUiEnvironmentAdapter` before crossing the neutral envelope.
+The JSON process bridge caps helper stdout and execution time, validates returned window/tree/visual/action schemas against the supplied budgets, and rebuilds/freeze-copies helper results. `PlatformDesktopUiBackend` rebuilds/freezes backend-owned data again, and `DesktopUiEnvironmentAdapter` defensively rebuilds/freezes neutral envelopes before returning them.
+
+Relative-pointer capability is conservative: helper factories advertise it only when `supportsRelativePointer:true` is explicitly configured for a helper that really implements native relative motion.
 
 ## Platform matrix
 
 | Platform | Native semantic API | Window/focus identity seam | Visual seam | Native input seam | Current repository implementation | Main limitations |
 | --- | --- | --- | --- | --- | --- | --- |
-| Windows | UI Automation (UIA) | Native helper supplies window/control instance tokens; wrapper provides neutral generations/non-reused IDs | Bounded helper capture artifact metadata | Helper uses Windows native keyboard/pointer/focus APIs and atomically revalidates expected tokens | Production-quality JSON/helper seam via `windowsUiAutomationBridge()` | No in-repo UIA helper binary yet; ordinary Windows accessibility/UIPI/security policy still applies; secure desktop/elevated targets may be unavailable |
-| macOS | Accessibility (AX) | Native helper supplies AX window/control instance tokens; wrapper provides neutral generations/non-reused IDs | Bounded helper capture artifact metadata | Helper uses macOS native event/focus APIs and atomically revalidates expected tokens | Production-quality JSON/helper seam via `macOsAccessibilityBridge()` | No in-repo AX helper binary yet; Accessibility/Screen Recording permissions are not bypassed; protected surfaces may be unavailable |
-| Linux | AT-SPI / native desktop integration | Native helper supplies AT-SPI/native instance tokens; wrapper provides neutral generations/non-reused IDs | Bounded helper capture artifact metadata | Helper uses compositor/X11/portal/native input facilities as available and atomically revalidates expected tokens | Production-quality, rigorously testable process bridge via `linuxAtSpiBridge()` | Current execution environment does not expose a desktop session/native AT-SPI helper binary, so real-host smoke execution is not enabled; Wayland compositor/portal policy may restrict global input/capture |
+| Windows | UI Automation (UIA) | Native helper supplies non-reused window/control instance tokens; wrapper provides neutral generations/non-reused IDs | Bounded helper capture artifact metadata | Helper uses Windows native keyboard/pointer/focus APIs and atomically revalidates expected tokens | Production-quality JSON/helper seam via `windowsUiAutomationBridge()` | No in-repo UIA helper binary yet; relative pointer is advertised only when configured; ordinary Windows accessibility/UIPI/security policy still applies; secure desktop/elevated targets may be unavailable |
+| macOS | Accessibility (AX) | Native helper supplies non-reused AX window/control instance tokens; wrapper provides neutral generations/non-reused IDs | Bounded helper capture artifact metadata | Helper uses macOS native event/focus APIs and atomically revalidates expected tokens | Production-quality JSON/helper seam via `macOsAccessibilityBridge()` | No in-repo AX helper binary yet; relative pointer is helper-dependent; Accessibility/Screen Recording permissions are not bypassed; protected surfaces may be unavailable |
+| Linux | AT-SPI / native desktop integration | Native helper supplies non-reused AT-SPI/native instance tokens; wrapper provides neutral generations/non-reused IDs | Bounded helper capture artifact metadata | Helper uses compositor/X11/portal/native input facilities as available and atomically revalidates expected tokens | Production-quality, rigorously testable process bridge via `linuxAtSpiBridge()` | Current execution environment does not expose a desktop session/native AT-SPI helper binary, so real-host smoke execution is not enabled; relative pointer is helper/compositor-dependent; Wayland compositor/portal policy may restrict global input/capture |
 
 ## Native helper protocol
 
