@@ -47,7 +47,7 @@ export interface RemoteSessionBackend {
   executeRemoteCommand?(connection: RemoteSessionConnection, invocation: RemoteCommandInvocation): Promise<RemoteDispatchOutcome<RemoteCommandResult>>;
 }
 
-const MAX_CAPABILITIES = 64, MAX_METADATA_ITEMS = 64, MAX_METADATA_TEXT_BYTES = 16_384;
+const MAX_CAPABILITIES = 64, MAX_METADATA_ITEMS = 64, MAX_METADATA_TEXT_BYTES = 16_384, MAX_METADATA_RESULT_ITEMS = 256;
 const MAX_ID_BYTES = 256, MAX_HOST_BYTES = 512, MAX_DISPLAY_DIMENSION = 16_384, MAX_DISPLAY_PIXELS = 4_194_304, MAX_DISPLAY_BYTES = 16_777_216;
 const MAX_COMMAND_BYTES = 4_096, MAX_COMMAND_ARGS = 128, MAX_COMMAND_ARG_BYTES = 4_096, MAX_COMMAND_TOTAL_BYTES = 65_536, MAX_COMMAND_OUTPUT_BYTES = 65_536;
 const MAX_VISUAL_COORDINATE = 1_000_000, MAX_VISUAL_KEY_BYTES = 128, MAX_VISUAL_TEXT_BYTES = 4_096;
@@ -80,6 +80,22 @@ function snapshotKnownRecord(value: unknown, allowed: readonly string[], require
   if (!record || !exactOwnKeys(record, allowed, required)) return undefined;
   const out: Record<string, unknown> = {};
   for (const key of allowed) if (Object.prototype.hasOwnProperty.call(record, key)) out[key] = ownData(record, key);
+  return Object.freeze(out);
+}
+function snapshotDescriptorRecord(value: unknown, allowed: readonly string[], required: readonly string[] = []): Readonly<Record<string, unknown>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  let proto: object | null, descriptors: PropertyDescriptorMap;
+  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value); } catch { return undefined; }
+  if (proto !== Object.prototype && proto !== null) return undefined;
+  const keys = Reflect.ownKeys(descriptors);
+  if (!keys.every((key) => typeof key === 'string' && allowed.includes(key)) || !required.every((key) => Object.prototype.hasOwnProperty.call(descriptors, key))) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (typeof key !== 'string') return undefined;
+    const descriptor = (descriptors as Record<string, PropertyDescriptor>)[key];
+    if (!descriptor || !('value' in descriptor)) return undefined;
+    out[key] = descriptor.value;
+  }
   return Object.freeze(out);
 }
 function snapshotOpenRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
@@ -150,9 +166,9 @@ function snapshotStringArray(value: unknown): readonly string[] | undefined {
   const allowed = new Set(['length', ...Array.from({length:value.length}, (_,i)=>String(i))]);
   for (const [key, descriptor] of Object.entries(descriptors)) if (!allowed.has(key) || !('value' in descriptor)) return undefined;
   const out: string[] = [];
-  for (let i = 0; i < value.length; i++) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
-    if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string' || utf8Bytes(descriptor.value) > MAX_COMMAND_ARG_BYTES || /\0/.test(descriptor.value)) return undefined;
+  for (let i=0;i<value.length;i++) {
+    const descriptor=Object.getOwnPropertyDescriptor(value,String(i));
+    if(!descriptor||!('value' in descriptor)||typeof descriptor.value!=='string'||utf8Bytes(descriptor.value)>MAX_COMMAND_ARG_BYTES||/\0/.test(descriptor.value))return undefined;
     out.push(descriptor.value);
   }
   return Object.freeze(out);
@@ -189,9 +205,41 @@ function snapshotVisualInput(value: unknown): Readonly<RemoteVisualInput> | unde
   }
   return undefined;
 }
+function snapshotMetadataBatch(value: unknown): readonly Readonly<RemoteMetadataItem>[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  let proto: object | null, descriptors: PropertyDescriptorMap;
+  try { proto = Object.getPrototypeOf(value); descriptors = Object.getOwnPropertyDescriptors(value); } catch { return undefined; }
+  if (proto !== Array.prototype) return undefined;
+  const lengthDescriptor = (descriptors as Record<string, PropertyDescriptor>).length;
+  if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0 || lengthDescriptor.value > MAX_METADATA_RESULT_ITEMS) return undefined;
+  const length = lengthDescriptor.value as number, allowed = new Set(['length', ...Array.from({length}, (_,i)=>String(i))]);
+  const keys = Reflect.ownKeys(descriptors);
+  if (!keys.every((key) => typeof key === 'string' && allowed.has(key)) || keys.length !== length + 1) return undefined;
+  const out: Readonly<RemoteMetadataItem>[] = [];
+  for (let i=0;i<length;i++) {
+    const descriptor = (descriptors as Record<string, PropertyDescriptor>)[String(i)];
+    if (!descriptor || !('value' in descriptor)) return undefined;
+    const item = snapshotDescriptorRecord(descriptor.value,['key','value'],['key','value']);
+    if (!item || typeof item.key !== 'string' || typeof item.value !== 'string') return undefined;
+    out.push(Object.freeze({key:item.key,value:item.value}));
+  }
+  return Object.freeze(out);
+}
+function snapshotDisplayFrame(value: unknown): Readonly<RemoteDisplayFrame> | undefined {
+  const record = snapshotDescriptorRecord(value,['width','height','format','bytes','frameId','truncated'],['width','height','format']);
+  if (!record) return undefined;
+  const width=record.width,height=record.height,format=record.format,frameId=record.frameId,truncated=record.truncated,rawBytes=record.bytes;
+  if (typeof width!=='number'||typeof height!=='number'||(format!=='synthetic-rgba'&&format!=='synthetic-png')||(frameId!==undefined&&typeof frameId!=='string')||(truncated!==undefined&&typeof truncated!=='boolean')) return undefined;
+  let bytes:Uint8Array|undefined;
+  if(rawBytes!==undefined){
+    if(!(rawBytes instanceof Uint8Array)||!ArrayBuffer.isView(rawBytes))return undefined;
+    try{bytes=Uint8Array.prototype.slice.call(rawBytes) as Uint8Array;}catch{return undefined;}
+  }
+  return Object.freeze({width,height,format,...(bytes?{bytes}:{}),...(frameId!==undefined?{frameId}:{}),...(truncated!==undefined?{truncated}:{})});
+}
 function safeCapabilities(values: readonly string[]): readonly string[] { const out:string[]=[]; for (const value of values) { if (out.length >= MAX_CAPABILITIES) break; if (typeof value === 'string' && REMOTE_CAPABILITY_PATTERN.test(value) && !out.includes(value)) out.push(value); } return Object.freeze(out); }
-function safeMetadata(items: readonly RemoteMetadataItem[], maxItems:number, maxTextBytes:number): {items:RemoteMetadataItem[];truncated:boolean} { const out:RemoteMetadataItem[]=[]; let bytes=0,truncated=items.length>maxItems; for(const item of items.slice(0,maxItems)){ if(!item || typeof item.key!=='string'||typeof item.value!=='string'||!bounded(item.key,128)){truncated=true;continue;} const n=utf8Bytes(item.key)+utf8Bytes(item.value); if(bytes+n>maxTextBytes){truncated=true;break;} out.push({key:item.key,value:item.value});bytes+=n;} return {items:out,truncated}; }
-function safeDisplayFrame(frame:RemoteDisplayFrame,maxPixels:number,maxBytes:number):{frame:RemoteDisplayFrame;truncated:boolean}{ if(!Number.isSafeInteger(frame.width)||!Number.isSafeInteger(frame.height)||frame.width<1||frame.height<1||frame.width>MAX_DISPLAY_DIMENSION||frame.height>MAX_DISPLAY_DIMENSION||(frame.format!=='synthetic-rgba'&&frame.format!=='synthetic-png')||(frame.frameId!==undefined&&(!bounded(frame.frameId)))||(frame.truncated!==undefined&&typeof frame.truncated!=='boolean')) throw new Error('invalid remote display frame'); const pixels=frame.width*frame.height; const pixelLimit=Math.min(maxPixels,MAX_DISPLAY_PIXELS),byteLimit=Math.min(maxBytes,MAX_DISPLAY_BYTES); if(!Number.isSafeInteger(pixels)||pixels>pixelLimit) throw new Error('remote display frame exceeds acquisition pixel bound'); let bytes:Uint8Array|undefined; if(frame.bytes!==undefined){ if(!(frame.bytes instanceof Uint8Array)) throw new Error('invalid remote display bytes'); if(frame.bytes.byteLength>byteLimit) throw new Error('remote display frame exceeds acquisition byte bound'); if(frame.format==='synthetic-rgba'&&frame.bytes.byteLength!==pixels*4) throw new Error('invalid synthetic rgba byte length'); bytes=frame.bytes.slice(); } return {frame:{width:frame.width,height:frame.height,format:frame.format,frameId:frame.frameId,...(bytes?{bytes}:{})},truncated:frame.truncated===true}; }
+function safeMetadata(items: readonly Readonly<RemoteMetadataItem>[], maxItems:number, maxTextBytes:number): {items:RemoteMetadataItem[];truncated:boolean} { const out:RemoteMetadataItem[]=[]; let bytes=0,truncated=items.length>maxItems; for(const item of items.slice(0,maxItems)){ if(!bounded(item.key,128)){truncated=true;continue;} const n=utf8Bytes(item.key)+utf8Bytes(item.value); if(bytes+n>maxTextBytes){truncated=true;break;} out.push({key:item.key,value:item.value});bytes+=n;} return {items:out,truncated}; }
+function safeDisplayFrame(frame:Readonly<RemoteDisplayFrame>,maxPixels:number,maxBytes:number):{frame:RemoteDisplayFrame;truncated:boolean}{ if(!Number.isSafeInteger(frame.width)||!Number.isSafeInteger(frame.height)||frame.width<1||frame.height<1||frame.width>MAX_DISPLAY_DIMENSION||frame.height>MAX_DISPLAY_DIMENSION||(frame.format!=='synthetic-rgba'&&frame.format!=='synthetic-png')||(frame.frameId!==undefined&&(!bounded(frame.frameId)))||(frame.truncated!==undefined&&typeof frame.truncated!=='boolean')) throw new Error('invalid remote display frame'); const pixels=frame.width*frame.height; const pixelLimit=Math.min(maxPixels,MAX_DISPLAY_PIXELS),byteLimit=Math.min(maxBytes,MAX_DISPLAY_BYTES); if(!Number.isSafeInteger(pixels)||pixels>pixelLimit) throw new Error('remote display frame exceeds acquisition pixel bound'); const bytes=frame.bytes; if(bytes!==undefined){ if(bytes.byteLength>byteLimit) throw new Error('remote display frame exceeds acquisition byte bound'); if(frame.format==='synthetic-rgba'&&bytes.byteLength!==pixels*4) throw new Error('invalid synthetic rgba byte length'); } return {frame:{width:frame.width,height:frame.height,format:frame.format,frameId:frame.frameId,...(bytes?{bytes}:{})},truncated:frame.truncated===true}; }
 function safeEvidenceCode(value: unknown): string { return typeof value === 'string' && MACHINE_EVIDENCE_PATTERN.test(value) ? value : 'remote-backend-evidence-invalid'; }
 function truncateUtf8(value:string,maxBytes:number):{value:string;truncated:boolean}{let used=0,out='';for(const ch of value){const n=utf8Bytes(ch);if(used+n>maxBytes)return{value:out,truncated:true};out+=ch;used+=n;}return{value:out,truncated:false};}
 function snapshotCommandResult(value: unknown): Readonly<RemoteCommandResult> | undefined {
@@ -231,7 +279,7 @@ export class RemoteSessionAdapter implements ComputerEnvironmentAdapter {
   connect(credential?:RemoteSecretHandle):Promise<RemoteSessionAuthority>{const credentialSnapshot=credential===undefined?undefined:snapshotSecretHandle(credential);if(credential!==undefined&&!credentialSnapshot)return Promise.reject(new Error('invalid secret handle'));return this.enqueueLifecycle(()=>this.connectTransition(credentialSnapshot));}
   reconnect(credential?:RemoteSecretHandle):Promise<RemoteSessionAuthority>{return this.connect(credential);}
   disconnect():Promise<void>{return this.enqueueLifecycle(()=>this.disconnectTransition());}
-  async observe(rawRequest:ComputerObservationRequest):Promise<ComputerObservationEnvelope>{const request=snapshotObservationRequest(rawRequest);if(!request||validateComputerObservationRequest(request,this.descriptor).length>0)throw new Error('invalid remote observation request');this.assertRequestAdapter(request.adapterId);const base={adapterId:this.adapterId,environment:'remote-session' as const,channel:request.channel,sequence:++this.sequence};if(request.channel==='network')return{...base,complete:true,truncated:false,data:this.state()};const lease=this.observationLease();this.assertSurfaceAuthority(request.surface,lease.surface);if(request.channel==='terminal'&&this.endpoint.protocol==='ssh'){const maxItems=clampLimit(request.limits?.maxItems,16,MAX_METADATA_ITEMS),maxTextBytes=clampLimit(request.limits?.maxTextBytes,4096,MAX_METADATA_TEXT_BYTES);const rawMetadata=await this.backend.observeMetadata(lease.connection,{maxItems,maxTextBytes});this.assertObservationLease(lease);const boundedMetadata=safeMetadata(rawMetadata,maxItems,maxTextBytes);return{...base,complete:!boundedMetadata.truncated,truncated:boundedMetadata.truncated,surface:lease.surface,data:{metadata:boundedMetadata.items}};}if(request.channel==='visual'&&(this.endpoint.protocol==='rdp'||this.endpoint.protocol==='vnc')&&this.backend.captureDisplay){const maxPixels=clampLimit(request.limits?.maxItems,MAX_DISPLAY_PIXELS,MAX_DISPLAY_PIXELS),maxBytes=clampLimit(request.limits?.maxTextBytes,MAX_DISPLAY_BYTES,MAX_DISPLAY_BYTES),captureLimits=Object.freeze({maxPixels,maxBytes});const rawFrame=await this.backend.captureDisplay(lease.connection,captureLimits);this.assertObservationLease(lease);const boundedFrame=safeDisplayFrame(rawFrame,maxPixels,maxBytes);return{...base,complete:!boundedFrame.truncated,truncated:boundedFrame.truncated,surface:lease.surface,data:boundedFrame.frame};}throw new Error('observation channel unsupported for remote protocol');}
+  async observe(rawRequest:ComputerObservationRequest):Promise<ComputerObservationEnvelope>{const request=snapshotObservationRequest(rawRequest);if(!request||validateComputerObservationRequest(request,this.descriptor).length>0)throw new Error('invalid remote observation request');this.assertRequestAdapter(request.adapterId);const base={adapterId:this.adapterId,environment:'remote-session' as const,channel:request.channel,sequence:++this.sequence};if(request.channel==='network')return{...base,complete:true,truncated:false,data:this.state()};const lease=this.observationLease();this.assertSurfaceAuthority(request.surface,lease.surface);if(request.channel==='terminal'&&this.endpoint.protocol==='ssh'){const maxItems=clampLimit(request.limits?.maxItems,16,MAX_METADATA_ITEMS),maxTextBytes=clampLimit(request.limits?.maxTextBytes,4096,MAX_METADATA_TEXT_BYTES);const rawMetadata=await this.backend.observeMetadata(lease.connection,{maxItems,maxTextBytes});this.assertObservationLease(lease);const metadata=snapshotMetadataBatch(rawMetadata);if(!metadata)throw new Error('invalid remote metadata batch');const boundedMetadata=safeMetadata(metadata,maxItems,maxTextBytes);return{...base,complete:!boundedMetadata.truncated,truncated:boundedMetadata.truncated,surface:lease.surface,data:{metadata:boundedMetadata.items}};}if(request.channel==='visual'&&(this.endpoint.protocol==='rdp'||this.endpoint.protocol==='vnc')&&this.backend.captureDisplay){const maxPixels=clampLimit(request.limits?.maxItems,MAX_DISPLAY_PIXELS,MAX_DISPLAY_PIXELS),maxBytes=clampLimit(request.limits?.maxTextBytes,MAX_DISPLAY_BYTES,MAX_DISPLAY_BYTES),captureLimits=Object.freeze({maxPixels,maxBytes});const rawFrame=await this.backend.captureDisplay(lease.connection,captureLimits);this.assertObservationLease(lease);const frame=snapshotDisplayFrame(rawFrame);if(!frame)throw new Error('invalid remote display frame');const boundedFrame=safeDisplayFrame(frame,maxPixels,maxBytes);return{...base,complete:!boundedFrame.truncated,truncated:boundedFrame.truncated,surface:lease.surface,data:boundedFrame.frame};}throw new Error('observation channel unsupported for remote protocol');}
   async act(rawRequest:ComputerActionRequest):Promise<ComputerActionResult>{const request=snapshotActionRequest(rawRequest);if(!request||validateComputerActionRequest(request,this.descriptor).length>0)return this.reject('remote-action-request-invalid');if(request.adapterId!==this.adapterId)return this.reject('remote-adapter-mismatch');if(!this.descriptor.capabilities.includes(request.capability))return this.unsupported('remote-capability-unsupported');if(request.effect!=='remote-execution')return this.reject('remote-effect-required');const connection=this.connection;if(!connection||this.lifecycle!=='connected')return this.reject('remote-session-not-connected');const payload=request.payload as Readonly<Record<string, unknown>>|undefined;if(!payload)return this.reject('remote-payload-invalid');const authority=snapshotAuthority(ownData(payload as Record<string, unknown>,'authority'));if(!authority)return this.reject('remote-authority-required');const authorityError=this.authorityError(authority);if(authorityError)return this.reject(authorityError);
     if(request.capability==='remote.ssh.execute'){if(this.endpoint.protocol!=='ssh'||!this.backend.executeRemoteCommand)return this.unsupported('remote-ssh-unavailable');const invocation=snapshotCommandInvocation(ownData(payload as Record<string, unknown>,'invocation'));if(!invocation)return this.reject('remote-command-invalid');try{return this.fromDispatch(await this.backend.executeRemoteCommand(connection,invocation),snapshotCommandResult);}catch(error){return this.transportFailure(error);}}
     if(request.capability==='remote.visual.input'){if((this.endpoint.protocol!=='rdp'&&this.endpoint.protocol!=='vnc')||!this.backend.sendVisualInput)return this.unsupported('remote-visual-input-unavailable');const input=snapshotVisualInput(ownData(payload as Record<string, unknown>,'input'));if(!input)return this.reject('remote-input-invalid');let mapped:ComputerActionResult;try{mapped=this.fromDispatch(await this.backend.sendVisualInput(connection,input));}catch(error){mapped=this.transportFailure(error);}if(mapped.status==='completed')return{...mapped,status:'unknown',verification:'unverified',evidence:[...(mapped.evidence??[]),'remote-visual-effect-unverified']};return mapped;}
