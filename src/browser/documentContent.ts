@@ -480,6 +480,17 @@ async function extractDocumentFrame(frame: SnapshotFrameLike): Promise<RawDocume
         return;
       }
 
+      if (tag === 'slot') {
+        const assigned = (element as HTMLSlotElement).assignedElements({ flatten: true });
+        if (assigned.length) {
+          for (let index = 0; index < assigned.length && index < MAX_VISITED_ELEMENTS; index += 1) {
+            visit(assigned[index], depth + 1);
+            if (visitedElements >= MAX_VISITED_ELEMENTS) break;
+          }
+          return;
+        }
+      }
+
       const shadow = (element as HTMLElement).shadowRoot;
       if (shadow) {
         for (let child = shadow.firstElementChild; child; child = child.nextElementSibling) {
