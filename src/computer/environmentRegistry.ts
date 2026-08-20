@@ -93,6 +93,12 @@ function nondispatched(
   };
 }
 
+function validEvidence(evidence: readonly string[] | undefined): boolean {
+  if (evidence === undefined) return true;
+  if (!Array.isArray(evidence) || evidence.length > 32) return false;
+  return evidence.every((code) => /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(code));
+}
+
 /**
  * Adapter registry/router for the environment-neutral core.
  *
@@ -169,6 +175,12 @@ export class ComputerEnvironmentRegistry {
           dispatch: 'unknown',
           verification: 'unverified',
           evidence: ['adapter-response-invalid'],
+        };
+      }
+      if (!validEvidence(result.evidence)) {
+        return {
+          ...result,
+          evidence: ['adapter-evidence-invalid'],
         };
       }
       return result;
