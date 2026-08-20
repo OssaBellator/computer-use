@@ -73,11 +73,14 @@ test('computer side-effect and retry rules remain fail-closed after dispatch', (
 
 test('browser bridge preserves browser strengths without pretending to be a general computer adapter', () => {
   const profile = computerProfileFromBrowserProfile(CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE);
-  assert.equal(profile.id, 'computer-via-standalone-chromium-0.42');
+  assert.equal(profile.id, 'computer-via-standalone-chromium-0.43');
   assert.equal(computerCapabilityState(profile, 'semantic-ui-observation').support, 'supported');
   assert.equal(computerCapabilityState(profile, 'document-observation').support, 'supported');
   assert.equal(computerCapabilityState(profile, 'relative-pointer-input').support, 'supported');
   assert.equal(computerCapabilityState(profile, 'document-editing').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'clipboard-read').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'clipboard-write').support, 'partial');
+  assert.equal(computerCapabilityState(profile, 'drag-drop').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'media-playback').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'game-control').support, 'partial');
   assert.equal(computerCapabilityState(profile, 'communication-control').support, 'partial');
