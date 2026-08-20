@@ -2,7 +2,7 @@
 
 A TypeScript foundation for closed-loop browser interaction research, accessibility tooling, reproducible UI testing, and permitted interactive-page/game experiments.
 
-The engine models a page as a semantic/spatial interaction graph, combines DOM semantics with CDP-backed identity and geometry, learns observed keyboard topology, plans across input modalities, verifies browser state after execution instead of assuming an issued command succeeded, and includes bounded realtime control with lower-frequency spatial visual perception plus relative mouse-look input for fast-changing game state.
+The engine models a page as a semantic/spatial interaction graph, combines DOM semantics with CDP-backed identity and geometry, learns observed keyboard topology, plans across input modalities, verifies browser state after execution instead of assuming an issued command succeeded, and includes bounded realtime control with automatic game-region acquisition, lower-frequency spatial visual perception, and relative mouse-look input for fast-changing game state.
 
 ## Scope
 
@@ -27,6 +27,8 @@ The project uses normal browser automation mouse/keyboard primitives rather than
 - frame identity mapping and main-frame coordinate normalization
 - viewport-clipped and main-viewport geometry
 - paint-order target validation before pointer acquisition
+- bounded automatic game-surface acquisition across canvas, video, iframe, and `role=application` candidates
+- deterministic game-region ranking with browser-authoritative visible clips and hard search/result bounds
 - bounded screenshot capture for canvas/paint-only state, with crop/format/size controls and content hashes
 - clipped screenshot downscaling before image bytes cross the CDP boundary
 - local PNG differencing with sampled changed-pixel fractions, motion tiles, and coarse motion bounds
@@ -104,7 +106,7 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not at `/usr/bin/chromium`.
 
-The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner, roving-tabindex ownership that keeps speculative Arrow planning inside the widget, held CDP controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, and a downscaled visual-motion fixture where control ticks outnumber screenshot captures.
+The live suite covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation with DOM focus retained on the composite owner, roving-tabindex ownership that keeps speculative Arrow planning inside the widget, automatic dominant-canvas acquisition feeding exact bounded screenshot dimensions, held CDP controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, and a downscaled visual-motion fixture where control ticks outnumber screenshot captures.
 
 ## Architecture
 
@@ -114,12 +116,13 @@ semantic goal / realtime policy
     +-------------------------------------+
     |                                     |
     v                                     v
-DOM + AX + frame + geometry        clipped/downscaled visual capture
+DOM + AX + frame + geometry        game-region acquisition
 observer                                  |
     |                                     v
-    +---- overflow clipping         PNG tile/motion differ
+    +---- overflow clipping         clipped/downscaled visual capture
     |                                     |
-    +---- DOM focus ---- state-anchor      |
+    +---- DOM focus ---- state-anchor      v
+    |                    |           PNG tile/motion differ
     |                    |                 |
     v                    v                 v
 InteractionModel <---- observed topology  cached observation
@@ -150,15 +153,15 @@ page / game state
 
 ## Regression coverage
 
-The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
+The unit/regression suite covers graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, deterministic/bounded game-region ranking, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
 
-See [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling, motion differencing, and decoupled perception/control cadence.
+See [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling, motion differencing, and decoupled perception/control cadence.
 
 ## Current limitations / next slices
 
 1. **Temporal visual state:** motion regions are frame-pair observations; add short bounded tracks, velocity estimates, and confidence decay so policies can reason about moving entities between visual captures.
-2. **Game-region acquisition:** clips are currently caller-supplied; add deterministic canvas/video/known-element region discovery and safe region refresh when layout changes.
-3. **Pointer capture state:** relative movement is available, but pointer-lock acquisition, loss detection, and recovery are not yet first-class control-loop state.
+2. **Pointer capture state:** relative movement is available, but pointer-lock acquisition, loss detection, and recovery are not yet first-class control-loop state.
+3. **Game-region lifecycle:** initial canvas/video/frame/application acquisition is automatic, but invalidation and reacquisition on resize, fullscreen, navigation, or renderer replacement are not yet first-class lifecycle state.
 4. **Composite key semantics:** ownership and roving tabindex bound speculative Arrow space; model orientation, wrapping, Home/End, PageUp/PageDown, and richer grid/menu/tree-specific transitions explicitly.
 5. **Explicit frame traversal edges:** pointer geometry is normalized across frames, but keyboard/frame ownership should be represented as first-class enter/exit-frame graph transitions.
 6. **Snapshot efficiency:** reduce full-tree observation cost through incremental invalidation and targeted refresh while preserving stable backend/AX identity.
