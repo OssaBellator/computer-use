@@ -37,6 +37,20 @@ const MAX_SCROLL_DELTA = 100_000;
 const MAX_EVIDENCE = 12;
 const MAX_EVIDENCE_BYTES = 63;
 
+type BrowserRuntimePolicy = Omit<TaskRuntimeOptions, 'maxSteps' | 'maxVisitsPerStep' | 'commitmentDetection' | 'commitmentVerification'>;
+const RUNTIME_POLICY_KEYS = [
+  'maxConsecutiveNoProgress',
+  'requireUnambiguousTargets',
+  'maxRisk',
+  'commitmentVerificationMaxPolls',
+  'commitmentVerificationPollIntervalMs',
+  'approve',
+  'onCommitmentVerification',
+  'onTrace',
+  'waitPollIntervalMs',
+  'waitMaxPolls',
+] as const satisfies readonly (keyof BrowserRuntimePolicy)[];
+
 export type BrowserComputerCapability =
   | 'browser.semantic-ui.observe'
   | 'browser.document.observe'
@@ -68,7 +82,7 @@ export interface BrowserComputerEnvironmentAdapterOptions {
   adapterId?: string;
   version?: string;
   /** Passed to the existing browser TaskRuntime commitment gate/verifier. */
-  runtimeOptions?: Omit<TaskRuntimeOptions, 'maxSteps' | 'maxVisitsPerStep' | 'commitmentDetection' | 'commitmentVerification'>;
+  runtimeOptions?: BrowserRuntimePolicy;
 }
 
 interface BoundedSemanticNode {
@@ -137,6 +151,38 @@ function boundedPositive(value: number | undefined, fallback: number, ceiling: n
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+function plainDataRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new TypeError(`${label} must be a plain data object`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${label} must be a plain data object`);
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    if (!('value' in descriptor)) throw new TypeError(`${label}.${key} must be a data property`);
+  }
+  return value;
+}
+function snapshotAdapterOptions(options: BrowserComputerEnvironmentAdapterOptions): Readonly<BrowserComputerEnvironmentAdapterOptions> {
+  const root = plainDataRecord(options, 'browser adapter options');
+  const adapterId = Object.getOwnPropertyDescriptor(root, 'adapterId')?.value;
+  const version = Object.getOwnPropertyDescriptor(root, 'version')?.value;
+  const runtimeCandidate = Object.getOwnPropertyDescriptor(root, 'runtimeOptions')?.value;
+  if (adapterId !== undefined && typeof adapterId !== 'string') throw new TypeError('browser adapter options.adapterId must be a string');
+  if (version !== undefined && typeof version !== 'string') throw new TypeError('browser adapter options.version must be a string');
+  let runtimeOptions: Readonly<BrowserRuntimePolicy> | undefined;
+  if (runtimeCandidate !== undefined) {
+    const source = plainDataRecord(runtimeCandidate, 'browser runtime options');
+    const snapshot: Partial<BrowserRuntimePolicy> = {};
+    for (const key of RUNTIME_POLICY_KEYS) {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      if (descriptor) (snapshot as Record<string, unknown>)[key] = descriptor.value;
+    }
+    runtimeOptions = Object.freeze(snapshot as BrowserRuntimePolicy);
+  }
+  return Object.freeze({
+    ...(adapterId !== undefined ? { adapterId } : {}),
+    ...(version !== undefined ? { version } : {}),
+    ...(runtimeOptions ? { runtimeOptions } : {}),
+  });
+}
 function boundedKey(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && utf8Bytes(value) <= MAX_KEY_BYTES && !/[\r\n\0]/.test(value);
 }
@@ -187,17 +233,19 @@ function sameDocumentIdentity(left: BrowserDocumentIdentity, right: BrowserDocum
 
 export class BrowserComputerEnvironmentAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor;
+  readonly options: Readonly<BrowserComputerEnvironmentAdapterOptions>;
   private sequence = 0;
   private readonly activeDocumentIdentities = new Map<string, BrowserDocumentIdentity>();
 
-  constructor(readonly runtime: BrowserComputerRuntime, readonly options: BrowserComputerEnvironmentAdapterOptions = {}) {
-    this.descriptor = {
-      id: options.adapterId ?? 'browser-chromium', kind: 'browser', version: options.version ?? '0.43',
-      capabilities: [
-        'browser.semantic-ui.observe', 'browser.document.observe', 'browser.visual.observe', 'browser.media.observe',
-        'browser.activate', 'browser.hover', 'browser.type', 'browser.press-key', 'browser.scroll-viewport',
-      ],
-    };
+  constructor(readonly runtime: BrowserComputerRuntime, options: BrowserComputerEnvironmentAdapterOptions = {}) {
+    this.options = snapshotAdapterOptions(options);
+    const capabilities = Object.freeze([
+      'browser.semantic-ui.observe', 'browser.document.observe', 'browser.visual.observe', 'browser.media.observe',
+      'browser.activate', 'browser.hover', 'browser.type', 'browser.press-key', 'browser.scroll-viewport',
+    ]);
+    this.descriptor = Object.freeze({
+      id: this.options.adapterId ?? 'browser-chromium', kind: 'browser', version: this.options.version ?? '0.43', capabilities,
+    });
   }
 
   private targetById(targetId: string): BrowserTargetState | undefined {
