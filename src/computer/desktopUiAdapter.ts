@@ -161,13 +161,6 @@ function cloneApplication(value: unknown): DesktopWindowSurface['application'] {
   });
 }
 
-function validVisualArtifact(value: DesktopVisualArtifactRef | undefined): boolean {
-  if (value === undefined) return true;
-  if (!validBoundedString(value.token, MAX_VISUAL_TOKEN_BYTES)) return false;
-  if (value.mediaType !== undefined && !validBoundedString(value.mediaType, MAX_MEDIA_TYPE_BYTES)) return false;
-  return value.byteLength === undefined || (Number.isSafeInteger(value.byteLength) && value.byteLength >= 0);
-}
-
 function cloneVisualArtifact(value: DesktopVisualArtifactRef | undefined): DesktopVisualArtifactRef | undefined {
   if (value === undefined) return undefined;
   if (!validVisualArtifact(value)) throw new Error('desktop visual artifact metadata invalid');
@@ -182,28 +175,125 @@ function validVisualDimension(value: number | undefined): boolean {
   return value === undefined || (Number.isSafeInteger(value) && value > 0 && value <= MAX_VISUAL_DIMENSION);
 }
 
-function exactKeys(value: object, allowed: readonly string[]): boolean {
+function validVisualArtifact(value: DesktopVisualArtifactRef | undefined): boolean {
+  if (value === undefined) return true;
+  if (!validBoundedString(value.token, MAX_VISUAL_TOKEN_BYTES)) return false;
+  if (value.mediaType !== undefined && !validBoundedString(value.mediaType, MAX_MEDIA_TYPE_BYTES)) return false;
+  return value.byteLength === undefined || (Number.isSafeInteger(value.byteLength) && value.byteLength >= 0);
+}
+
+function captureOwnDataObject(value: unknown, allowed: readonly string[]): Readonly<Record<string, unknown>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key === 'symbol')) return undefined;
+    const captured: Record<string, unknown> = Object.create(null);
+    for (const key of keys as string[]) {
+      if (!allowed.includes(key)) return undefined;
+      const descriptor = descriptors[key];
+      if (!descriptor || !('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return undefined;
+  }
+}
+
+function exactCapturedKeys(value: Readonly<Record<string, unknown>>, allowed: readonly string[]): boolean {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undefined {
-  if (!payload || typeof payload !== 'object') return undefined;
-  const p = payload as { kind?:unknown; key?:unknown; text?:unknown; modifiers?:unknown };
-  if (p.kind === 'text') {
-    if (!exactKeys(p, ['kind', 'text']) || !validBoundedString(p.text, MAX_TEXT_INPUT_BYTES)) return undefined;
-    return { kind: 'text', text: p.text };
+function capturePlainArray(value: unknown, maxLength: number): readonly unknown[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key === 'symbol')) return undefined;
+    const lengthDescriptor = (descriptors as Record<string, PropertyDescriptor | undefined>)['length'];
+    const lengthValue = lengthDescriptor && 'value' in lengthDescriptor ? lengthDescriptor.value : undefined;
+    if (typeof lengthValue !== 'number' || !Number.isSafeInteger(lengthValue) || lengthValue < 0 || lengthValue > maxLength) return undefined;
+    const length = lengthValue;
+    const captured: unknown[] = [];
+    for (const key of keys as string[]) {
+      if (key === 'length') continue;
+      if (!/^(0|[1-9][0-9]*)$/.test(key)) return undefined;
+      const index = Number(key);
+      if (index >= length) return undefined;
+      const descriptor = descriptors[key];
+      if (!descriptor || !('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
+    }
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !('value' in descriptor)) return undefined;
+      captured.push(descriptor.value);
+    }
+    return Object.freeze(captured);
+  } catch {
+    return undefined;
   }
-  if (p.kind !== 'key-down' && p.kind !== 'key-up') return undefined;
-  if (!exactKeys(p, ['kind', 'key', 'modifiers'])) return undefined;
-  if (!validBoundedString(p.key, MAX_KEY_BYTES) || /[\r\n]/.test(p.key)) return undefined;
-  if (p.modifiers === undefined) return { kind: p.kind, key: p.key };
-  if (!Array.isArray(p.modifiers) || p.modifiers.length > KEY_MODIFIERS.size) return undefined;
+}
+
+function captureEntityRef(value: unknown): ComputerEntityRef | undefined {
+  const captured = captureOwnDataObject(value, ['adapterId','environment','kind','entityId','surfaceId','generation']);
+  if (!captured || typeof captured.adapterId !== 'string' || typeof captured.environment !== 'string' || typeof captured.kind !== 'string' || typeof captured.entityId !== 'string') return undefined;
+  if (captured.surfaceId !== undefined && typeof captured.surfaceId !== 'string') return undefined;
+  if (captured.generation !== undefined && typeof captured.generation !== 'number') return undefined;
+  return Object.freeze({
+    adapterId:captured.adapterId,
+    environment:captured.environment as ComputerEntityRef['environment'],
+    kind:captured.kind as ComputerEntityRef['kind'],
+    entityId:captured.entityId,
+    ...(captured.surfaceId !== undefined ? {surfaceId:captured.surfaceId} : {}),
+    ...(captured.generation !== undefined ? {generation:captured.generation} : {}),
+  });
+}
+
+function captureActionRequest(value: unknown): {request:ComputerActionRequest; payload:unknown} | undefined {
+  const captured = captureOwnDataObject(value, ['adapterId','actionId','capability','effect','idempotency','target','payload']);
+  if (!captured || typeof captured.adapterId !== 'string' || typeof captured.actionId !== 'string' || typeof captured.capability !== 'string' || typeof captured.effect !== 'string' || typeof captured.idempotency !== 'string') return undefined;
+  let target: ComputerEntityRef | undefined;
+  if (captured.target !== undefined) {
+    target = captureEntityRef(captured.target);
+    if (!target) return undefined;
+  }
+  const request = Object.freeze({
+    adapterId:captured.adapterId,
+    actionId:captured.actionId,
+    capability:captured.capability,
+    effect:captured.effect as ComputerActionRequest['effect'],
+    idempotency:captured.idempotency as ComputerActionRequest['idempotency'],
+    ...(target ? {target} : {}),
+    ...(Object.hasOwn(captured, 'payload') ? {payload:captured.payload} : {}),
+  });
+  return {request, payload:captured.payload};
+}
+
+function validateKeyboardPayload(payload: unknown): DesktopKeyboardInput | undefined {
+  const p = captureOwnDataObject(payload, ['kind', 'key', 'text', 'modifiers']);
+  if (!p) return undefined;
+  const kind = p.kind;
+  if (kind === 'text') {
+    const text = p.text;
+    if (!exactCapturedKeys(p, ['kind', 'text']) || !validBoundedString(text, MAX_TEXT_INPUT_BYTES)) return undefined;
+    return Object.freeze({ kind: 'text', text });
+  }
+  if (kind !== 'key-down' && kind !== 'key-up') return undefined;
+  const key = p.key;
+  if (!exactCapturedKeys(p, ['kind', 'key', 'modifiers']) || !validBoundedString(key, MAX_KEY_BYTES) || /[\r\n]/.test(key)) return undefined;
+  if (p.modifiers === undefined) return Object.freeze({ kind, key });
+  const modifiers = capturePlainArray(p.modifiers, KEY_MODIFIERS.size);
+  if (!modifiers) return undefined;
   const seen = new Set<DesktopKeyboardModifier>();
-  for (const modifier of p.modifiers) {
+  for (const modifier of modifiers) {
     if (typeof modifier !== 'string' || !KEY_MODIFIERS.has(modifier) || seen.has(modifier as DesktopKeyboardModifier)) return undefined;
     seen.add(modifier as DesktopKeyboardModifier);
   }
-  return { kind: p.kind, key: p.key, modifiers: [...seen] };
+  return Object.freeze({ kind, key, modifiers: Object.freeze([...seen]) });
 }
 
 function boundedCoordinate(value: unknown, maxMagnitude: number): value is number {
@@ -211,24 +301,29 @@ function boundedCoordinate(value: unknown, maxMagnitude: number): value is numbe
 }
 
 function validateAbsolutePointerPayload(payload: unknown): DesktopAbsolutePointerInput | undefined {
-  if (!payload || typeof payload !== 'object') return undefined;
-  const p = payload as {kind?:unknown;x?:unknown;y?:unknown;button?:unknown};
-  if (!boundedCoordinate(p.x, MAX_ABSOLUTE_COORDINATE) || !boundedCoordinate(p.y, MAX_ABSOLUTE_COORDINATE)) return undefined;
-  if (p.kind === 'move') {
-    if (!exactKeys(p, ['kind','x','y']) || p.button !== undefined) return undefined;
-    return { kind:'move', x:p.x, y:p.y };
+  const p = captureOwnDataObject(payload, ['kind','x','y','button']);
+  if (!p) return undefined;
+  const kind = p.kind;
+  const x = p.x;
+  const y = p.y;
+  const button = p.button;
+  if (!boundedCoordinate(x, MAX_ABSOLUTE_COORDINATE) || !boundedCoordinate(y, MAX_ABSOLUTE_COORDINATE)) return undefined;
+  if (kind === 'move') {
+    if (!exactCapturedKeys(p, ['kind','x','y']) || button !== undefined) return undefined;
+    return Object.freeze({ kind:'move', x, y });
   }
-  if (p.kind !== 'down' && p.kind !== 'up' && p.kind !== 'click') return undefined;
-  if (!exactKeys(p, ['kind','x','y','button']) || typeof p.button !== 'string' || !POINTER_BUTTONS.has(p.button)) return undefined;
-  return { kind:p.kind, x:p.x, y:p.y, button:p.button as DesktopPointerButton };
+  if (kind !== 'down' && kind !== 'up' && kind !== 'click') return undefined;
+  if (!exactCapturedKeys(p, ['kind','x','y','button']) || typeof button !== 'string' || !POINTER_BUTTONS.has(button)) return undefined;
+  return Object.freeze({ kind, x, y, button:button as DesktopPointerButton });
 }
 
 function validateRelativePointerPayload(payload: unknown): DesktopRelativePointerInput | undefined {
-  if (!payload || typeof payload !== 'object') return undefined;
-  const p = payload as {dx?:unknown;dy?:unknown};
-  if (!exactKeys(p, ['dx','dy'])) return undefined;
-  if (!boundedCoordinate(p.dx, MAX_RELATIVE_DELTA) || !boundedCoordinate(p.dy, MAX_RELATIVE_DELTA)) return undefined;
-  return { dx:p.dx, dy:p.dy };
+  const p = captureOwnDataObject(payload, ['dx','dy']);
+  if (!p || !exactCapturedKeys(p, ['dx','dy'])) return undefined;
+  const dx = p.dx;
+  const dy = p.dy;
+  if (!boundedCoordinate(dx, MAX_RELATIVE_DELTA) || !boundedCoordinate(dy, MAX_RELATIVE_DELTA)) return undefined;
+  return Object.freeze({ dx, dy });
 }
 
 export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
@@ -454,16 +549,18 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    const requestErrors = validateComputerActionRequest(request, this.descriptor);
+    const captured = captureActionRequest(request);
+    if (!captured) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-action-request']};
+    const snapshotRequest = captured.request;
+    const requestErrors = validateComputerActionRequest(snapshotRequest, this.descriptor);
     if (requestErrors.length > 0) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-action-request']};
 
-    const target = request.target ? Object.freeze({...request.target}) : undefined;
     const authority = Object.freeze({
-      actionId:request.actionId,
-      capability:request.capability,
-      effect:request.effect,
-      idempotency:request.idempotency,
-      target,
+      actionId:snapshotRequest.actionId,
+      capability:snapshotRequest.capability,
+      effect:snapshotRequest.effect,
+      idempotency:snapshotRequest.idempotency,
+      target:snapshotRequest.target,
     });
     if (authority.effect === 'observe-only') return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['desktop-input-effect-invalid']};
 
@@ -474,16 +571,16 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
       case 'desktop.focus':
         break;
       case 'desktop.keyboard':
-        keyboardInput = validateKeyboardPayload(request.payload);
+        keyboardInput = validateKeyboardPayload(captured.payload);
         if (!keyboardInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-keyboard-payload']};
         break;
       case 'desktop.pointer.absolute':
-        absoluteInput = validateAbsolutePointerPayload(request.payload);
+        absoluteInput = validateAbsolutePointerPayload(captured.payload);
         if (!absoluteInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
         break;
       case 'desktop.pointer.relative':
         if (!this.backend.supportsRelativePointer || !this.backend.pointerRelative) return {status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['relative-pointer-unsupported']};
-        relativeInput = validateRelativePointerPayload(request.payload);
+        relativeInput = validateRelativePointerPayload(captured.payload);
         if (!relativeInput) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['invalid-pointer-payload']};
         break;
       default:
@@ -493,7 +590,7 @@ export class DesktopUiEnvironmentAdapter implements ComputerEnvironmentAdapter {
     const surfaceId = authority.target?.kind === 'surface' ? authority.target.entityId : authority.target?.surfaceId;
     const generation = authority.target?.generation;
     if (!surfaceId || generation === undefined) return {status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['surface-generation-required']};
-    const ref:DesktopNativeWindowRef = {nativeWindowId:surfaceId,generation};
+    const ref:DesktopNativeWindowRef = Object.freeze({nativeWindowId:surfaceId,generation});
 
     let window:DesktopWindowSurface|undefined;
     try { window = await this.currentWindow(ref); }
