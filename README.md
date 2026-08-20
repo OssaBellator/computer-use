@@ -2,7 +2,7 @@
 
 A TypeScript foundation for a standalone, closed-loop browser agent intended to cover the broad range of tasks people perform on the web while keeping browser actions bounded, observable, and policy-controlled.
 
-The primary Chromium path launches the browser directly from Node, speaks CDP over Chromium's `--remote-debugging-pipe`, routes page sessions in-repo, reads structured document content, builds semantic/spatial interaction state, plans and verifies actions, manages multiple pages and browser lifecycle features, supports bounded rich-document selection/editing, runs realtime game control/perception, and now adds page-grounded commitment detection before high-consequence actions.
+The primary Chromium path launches the browser directly from Node, speaks CDP over Chromium's `--remote-debugging-pipe`, routes page sessions in-repo, reads structured document content, builds semantic/spatial interaction state, plans and verifies actions, manages multiple pages and browser lifecycle features, supports bounded rich-document selection/editing, runs realtime game control/perception, and adds page-grounded pre/post commitment safety around high-consequence actions.
 
 ## Scope
 
@@ -24,7 +24,7 @@ The long-term target is broad capability across:
 
 `WEB_TASK_CATEGORY_DEFINITIONS`, `WEB_TASK_CATEGORY_CAPABILITY_TARGETS`, and standalone capability profiles make that scope machine-readable. `supported`, `partial`, and `unsupported` are kept distinct so broad coverage is not inferred from generic clicking and typing.
 
-## Current standalone profile: 0.40
+## Current standalone profile: 0.41
 
 The historical `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` remains the immutable 0.35 snapshot. `CURRENT_STANDALONE_CHROMIUM_CAPABILITY_PROFILE` describes the current stack.
 
@@ -44,32 +44,45 @@ The historical `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` remains the immutable 0.
 
 - **Rich-text editing:** bounded DOM/text-control selection and caret observation plus native insertion/replacement/select-all/delete; formatting runs, rich clipboard, drag/drop, and editor-specific model verification remain incomplete.
 - **Commitment detection:** strong and context-corroborated purchase/booking/transfer/subscription/publish/destructive/security/process actions are inferred from bounded semantic/document state immediately before activation; site-specific semantics remain heuristic.
-- **External side-effect verification:** generic browser/action verification exists, but transaction/publication/process outcomes are not yet bound to a typed pre-commit summary.
+- **External side-effect verification:** approved detected commitments receive frame-scoped bounded post-action classification for confirmed/pending/declined/canceled/unknown states and explicit material-term mismatches. Provider-specific receipts, durable result IDs, and arbitrary handoff semantics remain incomplete.
+- **Process-trigger verification:** explicit queued/started/completed/failed/canceled result text is classified without redispatching the trigger, but provider-specific process identity is not first-class.
 - uploads/download observation and network activity depend on explicit configuration where documented.
 - generic media and user-mediated authentication flows are reachable, but media/fullscreen/permission/MFA/passkey state is not yet first-class.
 
 ### Transaction status
 
-At 0.40, `transactions-commerce` is mechanically **runnable** in the capability model because no required primitive is completely unsupported. It is **not fully supported**: commitment detection and specialized external-side-effect verification remain partial.
+At 0.41, `transactions-commerce` is mechanically **runnable** in the capability model because no required primitive is completely unsupported. It is **not fully supported**: commitment detection and specialized external-side-effect verification remain partial.
 
-This is a safety distinction, not permission for unattended financial actions. The runtime's dynamic commitment gate requires approval before inferred commitments by default.
+This is a safety distinction, not permission for unattended financial actions. The runtime's dynamic commitment gate requires approval before inferred commitments by default, and detected commitments are not allowed to silently succeed after browser input without explicit post-action evidence.
 
 ## Commitment safety
 
-`TaskRuntime` previously depended only on program-authored `risk` / `requiresApproval`. A program could therefore accidentally describe a `Place order` or `Confirm transfer` button as an ordinary interaction.
+`TaskRuntime` now wraps detected commitments in two bounded phases.
 
-The 0.40 gate is additive:
+Before input:
 
 - `activate`, plus Enter/Space on a focused activation control, is checked immediately before browser input;
 - strong target labels such as `Place order`, `Pay now`, `Confirm transfer`, `Publish`, `Change password`, `Delete account`, or `Run workflow` can trigger approval from the semantic target alone;
 - generic labels such as `Confirm`, `Submit`, `Continue`, or `Delete` request one bounded structured-document snapshot when the engine exposes that channel;
-- contextual evidence can classify purchase, booking, transfer, subscription, publication, destructive, identity/security, or process-trigger commitments;
+- contextual evidence is scoped to the target's owning frame and can classify purchase, booking, transfer, subscription, publication, destructive, identity/security, or process-trigger commitments;
 - an available document channel that fails or is too incomplete to safely rule out an ambiguous commitment fails closed through approval;
-- approval callbacks may receive bounded amount/currency, explicitly labeled counterparty, schedule, recurrence, irreversibility/security flags, and evidence codes;
-- ordinary traces retain only commitment status/kind/confidence, not amount/counterparty/page excerpts;
-- `commitmentDetection: 'off'` is an explicit compatibility opt-out. It is not the default.
+- approval callbacks may receive bounded amount/currency, explicitly labeled counterparty, schedule, recurrence, irreversibility/security flags, and evidence codes.
 
-The detector does not execute transactions and does not contact payment providers. Repository regressions use synthetic local fixtures only.
+After approved input:
+
+- the runtime polls bounded structured-document state without redispatching the action;
+- generic navigation or DOM change cannot by itself prove success;
+- explicit result evidence is classified as `confirmed`, `pending`, `declined`, `canceled`, `mismatch`, or `unknown`;
+- visible amount/currency/counterparty/schedule/recurrence can be compared with the approved summary;
+- only `confirmed` advances normally;
+- pending/declined/canceled/mismatch/unknown terminate with a distinct `side-effect-*` status and never follow the commitment step's `onFailure` edge, preventing accidental duplicate effects;
+- a matching explicit receipt can override weak generic click verification, while a generic `verified` action result cannot override an adverse or unknown commitment result.
+
+Detailed observed result terms are available only through `onCommitmentVerification`. Ordinary traces retain commitment classifications plus names of mismatched fields, not amount/counterparty/schedule/page excerpts.
+
+`commitmentDetection: 'off'` and `commitmentVerification: 'off'` are explicit compatibility opt-outs. They are not the standalone defaults.
+
+Repository regressions use synthetic local fixtures only; they do not execute real purchases, payments, transfers, bookings, publications, deletions, security changes, or deployments.
 
 See [`docs/commitment-safety.md`](docs/commitment-safety.md).
 
@@ -111,6 +124,10 @@ page session      page session       page session
         explicit approval if needed
                      |
           browser-native CDP input
+                     |
+          bounded result observation
+                     |
+       commitment-bound verification
                      |
                      v
                  web page
@@ -172,7 +189,7 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` if Chromium is not `/usr/bin/chromium`.
 
-The Chromium suite uses local deterministic fixtures. It covers the raw remote-debugging pipe, target/session routing, semantic actions, frames/shadow DOM, structured reading, navigation/lifecycle controllers, realtime/game behavior, rich selection/insertion, and synthetic commitment safety. The commitment smoke test proves an unapproved synthetic checkout is blocked before input and an approved run performs exactly one independently verified browser activation. It does not make a real purchase or use an external merchant.
+The Chromium suite uses local deterministic fixtures. It covers the raw remote-debugging pipe, target/session routing, semantic actions, frames/shadow DOM, structured reading, navigation/lifecycle controllers, realtime/game behavior, rich selection/insertion, and synthetic commitment safety. The commitment smoke test proves an unapproved synthetic checkout is blocked before input, an approved run performs exactly one independently verified browser activation, and the resulting synthetic receipt is independently classified before the task completes. It does not make a real purchase or use an external merchant.
 
 `npm run test:live` is a separate opt-in general live-site smoke path behind `RUN_LIVE_WEB=1`; it is not used for transaction testing.
 
@@ -183,7 +200,7 @@ The Chromium suite uses local deterministic fixtures. It covers the raw remote-d
 - [`docs/document-content-observation.md`](docs/document-content-observation.md) — structured reading semantics and bounds
 - [`docs/document-task-predicates.md`](docs/document-task-predicates.md) — document-driven task conditions
 - [`docs/rich-document-selection.md`](docs/rich-document-selection.md) — selection/caret and native insertion foundation
-- [`docs/commitment-safety.md`](docs/commitment-safety.md) — dynamic pre-commit detection and approval
+- [`docs/commitment-safety.md`](docs/commitment-safety.md) — dynamic pre-commit approval and retry-safe post-commit verification
 - [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md) — seven-category capability model
 - [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md), [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md), [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md), [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md), [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md), and [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) — realtime/game stack
 
@@ -191,7 +208,7 @@ The Chromium suite uses local deterministic fixtures. It covers the raw remote-d
 
 Highest-leverage remaining work:
 
-1. **Commit-bound post-side-effect verification** — bind the state after approval/action to the pre-commit summary and distinguish completed/pending/declined/canceled plus changed amount/recipient/recurrence/publication/process identity.
+1. **Durable commitment/result identity** — bind provider/result identifiers across redirects, popups, and multi-provider handoffs without weakening the fail-closed verification boundary.
 2. **Rich clipboard/formatting/drag-drop/editor verification** — needed for broad collaboration and content creation/publishing.
 3. **Permissions/media/user-mediated authentication** — first-class permission, fullscreen/playback, MFA/passkey handoff, and user-presence state.
 4. **Long-running checkpoint/replay** — durable, non-sensitive restartable task progress.
