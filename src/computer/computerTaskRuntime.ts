@@ -19,7 +19,7 @@ import {
 } from './computerTask.js';
 import {
   createComputerTaskCheckpoint,
-  validateComputerTaskCheckpoint,
+  snapshotComputerTaskCheckpoint,
   type ComputerTaskActionCheckpointState,
   type ComputerTaskCheckpoint,
   type ComputerTaskCheckpointUncertainty,
@@ -235,14 +235,14 @@ export class ComputerTaskRuntime {
     this.currentStepId = this.program.entry;
 
     if (options.checkpoint) {
-      validateComputerTaskCheckpoint(options.checkpoint, {
+      const checkpoint = snapshotComputerTaskCheckpoint(options.checkpoint, {
         program: this.program,
         executionId: this.executionId,
         requireRuntimeProvenance: true,
       });
-      this.currentStepId = options.checkpoint.cursor.nextStepId;
-      this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
-      for (const action of options.checkpoint.actions) {
+      this.currentStepId = checkpoint.cursor.nextStepId;
+      this.stepsExecuted = checkpoint.cursor.stepsExecuted;
+      for (const action of checkpoint.actions) {
         this.actionStates.set(action.stepId, action.state);
         if (action.uncertainty) this.actionUncertainties.set(action.stepId, action.uncertainty);
       }
