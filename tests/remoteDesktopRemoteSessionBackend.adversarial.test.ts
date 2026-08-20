@@ -48,7 +48,7 @@ function visualAction(adapter: RemoteSessionAdapter, authority: unknown, input: 
     adapterId: adapter.adapterId,
     actionId: 'desktop-adversarial-action',
     capability: 'remote.visual.input',
-    effect: 'remote-input',
+    effect: 'remote-execution',
     idempotency: 'non-idempotent',
     payload: { authority, input },
   });
