@@ -7,7 +7,11 @@ import type { BrowserNavigationResult } from '../browser/navigationController.js
 import type { BrowserSelectResult } from '../browser/selectController.js';
 import type { CloseBrowserTargetResult, CreateBrowserTargetResult } from '../browser/targetController.js';
 import { detectTaskStepCommitment } from './commitmentGate.js';
-import { verifyTaskStepCommitment } from './commitmentVerification.js';
+import {
+  captureTaskStepCommitmentVerificationBaseline,
+  verifyTaskStepCommitment,
+  type TaskCommitmentVerificationBaseline,
+} from './commitmentVerification.js';
 import {
   validateTaskProgram,
   type ActivateTaskStep,
@@ -139,6 +143,19 @@ export class TaskRuntime {
         if (needsApproval && options.approve) { try { approved = await options.approve({ programName: program.name, stepId: step.id, kind: step.kind, risk: approvalRisk, visit, ...(commitment ? { commitment } : {}) }); } catch { approved = false; } }
         if (!approved) { await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit }); return failed('policy-blocked', index + 1); }
 
+        let verificationBaseline: TaskCommitmentVerificationBaseline | undefined;
+        if (commitment && isCommitmentCapableStep(step) && (options.commitmentVerification ?? 'auto') === 'auto') {
+          if (!commitment.kind) {
+            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
+            return failed('policy-blocked', index + 1);
+          }
+          verificationBaseline = await captureTaskStepCommitmentVerificationBaseline(this.engine, commitment, step, before);
+          if (!verificationBaseline || verificationBaseline.verification.status !== 'unknown') {
+            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), ...verificationTraceFields(verificationBaseline?.verification), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
+            return failed('policy-blocked', index + 1);
+          }
+        }
+
         let action: RuntimeActionResult | undefined, threw = false;
         try { action = await performAction(this.engine, step, inputs, options); } catch { threw = true; }
         let after = before; try { after = await observe(); } catch {}
@@ -146,15 +163,10 @@ export class TaskRuntime {
         const succeeded = actionSucceeded(step, action);
         const targetId = action && 'target' in action ? action.target?.id : action && 'targetId' in action ? action.targetId : undefined;
 
-        if (commitment && isCommitmentCapableStep(step) && (options.commitmentVerification ?? 'auto') === 'auto') {
-          if (!commitment.kind) {
-            await emit({ index, stepId: step.id, kind: step.kind, outcome: 'commitment-unverified', ...commitmentTraceFields(commitment), commitmentVerificationStatus: 'unknown', ...(targetId ? { targetId } : {}), ...(action ? { actionStatus: action.status } : {}), beforeFingerprint: before.fingerprint, afterFingerprint: after.fingerprint, browserStateChanged: changed, visit });
-            return failed('side-effect-unverified', index + 1);
-          }
-
+        if (commitment && verificationBaseline && isCommitmentCapableStep(step) && (options.commitmentVerification ?? 'auto') === 'auto') {
           let verification: BrowserCommitmentVerificationSummary;
           try {
-            verification = await verifyTaskStepCommitment(this.engine, commitment, step, before, {
+            verification = await verifyTaskStepCommitment(this.engine, commitment, verificationBaseline, {
               maxPolls: options.commitmentVerificationMaxPolls,
               pollIntervalMs: options.commitmentVerificationPollIntervalMs,
             });
