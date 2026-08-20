@@ -262,7 +262,12 @@ function isMutationPayload(value: unknown): value is SystemDeviceMutationPayload
   if (!payload.approval || payload.approval.approved !== true || !validIdentity(payload.approval.target)) return false;
   return boundedText(payload.approval.approvalId, MAX_ID_BYTES) && validRevision(payload.approval.configurationRevision);
 }
-function consumeText(value: string | undefined, budget: { remaining: number; truncated: boolean }): string | undefined {
+
+interface TextBudget {
+  remaining: number;
+  truncated: boolean;
+}
+function consumeText(value: string | undefined, budget: TextBudget): string | undefined {
   if (value === undefined) return undefined;
   const bytes = utf8Bytes(value);
   if (bytes > budget.remaining) {
@@ -315,7 +320,10 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     }
 
     const maxItems = Math.min(request.limits?.maxItems ?? 64, 256);
-    const textBudget = { remaining: Math.min(request.limits?.maxTextBytes ?? 16_384, 65_536), truncated: false };
+    const textBudget: TextBudget = {
+      remaining: Math.min(request.limits?.maxTextBytes ?? 16_384, 65_536),
+      truncated: false,
+    };
     const [rawAccess, system, devices, volumes] = await Promise.all([
       this.backend.privilegeState(), this.backend.systemInformation(),
       this.backend.enumerateDevices(), this.backend.enumerateVolumes(),
@@ -343,6 +351,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
       }
       if (devices.value.length > boundedDevices.length) textBudget.truncated = true;
     }
+
     const boundedVolumes: BoundedVolumeMetadata[] = [];
     if (volumes.state === 'ok') {
       for (const raw of volumes.value) {
@@ -358,12 +367,19 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
 
     let boundedSystem: BoundedSystemInformation | undefined;
     if (system.state === 'ok') {
-      boundedSystem = {
-        platformFamily: consumeText(safeLabel(system.value.platformFamily), textBudget) ?? 'unknown',
-        architecture: consumeText(safeLabel(system.value.architecture), textBudget),
-        logicalProcessorCount: clampNonNegativeSafe(system.value.logicalProcessorCount),
-        totalMemoryBytes: clampNonNegativeSafe(system.value.totalMemoryBytes),
-      };
+      const platformFamily = consumeText(safeLabel(system.value.platformFamily), textBudget);
+      if (platformFamily !== undefined) {
+        boundedSystem = {
+          platformFamily,
+          architecture: consumeText(safeLabel(system.value.architecture), textBudget),
+          logicalProcessorCount: clampNonNegativeSafe(system.value.logicalProcessorCount),
+          totalMemoryBytes: clampNonNegativeSafe(system.value.totalMemoryBytes),
+        };
+      } else {
+        // Do not synthesize an unbudgeted text fallback. Omitting optional system
+        // metadata is safer than escaping the caller's text observation bound.
+        textBudget.truncated = true;
+      }
     }
 
     return {
@@ -373,10 +389,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     };
   }
 
-  /**
-   * Typed observation helper. Deliberately not advertised in the neutral descriptor
-   * until ComputerObservationRequest has a first-class setting-scope route.
-   */
+  /** Typed observation helper; not advertised until neutral setting-scope routing exists. */
   async observeSystemSetting(scope: SystemSettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SystemSettingObservation>> {
     if (!validIdentity(scope) || !SAFE_SETTING.test(setting)) {
       return { state: 'unsupported-platform', evidence: 'invalid-observation-request' };
@@ -397,10 +410,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     };
   }
 
-  /**
-   * Typed security observation helper with coarse allowlisted values only.
-   * It is not advertised as neutral-routable for the same reason as system settings.
-   */
+  /** Typed coarse security observation helper; not advertised until neutral scope routing exists. */
   async observeSecuritySetting(scope: SecuritySettingScopeIdentity, setting: string): Promise<SystemDeviceBackendResult<SecuritySettingObservation>> {
     if (!validIdentity(scope) || !SAFE_SETTING.test(setting)) {
       return { state: 'unsupported-platform', evidence: 'invalid-observation-request' };
@@ -441,6 +451,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     if (payload.approval.effect !== effect || !sameIdentity(payload.approval.target, payload.target)) {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['approval-binding-mismatch']);
     }
+
     let trustedApproval = false;
     try {
       trustedApproval = await this.approvalVerifier.verify(
