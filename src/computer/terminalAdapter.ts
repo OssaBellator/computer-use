@@ -303,6 +303,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     }
 
     if (!Number.isSafeInteger(child.pid) || (child.pid ?? 0) <= 0) {
+      child.once('error', () => {});
       return {
         status: 'unknown',
         dispatch: 'unknown',
