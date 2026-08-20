@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SecureBootLinuxSystemDeviceBackend } from '../src/computer/secureBootLinuxSystemDeviceBackend.js';
 
+const SECURE_BOOT_NAME = 'SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c';
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'linux-secure-boot-'));
   const procRoot = join(root, 'proc');
@@ -26,11 +28,10 @@ function backendFor(f: Awaited<ReturnType<typeof fixture>>) {
   });
 }
 
-test('Secure Boot efivar is reduced to enabled posture without GUID leakage', async () => {
+test('canonical Secure Boot efivar is reduced to enabled posture without GUID leakage', async () => {
   const f = await fixture();
   try {
-    const nativeName = 'SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c';
-    await writeFile(join(f.efivars, nativeName), Buffer.from([7, 0, 0, 0, 1]));
+    await writeFile(join(f.efivars, SECURE_BOOT_NAME), Buffer.from([7, 0, 0, 0, 1]));
     const backend = backendFor(f);
     const scope = backend.securitySettingScope();
     const observed = await backend.observeSecuritySetting(scope, 'security.secure-boot');
@@ -46,10 +47,10 @@ test('Secure Boot efivar is reduced to enabled posture without GUID leakage', as
   }
 });
 
-test('Secure Boot disabled and malformed efivars remain coarse', async () => {
+test('canonical Secure Boot disabled and malformed efivars remain coarse', async () => {
   const f = await fixture();
   try {
-    const path = join(f.efivars, 'SecureBoot-private-native-guid');
+    const path = join(f.efivars, SECURE_BOOT_NAME);
     await writeFile(path, Buffer.from([7, 0, 0, 0, 0]));
     const backend = backendFor(f);
     const scope = backend.securitySettingScope();
@@ -62,7 +63,24 @@ test('Secure Boot disabled and malformed efivars remain coarse', async () => {
     assert.equal(malformed.state, 'ok');
     if (malformed.state === 'ok') {
       assert.equal(malformed.value.value, 'unknown');
-      assert.doesNotMatch(JSON.stringify(malformed.value), /private-native-guid/);
+      assert.doesNotMatch(JSON.stringify(malformed.value), /8be4df61|SecureBoot-/);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test('spoofed SecureBoot-prefixed efivars cannot prove security posture', async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.efivars, 'SecureBoot-attacker-controlled-guid'), Buffer.from([7, 0, 0, 0, 1]));
+    const backend = backendFor(f);
+    const scope = backend.securitySettingScope();
+    const observed = await backend.observeSecuritySetting(scope, 'security.secure-boot');
+    assert.equal(observed.state, 'ok');
+    if (observed.state === 'ok') {
+      assert.equal(observed.value.value, 'not-configured');
+      assert.doesNotMatch(JSON.stringify(observed.value), /attacker-controlled-guid|SecureBoot-/);
     }
   } finally {
     await f.cleanup();
