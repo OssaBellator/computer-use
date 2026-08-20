@@ -350,6 +350,34 @@ test('generation mismatch is rejected before observation or read', async () => {
   }
 });
 
+test('foreign adapter action envelopes are rejected before filesystem work', async () => {
+  const f = await fixture();
+  try {
+    await writeFile(join(f.root, 'owned.txt'), 'owned-content');
+    const ref = await f.adapter.resolvePath('owned.txt');
+    await unlink(join(f.root, 'owned.txt'));
+
+    const result = await f.adapter.act({
+      adapterId: 'another-adapter',
+      actionId: 'cross-adapter-read',
+      capability: 'filesystem.read',
+      effect: 'observe-only',
+      idempotency: 'read-only',
+      target: ref,
+      payload: { maxBytes: 64 },
+    });
+
+    assert.deepEqual(result, {
+      status: 'rejected',
+      dispatch: 'not-dispatched',
+      verification: 'rejected',
+      evidence: ['filesystem-read-request-rejected'],
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test('adapter action results remain coherent and mutations are not advertised or dispatched', async () => {
   const f = await fixture();
   try {
