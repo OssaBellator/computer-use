@@ -66,6 +66,10 @@ export interface IsolatedLocalComputeAdapterOptions {
   terminationAcknowledgeMs?: number;
   /** Fault-injection seam for testing conservative ambiguous-launch semantics. */
   ambiguousLaunchOperationIds?: readonly string[];
+  /** Fault-injection seam for post-spawn communication cleanup. */
+  communicationFailureOperationIds?: readonly string[];
+  /** Fault-injection seam that suppresses observed termination acknowledgement after cleanup kill. */
+  terminationUncertainOperationIds?: readonly string[];
 }
 
 const DEFAULT_LIMITS: LocalComputeResourceLimits = Object.freeze({
@@ -108,7 +112,7 @@ type WorkerOutcome =
   | { kind: 'result'; message: WorkerResultMessage }
   | { kind: 'worker-error'; message: WorkerErrorMessage }
   | { kind: 'crash'; code: number | null; signal: NodeJS.Signals | null }
-  | { kind: 'launch-uncertain' }
+  | { kind: 'launch-uncertain'; terminationConfirmed: boolean | null }
   | { kind: 'timed-out'; terminationConfirmed: boolean };
 
 function bytes(value: string): number { return Buffer.byteLength(value, 'utf8'); }
@@ -241,6 +245,8 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
   readonly descriptor: ComputerEnvironmentAdapterDescriptor;
   private readonly operations = new Map<string, Readonly<IsolatedLocalComputeOperationDefinition>>();
   private readonly ambiguousLaunch: Set<string>;
+  private readonly communicationFailure: Set<string>;
+  private readonly terminationUncertain: Set<string>;
   private readonly jobs = new Map<string, IsolatedLocalComputeJobSnapshot>();
   private readonly ledger = new Map<string, LedgerEntry>();
   private readonly highestGeneration = new Map<string, number>();
@@ -262,7 +268,9 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       this.operations.set(operation.id, Object.freeze({ id: operation.id, effect: operation.effect, moduleUrl: operation.moduleUrl, exportName: operation.exportName }));
     }
     this.ambiguousLaunch = new Set(options.ambiguousLaunchOperationIds ?? []);
-    for (const operationId of this.ambiguousLaunch) if (!this.operations.has(operationId)) throw new Error(`ambiguous launch operation is not registered: ${operationId}`);
+    this.communicationFailure = new Set(options.communicationFailureOperationIds ?? []);
+    this.terminationUncertain = new Set(options.terminationUncertainOperationIds ?? []);
+    for (const operationId of [...this.ambiguousLaunch, ...this.communicationFailure, ...this.terminationUncertain]) if (!this.operations.has(operationId)) throw new Error(`fault injection operation is not registered: ${operationId}`);
     this.maxRetainedJobs = boundedPositiveInteger(options.maxRetainedJobs, DEFAULT_MAX_RETAINED_JOBS, MAX_RETENTION_COUNT);
     this.maxLedgerEntries = boundedPositiveInteger(options.maxLedgerEntries, DEFAULT_MAX_LEDGER_ENTRIES, MAX_RETENTION_COUNT);
     this.maxArtifactStoreBytes = boundedPositiveInteger(options.maxArtifactStoreBytes, DEFAULT_MAX_ARTIFACT_STORE_BYTES, MAX_ARTIFACT_STORE_BYTES);
@@ -345,9 +353,11 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       return { status: outcome.terminationConfirmed ? 'failed' : 'unknown', dispatch: snapshot.dispatch, verification: outcome.terminationConfirmed ? 'rejected' : 'unverified', evidence: [outcome.terminationConfirmed ? 'compute-isolated-timeout-terminated' : 'compute-isolated-termination-uncertain'], details: { job: snapshot } };
     }
     if (outcome.kind === 'launch-uncertain') {
-      snapshot = freezeSnapshot({ ...snapshot, executionState: 'unknown', dispatch: 'unknown', diagnostics: ['compute-isolated-launch-uncertain'] });
+      const terminationUncertain = outcome.terminationConfirmed === false;
+      const evidence = terminationUncertain ? 'compute-isolated-termination-uncertain' : 'compute-isolated-launch-uncertain';
+      snapshot = freezeSnapshot({ ...snapshot, executionState: 'unknown', dispatch: 'unknown', diagnostics: [evidence] });
       this.updateLedger(key, snapshot); this.setJob(key, snapshot);
-      return { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: ['compute-isolated-launch-uncertain'], details: { job: snapshot } };
+      return { status: 'unknown', dispatch: 'unknown', verification: 'unverified', evidence: [evidence], details: { job: snapshot } };
     }
     if (outcome.kind === 'crash') {
       snapshot = freezeSnapshot({ ...snapshot, executionState: 'failed', dispatch: snapshot.dispatch === 'dispatched-once' ? 'dispatched-once' : 'unknown', diagnostics: ['compute-isolated-worker-crashed'] });
@@ -397,6 +407,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       let child: ChildProcess;
       let settled = false;
       let spawned = false;
+      let communicationCleanup = false;
       let deadlineTimer: NodeJS.Timeout | undefined;
       let terminationTimer: NodeJS.Timeout | undefined;
       const token = randomBytes(16).toString('hex');
@@ -413,7 +424,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       try {
         child = fork(workerPath, [], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'], serialization: 'json' });
       } catch {
-        resolve({ kind: 'launch-uncertain' });
+        resolve({ kind: 'launch-uncertain', terminationConfirmed: null });
         return;
       }
       const terminateForDeadline = (): void => {
@@ -426,14 +437,27 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
         }
         terminationTimer = setTimeout(() => finish({ kind: 'timed-out', terminationConfirmed: child.exitCode !== null || child.signalCode !== null }), this.terminationAcknowledgeMs);
       };
+      const terminateForCommunicationFailure = (): void => {
+        if (settled || communicationCleanup) return;
+        communicationCleanup = true;
+        try { child.kill('SIGKILL'); } catch { /* acknowledgement state is checked below */ }
+        terminationTimer = setTimeout(() => {
+          const confirmed = !this.terminationUncertain.has(operation.id) && (child.exitCode !== null || child.signalCode !== null);
+          finish({ kind: 'launch-uncertain', terminationConfirmed: confirmed });
+        }, this.terminationAcknowledgeMs);
+      };
       deadlineTimer = setTimeout(terminateForDeadline, Math.max(0, deadlineEpochMs - Date.now()));
-      child.once('spawn', () => { spawned = true; onDispatch('dispatched-once'); });
+      child.once('spawn', () => {
+        spawned = true;
+        onDispatch('dispatched-once');
+        if (this.communicationFailure.has(operation.id)) terminateForCommunicationFailure();
+      });
       child.once('error', () => {
-        if (spawned) { try { child.kill('SIGKILL'); } catch { /* uncertainty is reported below */ } }
-        finish({ kind: 'launch-uncertain' });
+        if (spawned) terminateForCommunicationFailure();
+        else finish({ kind: 'launch-uncertain', terminationConfirmed: null });
       });
       child.on('message', (raw: unknown) => {
-        if (settled || Date.now() > deadlineEpochMs || !raw || typeof raw !== 'object') return;
+        if (settled || communicationCleanup || Date.now() > deadlineEpochMs || !raw || typeof raw !== 'object') return;
         const message = raw as Partial<WorkerWireMessage> & Record<string, unknown>;
         if (message.token !== token) return;
         if (message.type === 'result' && typeof message.outputEncoded === 'string' && typeof message.outputHash === 'string' && typeof message.byteLength === 'number' && typeof message.shape === 'string') finish({ kind: 'result', message: message as unknown as WorkerResultMessage });
@@ -441,13 +465,17 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
       });
       child.once('exit', (code, signal) => {
         if (settled) return;
+        if (communicationCleanup) {
+          if (!this.terminationUncertain.has(operation.id)) finish({ kind: 'launch-uncertain', terminationConfirmed: true });
+          return;
+        }
         if (Date.now() >= deadlineEpochMs) finish({ kind: 'timed-out', terminationConfirmed: true });
         else finish({ kind: 'crash', code, signal });
       });
       child.send({ type: 'run', token, operationId: operation.id, moduleUrl: operation.moduleUrl, exportName: operation.exportName, inputEncoded, deadlineEpochMs, limits: { maxOutputBytes: limits.maxOutputBytes, maxDiagnosticBytes: limits.maxDiagnosticBytes, maxJsonDepth: limits.maxJsonDepth, maxJsonItems: limits.maxJsonItems, memoryBytesHint: limits.memoryBytesHint }, job }, (error) => {
         if (error && !settled) {
-          try { child.kill('SIGKILL'); } catch { /* dispatch remains uncertain */ }
-          finish({ kind: 'launch-uncertain' });
+          if (spawned) terminateForCommunicationFailure();
+          else finish({ kind: 'launch-uncertain', terminationConfirmed: null });
         }
       });
     });
