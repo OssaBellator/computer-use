@@ -22,6 +22,10 @@ import type { InteractionNode } from '../types.js';
 import { createCdpInteractionEngine, type CdpInteractionEngineOptions } from './cdpInteractionEngine.js';
 import type { InteractionEngine } from './interactionEngine.js';
 
+const MAX_FRAME_DOCUMENT_TOKEN_FRAMES = 32;
+const MAX_FRAME_DOCUMENT_TOKEN_BYTES = 4 * 1024;
+const FRAME_DOCUMENT_TOKENS_INCOMPLETE = '__browser_identity_incomplete__';
+
 export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   constructor(
     readonly interaction: InteractionEngine,
@@ -61,13 +65,25 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
   async frameDocumentTokens(): Promise<Readonly<Record<string, string>> | undefined> {
     if (!this.snapshotPage) return undefined;
     const frames = this.snapshotPage.frames();
-    const entries = await Promise.all(frames.map(async (frame, index) => {
+    const boundedFrames = frames.slice(0, MAX_FRAME_DOCUMENT_TOKEN_FRAMES);
+    const entries = await Promise.all(boundedFrames.map(async (frame, index) => {
       const timeOrigin = await frame.evaluate(() => performance.timeOrigin);
       if (!Number.isFinite(timeOrigin) || timeOrigin < 0) return undefined;
       return [index === 0 ? 'main' : `frame-${index}`, timeOrigin.toString(36)] as const;
     }));
-    const valid = entries.filter((entry): entry is readonly [string, string] => entry !== undefined);
-    return Object.fromEntries(valid);
+    const result: Record<string, string> = {};
+    let bytes = 0;
+    let complete = frames.length <= MAX_FRAME_DOCUMENT_TOKEN_FRAMES;
+    for (const entry of entries) {
+      if (!entry) { complete = false; continue; }
+      const [frameId, token] = entry;
+      const entryBytes = Buffer.byteLength(frameId) + Buffer.byteLength(token);
+      if (bytes + entryBytes > MAX_FRAME_DOCUMENT_TOKEN_BYTES) { complete = false; break; }
+      bytes += entryBytes;
+      result[frameId] = token;
+    }
+    if (!complete) result[FRAME_DOCUMENT_TOKENS_INCOMPLETE] = '1';
+    return result;
   }
 
   documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
