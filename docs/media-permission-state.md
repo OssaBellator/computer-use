@@ -13,8 +13,10 @@ The bounded state includes:
 - finite current time and duration up to the configured observation bound (infinite live-stream duration is intentionally omitted);
 - bounded playback rate;
 - visibility;
-- bounded identity fields: frame id, `backendNodeId`, ordinal, tag name, id, aria label, and truncated current source;
+- bounded identity fields: frame id, `backendNodeId`, ordinal, tag name, id, and aria label;
 - a preferred `activeMedia` identity selected only from currently playing elements, preferring audible/visible video when several elements play simultaneously.
+
+Media source URLs are deliberately excluded from the returned identity/snapshot. Signed streaming URLs can carry bearer-like query credentials, while frame/backend-node identity is sufficient for later browser-native control.
 
 Frame count, media count, retained text, time values, and error retention are all bounded. Protocol or frame failures are recorded rather than silently converted into known state.
 
@@ -37,7 +39,7 @@ The same snapshot observes two distinct fullscreen concepts:
 - playback rate;
 - request / exit document fullscreen.
 
-The controller resolves the observed `backendNodeId` in the owning frame and calls the browser's native `HTMLMediaElement` / Fullscreen APIs through CDP. It does **not** synthesize `dispatchEvent()` media or fullscreen events. Play and fullscreen operations use CDP's `userGesture` execution flag and bounded polling, then return only after the requested state is verified or a bounded rejection/verification failure is available. Fullscreen can legitimately be rejected by browser/headless policy.
+The controller resolves the observed `backendNodeId` in the owning frame and calls the browser's native `HTMLMediaElement` / Fullscreen APIs through CDP. It does **not** synthesize `dispatchEvent()` media or fullscreen events and does not set CDP's `userGesture` execution flag. Normal browser autoplay/fullscreen user-activation policy therefore remains in force. Bounded polling returns only after the requested state is verified or a bounded rejection/verification failure is available. Fullscreen and unmuted playback can legitimately be rejected by browser/headless policy.
 
 These controls do not grant permissions and do not automate credentials, passkeys, MFA, CAPTCHA, or other authentication ceremonies.
 
@@ -65,7 +67,7 @@ The observer is read-only: it never calls permission grant, deny, or reset comma
 
 Coverage is deterministic and synthetic/local:
 
-- unit fixtures exercise media bounds, active media selection, nested fullscreen ownership, native controller verification, Permissions Policy blocking, and browser-level uncertainty;
+- unit fixtures exercise media bounds, active media selection, nested fullscreen ownership, activation-policy preservation, source-URL omission, native controller verification, Permissions Policy blocking, and browser-level uncertainty;
 - a local raw-CDP Chromium smoke test uses an in-memory WAV data URI and an `iframe allow` policy fixture. It verifies real media playback/control and permission-policy observation without external sites or side effects;
 - document fullscreen is attempted through the real Fullscreen API. Current headless Chromium may decline it; the smoke test verifies that the operation returns boundedly and observes active ownership when the browser accepts it. Active nested ownership is also covered deterministically by unit fixtures.
 
