@@ -1,5 +1,6 @@
 import type { TaskRuntimeEngine, TaskEngineActionResult, TaskKeyActionResult } from '../agent/taskRuntime.js';
 import { captureCdpBrowserState, type BrowserStateSnapshot } from '../browser/browserState.js';
+import { createBoundedSemanticActionController } from '../browser/boundedSemanticAction.js';
 import {
   snapshotInteractiveDomBounded,
   type BoundedSemanticSnapshotLimits,
@@ -118,6 +119,68 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
     return this.snapshotPage
       ? snapshotInteractiveDomBounded(this.snapshotPage, limits)
       : Promise.resolve(undefined);
+  }
+
+  async resolveBoundedSemanticTarget(
+    targetId: string,
+    limits: BoundedSemanticSnapshotLimits,
+  ): Promise<InteractionNode | undefined> {
+    if (!this.snapshotPage) return undefined;
+    const { observer } = createBoundedSemanticActionController(
+      this.snapshotPage,
+      this.session,
+      this.interaction.input,
+      this.interaction.pointer,
+      limits,
+      targetId,
+    );
+    return observer.resolveTarget();
+  }
+
+  async activateBoundedSemantic(
+    targetId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: Parameters<InteractionEngine['activate']>[1],
+  ): Promise<TaskEngineActionResult> {
+    if (!this.snapshotPage) return { status: 'target-not-found', target: null };
+    const { observer, controller } = createBoundedSemanticActionController(
+      this.snapshotPage, this.session, this.interaction.input, this.interaction.pointer, limits, targetId,
+    );
+    const target = await observer.resolveTarget();
+    if (!target) return { status: 'target-not-found', target: null };
+    const result = await controller.activate(target, options);
+    return { status: result.status, target: result.target };
+  }
+
+  async hoverBoundedSemantic(
+    targetId: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: Parameters<InteractionEngine['hover']>[1],
+  ): Promise<TaskEngineActionResult> {
+    if (!this.snapshotPage) return { status: 'target-not-found', target: null };
+    const { observer, controller } = createBoundedSemanticActionController(
+      this.snapshotPage, this.session, this.interaction.input, this.interaction.pointer, limits, targetId,
+    );
+    const target = await observer.resolveTarget();
+    if (!target) return { status: 'target-not-found', target: null };
+    const result = await controller.hover(target, options);
+    return { status: result.status, target: result.target };
+  }
+
+  async typeBoundedSemantic(
+    targetId: string,
+    text: string,
+    limits: BoundedSemanticSnapshotLimits,
+    options?: Parameters<InteractionEngine['typeInto']>[2],
+  ): Promise<TaskEngineActionResult> {
+    if (!this.snapshotPage) return { status: 'target-not-found', target: null };
+    const { observer, controller } = createBoundedSemanticActionController(
+      this.snapshotPage, this.session, this.interaction.input, this.interaction.pointer, limits, targetId,
+    );
+    const target = await observer.resolveTarget();
+    if (!target) return { status: 'target-not-found', target: null };
+    const result = await controller.typeInto(target, text, options);
+    return { status: result.status, target: result.target };
   }
 
   documentContent(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined> {
@@ -275,7 +338,7 @@ export class CdpBrowserAgentEngine implements TaskRuntimeEngine {
       return Promise.resolve({
         status: 'protocol-error',
         accepted: accept,
-        errorText: 'CDP session does not expose event subscriptions for dialog lifecycle monitoring',
+        errorText: 'CDP session does not expose event subscriptions for dialog monitoring',
       });
     }
     return this.dialogs.handle(accept, promptText);
