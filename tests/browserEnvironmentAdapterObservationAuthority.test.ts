@@ -232,7 +232,7 @@ test('browser envelope snapshots capture changing data descriptors exactly once'
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
   let ownKeysCalls = 0;
   const reads = new Map<string, number>();
-  const changing = <T extends Record<string, unknown>>(value: T, replacements: Partial<T>): T => new Proxy(value, {
+  const changing = <T extends Record<string, unknown>>(value: T, replacements: Record<string, unknown>): T => new Proxy(value, {
     ownKeys() {
       ownKeysCalls += 1;
       throw new Error('bulk own-key enumeration must not run');
@@ -243,7 +243,7 @@ test('browser envelope snapshots capture changing data descriptors exactly once'
       reads.set(key, count);
       const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
       if (!descriptor || !('value' in descriptor) || count === 1 || !(key in replacements)) return descriptor;
-      return { ...descriptor, value: replacements[key as keyof T] };
+      return { ...descriptor, value: replacements[key] };
     },
   });
 
@@ -257,7 +257,7 @@ test('browser envelope snapshots capture changing data descriptors exactly once'
       channel: 'semantic-ui' as const,
       limits,
     },
-    { channel: 'visual' as const },
+    { channel: 'visual' },
   );
 
   const observed = await adapter.observe(request as ComputerObservationRequest);
