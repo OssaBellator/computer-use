@@ -1,5 +1,7 @@
 import {
   computerActionMayAutoRetry,
+  validateComputerObservationRequest,
+  type ComputerActionIdempotency,
   type ComputerActionRequest,
   type ComputerActionResult,
   type ComputerEffectClass,
@@ -180,6 +182,9 @@ function validIdentity(identity: SystemDeviceIdentity): boolean {
     boundedText(identity.id, MAX_ID_BYTES) &&
     Number.isSafeInteger(identity.generation) && identity.generation >= 0;
 }
+function cloneIdentity<T extends SystemDeviceIdentity>(identity: T): T {
+  return Object.freeze({ id: identity.id, kind: identity.kind, generation: identity.generation }) as T;
+}
 function sameIdentity(left: SystemDeviceIdentity, right: SystemDeviceIdentity): boolean {
   return left.id === right.id && left.kind === right.kind && left.generation === right.generation;
 }
@@ -214,14 +219,14 @@ function clampNonNegativeSafe(value: number | undefined): number | undefined {
 function boundDevice(device: BoundedDeviceMetadata): BoundedDeviceMetadata | undefined {
   if (!validIdentity(device.identity)) return undefined;
   return {
-    identity: { ...device.identity }, category: device.category, presence: device.presence,
+    identity: cloneIdentity(device.identity), category: device.category, presence: device.presence,
     state: device.state, label: safeLabel(device.label),
   };
 }
 function boundVolume(volume: BoundedVolumeMetadata): BoundedVolumeMetadata | undefined {
   if (!validIdentity(volume.identity)) return undefined;
   return {
-    identity: { ...volume.identity }, state: volume.state, removable: volume.removable,
+    identity: cloneIdentity(volume.identity), state: volume.state, removable: volume.removable,
     capacityBytes: clampNonNegativeSafe(volume.capacityBytes),
     freeBytes: clampNonNegativeSafe(volume.freeBytes),
     filesystemType: safeLabel(volume.filesystemType),
@@ -252,15 +257,35 @@ function operationCapability(operation: SystemDeviceMutationPayload['operation']
     case 'peripheral-configuration': return 'device.peripheral.configure';
   }
 }
-function isMutationPayload(value: unknown): value is SystemDeviceMutationPayload {
-  if (!value || typeof value !== 'object') return false;
-  const payload = value as Partial<SystemDeviceMutationPayload>;
-  if (!['system-setting-change', 'security-setting-change', 'peripheral-configuration'].includes(String(payload.operation))) return false;
-  if (!payload.target || !validIdentity(payload.target)) return false;
-  if (typeof payload.setting !== 'string' || !SAFE_SETTING.test(payload.setting)) return false;
-  if (safeScalar(payload.value) === undefined) return false;
-  if (!payload.approval || payload.approval.approved !== true || !validIdentity(payload.approval.target)) return false;
-  return boundedText(payload.approval.approvalId, MAX_ID_BYTES) && validRevision(payload.approval.configurationRevision);
+
+/** Rebuild caller-owned mutation input before the first await; no caller references survive this boundary. */
+function snapshotMutationPayload(value: unknown): Readonly<SystemDeviceMutationPayload> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Partial<SystemDeviceMutationPayload>;
+  if (!['system-setting-change', 'security-setting-change', 'peripheral-configuration'].includes(String(candidate.operation))) return undefined;
+  if (!candidate.target || !validIdentity(candidate.target)) return undefined;
+  if (typeof candidate.setting !== 'string' || !SAFE_SETTING.test(candidate.setting)) return undefined;
+  const scalar = safeScalar(candidate.value);
+  if (scalar === undefined) return undefined;
+  if (!candidate.approval || candidate.approval.approved !== true || !validIdentity(candidate.approval.target)) return undefined;
+  if (!boundedText(candidate.approval.approvalId, MAX_ID_BYTES) || !validRevision(candidate.approval.configurationRevision)) return undefined;
+
+  const target = cloneIdentity(candidate.target);
+  const approvalTarget = cloneIdentity(candidate.approval.target);
+  const approval = Object.freeze({
+    approved: true as const,
+    approvalId: candidate.approval.approvalId,
+    effect: candidate.approval.effect,
+    target: approvalTarget,
+    configurationRevision: candidate.approval.configurationRevision,
+  });
+  return Object.freeze({
+    operation: candidate.operation as SystemDeviceMutationPayload['operation'],
+    target,
+    setting: candidate.setting,
+    value: scalar,
+    approval,
+  });
 }
 
 interface TextBudget {
@@ -276,6 +301,13 @@ function consumeText(value: string | undefined, budget: TextBudget): string | un
   }
   budget.remaining -= bytes;
   return value;
+}
+
+interface ActionSnapshot {
+  readonly actionId: string;
+  readonly capability: string;
+  readonly effect: ComputerEffectClass;
+  readonly idempotency: ComputerActionIdempotency;
 }
 
 export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapter {
@@ -301,7 +333,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     this.descriptor = Object.freeze({
       id: adapterId,
       kind: 'device' as const,
-      version: 'system-device-foundation-v2',
+      version: 'system-device-foundation-v3',
       capabilities: Object.freeze([
         'device.observe',
         'system.observe',
@@ -311,14 +343,16 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    if (request.adapterId !== this.adapterId || request.channel !== 'device') {
+    const requestErrors = validateComputerObservationRequest(request, this.descriptor);
+    if (requestErrors.length > 0 || request.adapterId !== this.adapterId || request.channel !== 'device') {
       return {
         adapterId: this.adapterId, environment: 'device', channel: request.channel,
         sequence: this.sequence++, complete: false, truncated: false,
-        data: { access: { state: 'unsupported-platform', reason: 'observation-channel-unsupported' } },
+        data: { access: { state: 'unsupported-platform', reason: 'invalid-observation-request' } },
       };
     }
 
+    // Shared validation above guarantees positive bounded safe integers when supplied.
     const maxItems = Math.min(request.limits?.maxItems ?? 64, 256);
     const textBudget: TextBudget = {
       remaining: Math.min(request.limits?.maxTextBytes ?? 16_384, 65_536),
@@ -376,8 +410,6 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
           totalMemoryBytes: clampNonNegativeSafe(system.value.totalMemoryBytes),
         };
       } else {
-        // Do not synthesize an unbudgeted text fallback. Omitting optional system
-        // metadata is safer than escaping the caller's text observation bound.
         textBudget.truncated = true;
       }
     }
@@ -406,7 +438,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     }
     return {
       state: 'ok',
-      value: { scope: { ...scope }, setting, state: value.state, value: scalar, revision: value.revision },
+      value: { scope: cloneIdentity(scope), setting, state: value.state, value: scalar, revision: value.revision },
     };
   }
 
@@ -426,7 +458,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     }
     return {
       state: 'ok',
-      value: { scope: { ...scope }, setting, state: value.state, value: value.value, revision: value.revision },
+      value: { scope: cloneIdentity(scope), setting, state: value.state, value: value.value, revision: value.revision },
     };
   }
 
@@ -440,12 +472,19 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     if (!this.mutationsEnabled || !this.approvalVerifier || !this.actionLedger) {
       return actionResult('unsupported', 'not-dispatched', 'unverified', ['mutation-disabled']);
     }
-    if (!isMutationPayload(request.payload)) {
+
+    const payload = snapshotMutationPayload(request.payload);
+    if (!payload) {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['mutation-payload-invalid']);
     }
-    const payload = request.payload;
+    const action: ActionSnapshot = Object.freeze({
+      actionId: request.actionId,
+      capability: request.capability,
+      effect: request.effect,
+      idempotency: request.idempotency,
+    });
     const effect = requiredEffect(payload);
-    if (request.capability !== operationCapability(payload.operation) || request.effect !== effect || request.idempotency === 'read-only') {
+    if (action.capability !== operationCapability(payload.operation) || action.effect !== effect || action.idempotency === 'read-only') {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['risk-classification-mismatch']);
     }
     if (payload.approval.effect !== effect || !sameIdentity(payload.approval.target, payload.target)) {
@@ -455,7 +494,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     let trustedApproval = false;
     try {
       trustedApproval = await this.approvalVerifier.verify(
-        { actionId: request.actionId, capability: request.capability, effect: request.effect },
+        Object.freeze({ actionId: action.actionId, capability: action.capability, effect: action.effect }),
         payload,
       );
     } catch {
@@ -477,16 +516,22 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
         safeMachineCode(baselineResult.evidence, 'backend-access-unavailable'),
       ]);
     }
-    const baseline = baselineResult.value;
-    if (!validIdentity(baseline.target) || !sameIdentity(baseline.target, payload.target) ||
-        !validRevision(baseline.configurationRevision) ||
+    const rawBaseline = baselineResult.value;
+    if (!validIdentity(rawBaseline.target) || !validRevision(rawBaseline.configurationRevision)) {
+      return actionResult('rejected', 'not-dispatched', 'unverified', ['stale-identity-or-baseline']);
+    }
+    const baseline: Readonly<SystemDeviceMutationBaseline> = Object.freeze({
+      target: cloneIdentity(rawBaseline.target),
+      configurationRevision: rawBaseline.configurationRevision,
+    });
+    if (!sameIdentity(baseline.target, payload.target) ||
         payload.approval.configurationRevision !== baseline.configurationRevision) {
       return actionResult('rejected', 'not-dispatched', 'unverified', ['stale-identity-or-baseline']);
     }
 
     let claim: Awaited<ReturnType<SystemDeviceActionLedger['claim']>>;
     try {
-      claim = await this.actionLedger.claim(request.actionId);
+      claim = await this.actionLedger.claim(action.actionId);
     } catch {
       claim = 'unavailable';
     }
@@ -500,22 +545,26 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
     const uncertain = actionResult('unknown', 'unknown', 'unverified', ['dispatch-outcome-uncertain']);
     let dispatch: SystemDeviceMutationDispatch;
     try {
-      dispatch = await this.backend.dispatchMutation(payload, baseline);
+      dispatch = await this.backend.dispatchMutation(payload as SystemDeviceMutationPayload, baseline as SystemDeviceMutationBaseline);
     } catch {
-      await this.recordBestEffort(request.actionId, uncertain);
+      await this.recordBestEffort(action.actionId, uncertain);
       return uncertain;
     }
     if (dispatch.state !== 'dispatched' || !boundedText(dispatch.verificationToken, MAX_ID_BYTES)) {
-      await this.recordBestEffort(request.actionId, uncertain);
+      await this.recordBestEffort(action.actionId, uncertain);
       return uncertain;
     }
 
     let verification: SystemDeviceMutationVerification;
     try {
-      verification = await this.backend.verifyMutation(payload, baseline, dispatch);
+      verification = await this.backend.verifyMutation(
+        payload as SystemDeviceMutationPayload,
+        baseline as SystemDeviceMutationBaseline,
+        dispatch,
+      );
     } catch {
       const result = actionResult('unknown', 'dispatched-once', 'unverified', ['verification-failed']);
-      await this.recordBestEffort(request.actionId, result);
+      await this.recordBestEffort(action.actionId, result);
       return result;
     }
     const evidence = validEvidence(verification.evidence) ? verification.evidence : ['evidence-redacted'];
@@ -525,7 +574,7 @@ export class SystemDeviceEnvironmentAdapter implements ComputerEnvironmentAdapte
           verification.state === 'rejected' || verification.state === 'mismatch' ? 'rejected' : 'unknown',
           'dispatched-once', verification.state, evidence,
         );
-    await this.recordBestEffort(request.actionId, result);
+    await this.recordBestEffort(action.actionId, result);
     return result;
   }
 
