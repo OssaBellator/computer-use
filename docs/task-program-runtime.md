@@ -15,7 +15,7 @@ Long-horizon browser agents fail for recurring reasons:
 
 `TaskProgram` addresses the first two structurally. A program is compiled **before execution**. Runtime browser state may satisfy a predicate or choose between predeclared branches, but it cannot create new actions, selectors, typed text, or destinations.
 
-The commitment boundary addresses the latter two conservatively: `TaskRuntime` can infer a bounded commitment from the exact resolved activation target plus structured document context, require approval before dispatch, and then independently classify the resulting page state before deciding whether the task may advance.
+The commitment boundary addresses the latter two conservatively: `TaskRuntime` can infer a bounded commitment from the exact resolved activation target plus structured document context, require approval before dispatch, capture a fresh result-neutral verification baseline after approval, and then independently classify the resulting page state before deciding whether the task may advance.
 
 ## Core guarantees
 
@@ -23,6 +23,7 @@ The commitment boundary addresses the latter two conservatively: `TaskRuntime` c
 - **Trusted data flow.** Typed text and navigation destinations can come only from program literals or named task inputs. Browser-derived text is not accepted as an action payload or destination.
 - **Fail-closed targeting.** Semantic actions require unambiguous targets by default.
 - **Observed success.** Ordinary semantic actions advance only on their action-specific verified evidence. Approved detected commitments use the specialized commitment-result verifier instead: an explicit matching result may confirm a side effect even when generic click verification is weak, while generic `verified` cannot override pending/declined/canceled/mismatched/unknown commitment state.
+- **Fresh verification preflight.** After approval and immediately before browser input, detected commitments require a fresh same-frame structured-document baseline whose result classification is `unknown`. Pre-existing success, pending/adverse state, material mismatch, missing result channel, or baseline extraction failure blocks dispatch.
 - **Navigation identity.** Browser state includes URL, origin, title, document readiness, history length, and `performance.timeOrigin`; the latter prevents an already-complete old document from being mistaken for a completed reload/navigation.
 - **Bounded recovery.** Global step budgets, per-step visit budgets, bounded waits, and no-progress detection stop runaway loops.
 - **Declared side-effect policy.** Steps marked `external-side-effect` are blocked by default unless the caller raises the risk budget or supplies an approval callback.
@@ -130,7 +131,9 @@ const result = await runtime.run(checkout, {}, {
 });
 ```
 
-If the post-action page explicitly confirms the matching purchase, the commitment step advances. If it remains pending, is declined/canceled, exposes conflicting material terms, or provides no explicit result evidence, the runtime returns a distinct `side-effect-*` status and does not execute the commit step's `onFailure` path.
+After approval, the runtime performs a **new** bounded same-frame result read before input. That baseline must be result-neutral. If a previous `Order confirmed` banner is already present, if material terms changed while approval was pending, or if the result channel cannot be read, the action is blocked before dispatch instead of risking an unattributable side effect.
+
+If browser input is dispatched and the post-action page explicitly confirms the matching purchase, the commitment step advances. If it remains pending, is declined/canceled, exposes conflicting material terms, or provides no explicit result evidence, the runtime returns a distinct `side-effect-*` status and does not execute the commit step's `onFailure` path.
 
 ## Commitment detection and verification behavior
 
@@ -138,7 +141,9 @@ Strong labels such as `Place order`, `Pay now`, `Confirm transfer`, `Publish`, `
 
 Generic labels such as `Confirm`, `Submit`, `Continue`, and `Delete` are ambiguous. When `documentContent()` is available, the runtime requests one bounded document snapshot and looks for corroborating transaction/publication/security/process context in the target's owning frame. If that available document channel fails or is too incomplete to rule out the commitment safely, approval is required rather than treating extraction failure as evidence of safety.
 
-After approved dispatch, the runtime polls bounded structured-document state in the same owning frame. Terminal result text returns immediately; explicit pending state may poll briefly in case it settles. Generic navigation, target disappearance, or arbitrary DOM mutation never proves commitment success by itself.
+Approval does not reuse that earlier document snapshot as its result baseline. A fresh structured-document read occurs **after the approval callback returns** and immediately before input. Only an `unknown` result classification is neutral enough to dispatch. Existing confirmation/pending/adverse result text or a material mismatch blocks before input so stale state cannot be attributed to the new action.
+
+After dispatch, the runtime polls bounded structured-document state in the same owning frame. Terminal result text returns immediately; explicit pending state may poll briefly in case it settles. Generic navigation, target disappearance, or arbitrary DOM mutation never proves commitment success by itself.
 
 Result statuses are:
 
@@ -149,9 +154,9 @@ Result statuses are:
 - `mismatch`
 - `unknown`
 
-Material comparisons currently cover explicitly visible amount, currency, counterparty, schedule, and recurrence when both the approved summary and result expose comparable values.
+Material comparisons currently cover explicitly visible amount, currency, counterparty, schedule, and recurrence when both the approved summary and baseline/result expose comparable values.
 
-Custom engines that expose no structured document channel can still use pre-commit strong-label gating, but an approved detected commitment without post-action result evidence terminates `side-effect-unverified` by default. `commitmentDetection: 'off'` and `commitmentVerification: 'off'` are explicit compatibility opt-outs.
+Custom engines without a structured result channel cannot dispatch a detected commitment with specialized verification enabled, even after approval. They fail closed with `policy-blocked` before input. `commitmentVerification: 'off'` is the explicit compatibility escape hatch when another verification layer is intentionally supplied. `commitmentDetection: 'off'` separately restores declaration-only risk gating.
 
 See [`commitment-safety.md`](commitment-safety.md) for evidence classes, limits, trace privacy, and fail-closed details.
 
@@ -177,7 +182,7 @@ npm test
 npm run test:chromium
 ```
 
-`test:chromium` uses local deterministic fixtures and does not require internet access. The commitment-safety smoke test creates a synthetic checkout page, proves the unapproved action is blocked before browser input, then approves the same bounded summary, verifies exactly one native browser activation, and independently confirms the synthetic result before task completion. It does not make a real purchase or contact a merchant.
+`test:chromium` uses local deterministic fixtures and does not require internet access. The commitment-safety smoke test creates a synthetic checkout page, proves the unapproved action is blocked before browser input, then approves the same bounded summary, captures a fresh neutral result baseline, verifies exactly one native browser activation, and independently confirms the synthetic result before task completion. It does not make a real purchase or contact a merchant.
 
 A separate opt-in live website test remains behind `RUN_LIVE_WEB=1`; it is unrelated to transaction testing.
 
@@ -202,6 +207,8 @@ user goal / trusted inputs
           +---- pre-action semantic target
           +---- bounded commitment detector
           +---- explicit approval when required
+          +---- fresh result-neutral baseline
+          X---- stale/adverse/mismatched/unavailable baseline blocks input
           |
           +---- semantic actions -> InteractionEngine
           +---- navigation -------> CDP navigation controller
