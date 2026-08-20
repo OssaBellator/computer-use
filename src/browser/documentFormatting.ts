@@ -263,12 +263,7 @@ async function extractFormattingFrame(frame: SnapshotFrameLike): Promise<RawForm
     }
 
     function isWithinHost(element: Element | null, host: Element): boolean {
-      let current = element;
-      for (let depth = 0; current && depth < 260; depth += 1) {
-        if (current === host) return true;
-        current = composedParent(current);
-      }
-      return false;
+      return element !== null && nearestEditingHost(element) === host;
     }
 
     function blockContext(element: Element, host: Element): DocumentBlockContext {
