@@ -6,6 +6,7 @@ import {
   observeTextRange,
   sameStructuredEntityRef,
   validateIntent,
+  validateObservationBounds,
   verifyPostEdit,
   type DocumentIdentityState,
   type DocumentRef,
@@ -75,6 +76,7 @@ function expectationFor(intent: StructuredTextNativeEdit, beforeRevision: number
     ? { kind: 'saved-revision-at-least', target: intent.document, minimumRevision: beforeRevision }
     : { kind: 'text-equals', target: intent.target, range: replacementRange(intent), expected: intent.text };
 }
+const failedVerification = (): PostEditVerification => ({ status: 'insufficient-observation', evidence: ['post-dispatch-observation-failed'] });
 
 export class StructuredTextSemanticController {
   constructor(private readonly backend: StructuredTextNativeBackend) {}
@@ -84,7 +86,7 @@ export class StructuredTextSemanticController {
     return this.executeSnapshot(snapshotIntent(intent), { ...verificationBounds });
   }
   private async executeSnapshot(intent: StructuredTextNativeEdit, verificationBounds: ObservationBounds): Promise<StructuredTextExecution> {
-    const errors = validateIntent(intent);
+    const errors = [...validateIntent(intent), ...validateObservationBounds(verificationBounds)];
     if (errors.length) return { status: 'rejected', dispatch: 'not-dispatched', reason: errors.join('; ') };
     const effect = classifyIntentEffect(intent);
     const beforeRevision = await this.backend.readRevision();
@@ -96,7 +98,6 @@ export class StructuredTextSemanticController {
       if (!entityFreshness.fresh) return { status: 'rejected', effect, dispatch: 'not-dispatched', reason: entityFreshness.reason };
     }
 
-    // Invocation starts only after the final freshness await. From this point on, any exception is conservatively uncertain.
     let dispatch: 'dispatched' | 'uncertain' = 'uncertain';
     try {
       const result = await this.backend.dispatchSemanticEdit(intent);
@@ -106,10 +107,16 @@ export class StructuredTextSemanticController {
     }
 
     const expectation = expectationFor(intent, beforeRevision);
-    const observation = intent.kind === 'save-document'
-      ? await this.backend.observeSavedState(intent.document)
-      : await this.backend.observeText(intent.target, expectation.kind === 'text-equals' ? expectation.range : { start: 0, end: 0 }, verificationBounds);
-    const verification = verifyPostEdit({ identity: await this.backend.readIdentity(), beforeRevision, expectation, observation });
+    let verification: PostEditVerification;
+    try {
+      const observation = intent.kind === 'save-document'
+        ? await this.backend.observeSavedState(intent.document)
+        : await this.backend.observeText(intent.target, expectation.kind === 'text-equals' ? expectation.range : { start: 0, end: 0 }, verificationBounds);
+      verification = verifyPostEdit({ identity: await this.backend.readIdentity(), beforeRevision, expectation, observation });
+    } catch {
+      verification = failedVerification();
+    }
+
     if (dispatch === 'uncertain') return { status: 'uncertain', effect, dispatch, verification };
     return verification.status === 'verified'
       ? { status: 'verified', effect, dispatch, verification }
