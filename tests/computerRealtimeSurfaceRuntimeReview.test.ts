@@ -7,13 +7,14 @@ const surface = { adapterId: 'review-fake', environment: 'desktop-ui', surfaceId
 class ReviewAdapter implements RealtimeSurfaceAdapter {
   readonly descriptor = { adapterId: 'review-fake', environment: 'desktop-ui' as const, supportedInputs: ['keyboard','pointer','relative-pointer','wheel'] as const, media: { observePlayback:true, observePosition:true, observeDuration:true, setPlayback:true, fullscreen:true } };
   state: RealtimeSurfaceState = { surface:{...surface}, captureGeneration:1, ownership:{focused:true,inputOwnerId:'input',captureOwnerId:'capture',sessionOwnerId:'session'}, relativePointer:{active:false,generation:1} };
-  inputs: RealtimeInput[]=[]; sequence=0; mode:'ok'|'unknown'|'throw'='ok'; captures: Partial<RealtimeVisualCapture>[]=[]; controlCalls=0; onCapture?:()=>void;
+  inputs: RealtimeInput[]=[]; sequence=0; mode:'ok'|'unknown'|'throw'='ok'; captures: Partial<RealtimeVisualCapture>[]=[]; controlCalls=0; onCapture?:()=>void; onInspect?:()=>void;
+  captureRequests: RealtimeVisualCaptureRequest[]=[]; mediaCommands: RealtimeMediaCommand[]=[];
   media: RealtimeMediaState = { surface:{...surface}, playback:'paused', positionMs:1, durationMs:10, muted:false, volume:.5, fullscreen:{active:false} };
-  async inspectSurface(_s:ComputerSurfaceRef){ return structuredClone(this.state); }
-  async captureVisual(_r:RealtimeVisualCaptureRequest){ this.onCapture?.(); this.sequence++; const base=new Uint8Array(800); return {surface:{...this.state.surface},captureGeneration:1,frameId:`f${this.sequence}`,timestampMs:this.sequence,sequence:this.sequence,width:20,height:10,byteLength:base.byteLength,droppedBefore:0,truncated:false,data:base,...this.captures.shift()} as RealtimeVisualCapture; }
+  async inspectSurface(_s:ComputerSurfaceRef){ this.onInspect?.(); return structuredClone(this.state); }
+  async captureVisual(r:RealtimeVisualCaptureRequest){ this.captureRequests.push(structuredClone(r)); this.onCapture?.(); this.sequence++; const base=new Uint8Array(800); return {surface:{...this.state.surface},captureGeneration:1,frameId:`f${this.sequence}`,timestampMs:this.sequence,sequence:this.sequence,width:20,height:10,byteLength:base.byteLength,droppedBefore:0,truncated:false,data:base,...this.captures.shift()} as RealtimeVisualCapture; }
   async dispatchInput(_s:ComputerSurfaceRef,i:RealtimeInput):Promise<RealtimeInputDispatchResult>{ if(this.mode==='throw'){this.inputs.push(structuredClone(i));throw new Error('lost');} if(this.mode==='unknown')return{dispatch:'unknown'}; this.inputs.push(structuredClone(i));return{dispatch:'dispatched-once'}; }
   async observeMedia(){ return this.media; }
-  async controlMedia(_s:ComputerSurfaceRef,_c:RealtimeMediaCommand):Promise<RealtimeMediaControlResult>{ this.controlCalls++; return {localMediaEffect:'applied',externalPublicationEffect:'not-attempted',state:this.media}; }
+  async controlMedia(_s:ComputerSurfaceRef,c:RealtimeMediaCommand):Promise<RealtimeMediaControlResult>{ this.controlCalls++; this.mediaCommands.push(structuredClone(c)); return {localMediaEffect:'applied',externalPublicationEffect:'not-attempted',state:this.media}; }
   async setFullscreen(_s:ComputerSurfaceRef,active:boolean,ownerId:string){ this.media={...this.media,fullscreen:{active,ownerId:active?ownerId:undefined}}; return this.media; }
 }
 
@@ -51,4 +52,30 @@ test('invalid media command discriminants and fields fail before adapter control
   await assert.rejects(r.controlMedia(l,{kind:'mute',muted:'yes' as unknown as boolean}),/mute command/);
   await assert.rejects(r.controlMedia(l,{kind:'publish'} as unknown as RealtimeMediaCommand),/media command kind/);
   assert.equal(a.controlCalls,0);
+});
+
+test('dispatchInput snapshots caller input before freshness await', async()=>{
+  const a=new ReviewAdapter(); const r=new RealtimeSurfaceRuntime(a); const l=await r.acquire(surface);
+  const input: RealtimeInput={kind:'keyboard',action:'press',key:'a'}; let mutated=false;
+  a.onInspect=()=>{ if(mutated)return; mutated=true; (input as {action:string;key:string}).action='down'; (input as {action:string;key:string}).key='Delete'; };
+  await r.dispatchInput(l,input);
+  assert.deepEqual(a.inputs,[{kind:'keyboard',action:'press',key:'a'}]);
+});
+
+test('controlMedia snapshots caller command before freshness await', async()=>{
+  const a=new ReviewAdapter(); const r=new RealtimeSurfaceRuntime(a); const l=await r.acquire(surface);
+  const command: RealtimeMediaCommand={kind:'playback',state:'playing'}; let mutated=false;
+  a.onInspect=()=>{ if(mutated)return; mutated=true; (command as {kind:string;state?:string}).kind='publish'; (command as {kind:string;state?:string}).state='stopped'; };
+  await r.controlMedia(l,command);
+  assert.deepEqual(a.mediaCommands,[{kind:'playback',state:'playing'}]);
+});
+
+test('observeVisual snapshots maxSamples bounds and limits before freshness/capture awaits', async()=>{
+  const a=new ReviewAdapter(); const r=new RealtimeSurfaceRuntime(a); const l=await r.acquire(surface);
+  const request={maxSamples:2,bounds:{x:1,y:2,width:20,height:10},limits:{maxPixels:1000,maxBytes:5000}};
+  let mutated=false;
+  a.onInspect=()=>{ if(mutated)return; mutated=true; request.maxSamples=120; request.bounds.width=999999; request.limits.maxPixels=4_194_304; request.limits.maxBytes=8*1024*1024; };
+  await r.observeVisual(l,request);
+  assert.equal(a.captureRequests.length,2);
+  for(const captured of a.captureRequests){ assert.deepEqual(captured.bounds,{x:1,y:2,width:20,height:10}); assert.deepEqual(captured.limits,{maxPixels:1000,maxBytes:5000}); }
 });
