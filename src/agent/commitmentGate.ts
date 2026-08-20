@@ -3,7 +3,10 @@ import {
   markBrowserCommitmentContextUnavailable,
   type BrowserCommitmentSummary,
 } from '../browser/commitmentDetector.js';
-import type { DocumentContentOptions } from '../browser/documentContent.js';
+import type {
+  DocumentContentOptions,
+  DocumentContentSnapshot,
+} from '../browser/documentContent.js';
 import { resolveInteractionTargetDetailed } from '../model/targetResolver.js';
 import type { InteractionNode } from '../types.js';
 import type { ActivateTaskStep, PressKeyTaskStep } from './taskProgram.js';
@@ -39,6 +42,25 @@ function focusedActivationTarget(observation: TaskObservation): InteractionNode 
   );
 }
 
+/**
+ * Commitment context is frame-local. A checkout iframe must not turn an
+ * unrelated generic Confirm button in another frame into a financial action.
+ * The original truncation flag is retained conservatively because host-level
+ * truncation can still mean relevant target-frame content was omitted.
+ */
+function documentForTarget(
+  document: DocumentContentSnapshot | undefined,
+  frameId: string,
+): DocumentContentSnapshot | undefined {
+  if (!document) return undefined;
+  return {
+    ...document,
+    frames: document.frames.filter((frame) => frame.frameId === frameId),
+    blocks: document.blocks.filter((block) => block.frameId === frameId),
+    frameErrors: document.frameErrors.filter((error) => error.frameId === frameId),
+  };
+}
+
 function initialDetection(
   step: CommitmentCapableTaskStep,
   observation: TaskObservation,
@@ -50,7 +72,7 @@ function initialDetection(
       action: 'activate',
       target,
       browser: observation.browser,
-      document: observation.document,
+      document: documentForTarget(observation.document, target.frameId),
     });
   }
 
@@ -61,7 +83,7 @@ function initialDetection(
     key: step.key,
     target,
     browser: observation.browser,
-    document: observation.document,
+    document: documentForTarget(observation.document, target.frameId),
   });
 }
 
