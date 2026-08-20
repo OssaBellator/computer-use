@@ -392,11 +392,15 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     }
 
     const outputArtifact = artifactFromCanonical(outputCanonical, payload.job.generation);
+    const output = immutableJson(outputCanonical.encoded);
+    if (operation.effect === 'local-artifact-creation' && !this.storeArtifact(outputCanonical, outputArtifact)) {
+      snapshot = freezeSnapshot({ ...snapshot, outputArtifact: undefined, executionState: 'failed', dispatch: 'dispatched-once', diagnostics: [...diagnostics, 'compute-isolated-artifact-store-limit'] });
+      this.updateLedger(key, snapshot); this.setJob(key, snapshot);
+      return { status: 'failed', dispatch: 'dispatched-once', verification: 'rejected', evidence: ['compute-isolated-artifact-store-limit'], details: { job: snapshot } };
+    }
     snapshot = freezeSnapshot({ ...snapshot, outputArtifact, executionState: 'completed', dispatch: 'dispatched-once', diagnostics });
     this.updateLedger(key, snapshot); this.setJob(key, snapshot);
-    const output = immutableJson(outputCanonical.encoded);
     if (operation.effect === 'local-artifact-creation') {
-      this.storeArtifact(outputCanonical, outputArtifact);
       return { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['compute-isolated-artifact-verified'], details: { job: snapshot, artifact: outputArtifact } };
     }
     return { status: 'completed', dispatch: 'dispatched-once', verification: 'verified', evidence: ['compute-isolated-output-verified'], details: { job: snapshot, output } };
@@ -515,8 +519,8 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (!this.jobs.has(key) && this.jobs.size >= this.maxRetainedJobs) this.jobs.delete(this.jobs.keys().next().value as string);
     this.jobs.set(key, snapshot);
   }
-  private storeArtifact(canonical: CanonicalizedJson, identity: LocalComputeArtifactIdentity): void {
-    if (canonical.byteLength > this.maxArtifactStoreBytes) return;
+  private storeArtifact(canonical: CanonicalizedJson, identity: LocalComputeArtifactIdentity): boolean {
+    if (canonical.byteLength > this.maxArtifactStoreBytes) return false;
     while (this.artifacts.size && this.artifactStoreBytes + canonical.byteLength > this.maxArtifactStoreBytes) {
       const oldest = this.artifacts.keys().next().value as string;
       const prior = this.artifacts.get(oldest)!;
@@ -528,6 +532,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (prior) this.artifactStoreBytes -= prior.identity.byteLength;
     this.artifacts.set(key, { encoded: canonical.encoded, identity });
     this.artifactStoreBytes += canonical.byteLength;
+    return true;
   }
 
   private resultForKnown(snapshot: IsolatedLocalComputeJobSnapshot): ComputerActionResult {
