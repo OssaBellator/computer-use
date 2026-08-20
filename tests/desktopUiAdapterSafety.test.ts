@@ -155,3 +155,48 @@ test('invalid visual dimensions are rejected at the neutral boundary', async () 
     await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /visual dimensions invalid/);
   }
 });
+
+test('accessibility node metadata is rebuilt and backend bounds cannot mutate neutral results', async () => {
+  const {backend,adapter} = fixture();
+  const bounds:any = {x:1,y:2,width:30,height:40,secret:'do-not-copy'};
+  backend.accessibility.set('win-1@1',{
+    status:'available',
+    window:{nativeWindowId:'win-1',generation:1},
+    root:{controlId:'root',role:'window',name:'Editor',enabled:true,focused:false,bounds,secret:'do-not-copy'} as any,
+  });
+  const obs = await adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface});
+  const root:any = (obs.data as any).root;
+  assert.equal(root.secret,undefined);
+  assert.equal(root.bounds.secret,undefined);
+  bounds.width = 999999;
+  assert.equal(root.bounds.width,30);
+  assert.equal(Object.isFrozen(root),true);
+  assert.equal(Object.isFrozen(root.bounds),true);
+});
+
+test('malformed and oversized accessibility fields are rejected at the neutral boundary', async () => {
+  const cases: any[] = [
+    {controlId:'x'.repeat(257)},
+    {controlId:'root',role:'x'.repeat(257)},
+    {controlId:'root',name:'x'.repeat(4097)},
+    {controlId:'root',value:'x'.repeat(4097)},
+    {controlId:'root',enabled:'yes'},
+    {controlId:'root',focused:1},
+    {controlId:'root',bounds:{x:0,y:0,width:-1,height:10}},
+    {controlId:'root',children:{}},
+    {controlId:'root',children:[null]},
+  ];
+  for (const root of cases) {
+    const {backend,adapter} = fixture();
+    backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root} as any);
+    await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface}), /desktop accessibility/);
+  }
+});
+
+test('cyclic accessibility trees are rejected without retaining backend references', async () => {
+  const {backend,adapter} = fixture();
+  const root:any = {controlId:'root',children:[]};
+  root.children.push(root);
+  backend.accessibility.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},root} as any);
+  await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'semantic-ui',surface}), /accessibility cycle invalid/);
+});
