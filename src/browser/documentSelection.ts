@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import type { Rect } from '../types.js';
-import type { SnapshotPageLike } from './domSnapshot.js';
+import type { SnapshotFrameLike, SnapshotPageLike } from './domSnapshot.js';
 
 export type DocumentSelectionKind = 'dom' | 'text-control';
 export type DocumentSelectionDirection = 'forward' | 'backward' | 'none';
@@ -107,12 +107,15 @@ export async function snapshotDocumentSelection(
     const frameId = frameIndex === 0 ? 'main' : `frame-${frameIndex}`;
     let raw: RawSelectionState | undefined;
     try {
-      raw = await extractSelectionFrame(frames[frameIndex], maxRects, includeCollapsedNonEditable);
+      raw = await extractSelectionFrame(frames[frameIndex]);
     } catch (error) {
       frameErrors.push({ frameId, message: error instanceof Error ? error.message : String(error) });
       continue;
     }
     if (!raw) continue;
+    if (raw.kind === 'dom' && raw.collapsed && !raw.editingHost && !includeCollapsedNonEditable) {
+      continue;
+    }
 
     let selectedText = raw.selectedText;
     let selectedTextTruncated = raw.selectedTextTruncated;
@@ -121,12 +124,16 @@ export async function snapshotDocumentSelection(
       selectedText = bounded.value;
       selectedTextTruncated ||= bounded.truncated;
     }
-    truncated ||= selectedTextTruncated || raw.rectsTruncated;
+    const rectsTruncated = raw.rectsTruncated || raw.rects.length > maxRects;
+    const rects = raw.rects.slice(0, maxRects).map((rect) => ({ ...rect }));
+    truncated ||= selectedTextTruncated || rectsTruncated;
     selections.push({
       ...raw,
       frameId,
       ...(selectedText !== undefined ? { selectedText } : {}),
       selectedTextTruncated,
+      rects,
+      rectsTruncated,
     });
   }
 
@@ -134,14 +141,13 @@ export async function snapshotDocumentSelection(
 }
 
 async function extractSelectionFrame(
-  frame: ReturnType<SnapshotPageLike['frames']>[number],
-  requestedMaxRects: number,
-  includeCollapsedNonEditable: boolean,
+  frame: SnapshotFrameLike,
 ): Promise<RawSelectionState | undefined> {
   return frame.evaluate((): RawSelectionState | undefined => {
+    // Hard browser-side caps remain fixed because pure-CDP frame evaluation
+    // serializes this function and cannot capture Node-side option variables.
     const MAX_SELECTED_TEXT_CHARS = 32_768;
     const MAX_RECTS = 128;
-    const maxRects = Math.max(1, Math.min(MAX_RECTS, requestedMaxRects));
 
     function elementSegment(element: Element): string {
       let index = 1;
@@ -251,19 +257,22 @@ async function extractSelectionFrame(
       if (start !== null && end !== null) {
         const selected = boundedText(active.value.slice(start, end));
         const rect = active.getBoundingClientRect();
-        const direction = active.selectionDirection === 'backward'
+        const direction: DocumentSelectionDirection = active.selectionDirection === 'backward'
           ? 'backward'
           : start === end ? 'none' : 'forward';
+        const anchorOffset = direction === 'backward' ? end : start;
+        const focusOffset = direction === 'backward' ? start : end;
+        const pointPath = elementPath(active);
         return {
           kind: 'text-control',
           collapsed: start === end,
           direction,
           ...(selected.value !== undefined ? { selectedText: selected.value } : {}),
           selectedTextTruncated: selected.truncated,
-          anchor: { path: elementPath(active), offset: start, nodeType: 'element' },
-          focus: { path: elementPath(active), offset: end, nodeType: 'element' },
+          anchor: { path: pointPath, offset: anchorOffset, nodeType: 'element' },
+          focus: { path: pointPath, offset: focusOffset, nodeType: 'element' },
           editingHost: {
-            path: elementPath(active),
+            path: pointPath,
             tagName: active.tagName.toLowerCase(),
           },
           start,
@@ -279,8 +288,6 @@ async function extractSelectionFrame(
     const selection = getSelection();
     if (!selection || selection.rangeCount < 1) return undefined;
     const host = nearestEditingHost(selection.anchorNode) ?? nearestEditingHost(selection.focusNode);
-    if (selection.isCollapsed && !host && !includeCollapsedNonEditable) return undefined;
-
     const selected = boundedText(selection.toString());
     let direction: DocumentSelectionDirection = 'none';
     if (!selection.isCollapsed && selection.anchorNode && selection.focusNode) {
@@ -296,10 +303,13 @@ async function extractSelectionFrame(
 
     const range = selection.getRangeAt(0);
     const allRects = Array.from(range.getClientRects());
-    const rects = allRects.slice(0, maxRects).map(documentRect);
+    const rects = allRects.slice(0, MAX_RECTS).map(documentRect);
     const bounding = range.getBoundingClientRect();
     const hasBounding = Number.isFinite(bounding.x) && Number.isFinite(bounding.y) &&
       (bounding.width > 0 || bounding.height > 0);
+    const anchor = nodePoint(selection.anchorNode, selection.anchorOffset);
+    const focus = nodePoint(selection.focusNode, selection.focusOffset);
+    const editingHost = hostDetails(host);
 
     return {
       kind: 'dom',
@@ -307,17 +317,13 @@ async function extractSelectionFrame(
       direction,
       ...(selected.value !== undefined ? { selectedText: selected.value } : {}),
       selectedTextTruncated: selected.truncated,
-      ...(nodePoint(selection.anchorNode, selection.anchorOffset) ? {
-        anchor: nodePoint(selection.anchorNode, selection.anchorOffset),
-      } : {}),
-      ...(nodePoint(selection.focusNode, selection.focusOffset) ? {
-        focus: nodePoint(selection.focusNode, selection.focusOffset),
-      } : {}),
-      ...(hostDetails(host) ? { editingHost: hostDetails(host) } : {}),
+      ...(anchor ? { anchor } : {}),
+      ...(focus ? { focus } : {}),
+      ...(editingHost ? { editingHost } : {}),
       rangeCount: selection.rangeCount,
       ...(hasBounding ? { boundingRect: documentRect(bounding) } : {}),
       rects,
-      rectsTruncated: allRects.length > maxRects,
+      rectsTruncated: allRects.length > MAX_RECTS,
     };
   });
 }
