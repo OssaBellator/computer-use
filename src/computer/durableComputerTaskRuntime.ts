@@ -124,6 +124,7 @@ export class DurableComputerTaskRuntime {
     const guardedRegistry = new WriteAheadComputerEnvironmentRegistry(registry, async (request) => {
       const current = runtime.checkpoint();
       if (current.cursor.nextStepId !== request.actionId) return false;
+      if (current.actions.find((action) => action.stepId === request.actionId)?.state !== 'not-started') return false;
       const actions = new Map<string, ComputerTaskActionCheckpointState>(
         current.actions.map((action) => [action.stepId, action.state]),
       );
