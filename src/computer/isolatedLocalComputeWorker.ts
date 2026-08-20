@@ -139,10 +139,14 @@ process.once('message', async (raw: unknown) => {
     const execute = typeof exported === 'function' ? exported : exported?.execute;
     if (typeof execute !== 'function') throw new Error('registered-export-invalid');
     const context = Object.freeze({ operationId, deadlineEpochMs, limits: Object.freeze({ ...limits }), diagnostic });
-    const output = await execute(input, context);
+    const outputEncoded = await execute(input, context);
     if (Date.now() >= deadlineEpochMs) throw new Error('deadline-expired');
-    const canonical = canonicalize(output, limits.maxOutputBytes, limits.maxJsonDepth, limits.maxJsonItems);
-    sendAndExit({ type: 'result', token, outputEncoded: canonical.encoded, outputHash: sha256(canonical.encoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
+    if (typeof outputEncoded !== 'string') throw new Error('output-not-encoded');
+    if (byteLength(outputEncoded) > limits.maxOutputBytes) throw new Error('json-byte-limit');
+    const outputParsed = JSON.parse(outputEncoded) as Json;
+    const canonical = canonicalize(outputParsed, limits.maxOutputBytes, limits.maxJsonDepth, limits.maxJsonItems);
+    if (canonical.encoded !== outputEncoded) throw new Error('output-canonical-mismatch');
+    sendAndExit({ type: 'result', token, outputEncoded, outputHash: sha256(outputEncoded), byteLength: canonical.byteLength, shape: canonical.shape, diagnostics });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'worker-error';
     sendAndExit({ type: 'error', token, code: code === 'json-byte-limit' ? 'output-limit' : 'execution-failed', diagnostics });
