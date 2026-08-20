@@ -160,6 +160,33 @@ function plainDataRecord(value: unknown, label: string): Record<string, unknown>
   }
   return value;
 }
+function validateRuntimePolicyValue(key: keyof BrowserRuntimePolicy, value: unknown): void {
+  if (value === undefined) return;
+  switch (key) {
+    case 'maxRisk':
+      if (value !== 'observe' && value !== 'interaction' && value !== 'external-side-effect') {
+        throw new TypeError('browser runtime options.maxRisk is invalid');
+      }
+      return;
+    case 'requireUnambiguousTargets':
+      if (typeof value !== 'boolean') throw new TypeError('browser runtime options.requireUnambiguousTargets must be a boolean');
+      return;
+    case 'maxConsecutiveNoProgress':
+    case 'commitmentVerificationMaxPolls':
+    case 'waitMaxPolls':
+      if (!Number.isSafeInteger(value) || (value as number) < 1) throw new TypeError(`browser runtime options.${key} must be a positive safe integer`);
+      return;
+    case 'commitmentVerificationPollIntervalMs':
+    case 'waitPollIntervalMs':
+      if (!Number.isSafeInteger(value) || (value as number) < 0) throw new TypeError(`browser runtime options.${key} must be a non-negative safe integer`);
+      return;
+    case 'approve':
+    case 'onCommitmentVerification':
+    case 'onTrace':
+      if (typeof value !== 'function') throw new TypeError(`browser runtime options.${key} must be a function`);
+      return;
+  }
+}
 function snapshotAdapterOptions(options: BrowserComputerEnvironmentAdapterOptions): Readonly<BrowserComputerEnvironmentAdapterOptions> {
   const root = plainDataRecord(options, 'browser adapter options');
   const adapterId = Object.getOwnPropertyDescriptor(root, 'adapterId')?.value;
@@ -173,7 +200,10 @@ function snapshotAdapterOptions(options: BrowserComputerEnvironmentAdapterOption
     const snapshot: Partial<BrowserRuntimePolicy> = {};
     for (const key of RUNTIME_POLICY_KEYS) {
       const descriptor = Object.getOwnPropertyDescriptor(source, key);
-      if (descriptor) (snapshot as Record<string, unknown>)[key] = descriptor.value;
+      if (descriptor) {
+        validateRuntimePolicyValue(key, descriptor.value);
+        (snapshot as Record<string, unknown>)[key] = descriptor.value;
+      }
     }
     runtimeOptions = Object.freeze(snapshot as BrowserRuntimePolicy);
   }
