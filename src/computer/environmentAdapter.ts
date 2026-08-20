@@ -6,6 +6,7 @@ export const COMPUTER_ENVIRONMENT_KINDS = [
   'process',
   'remote-session',
   'device',
+  'local-compute',
 ] as const;
 
 export type ComputerEnvironmentKind = typeof COMPUTER_ENVIRONMENT_KINDS[number];
@@ -21,6 +22,8 @@ export const COMPUTER_OBSERVATION_CHANNELS = [
   'network',
   'media',
   'device',
+  'compute',
+  'system',
 ] as const;
 
 export type ComputerObservationChannel = typeof COMPUTER_OBSERVATION_CHANNELS[number];
@@ -37,7 +40,13 @@ export const COMPUTER_ENTITY_KINDS = [
   'remote-host',
   'media',
   'device',
+  'peripheral',
+  'volume',
+  'system-setting-scope',
+  'security-setting-scope',
   'visual-region',
+  'compute-job',
+  'artifact',
 ] as const;
 
 export type ComputerEntityKind = typeof COMPUTER_ENTITY_KINDS[number];
@@ -46,6 +55,7 @@ export const COMPUTER_EFFECT_CLASSES = [
   'observe-only',
   'local-reversible',
   'local-destructive',
+  'process-execution',
   'system-configuration',
   'external-communication',
   'external-transaction',
