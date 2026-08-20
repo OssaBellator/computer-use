@@ -24,10 +24,12 @@ const sshEndpoint: RemoteEndpointIdentity = Object.freeze({ endpointId: 'ssh-own
 const vncEndpoint: RemoteEndpointIdentity = Object.freeze({ endpointId: 'vnc-owner', protocol: 'vnc', host: 'fixture.invalid', port: 5900 });
 
 class OwnershipSshProvider implements SshTransportProvider {
+  cleanupCalls = 0;
   disconnectCalls = 0;
   async connect(_request: SshProviderConnectRequest): Promise<SshProviderSession> {
     return { providerSessionId: 'ssh-provider-private', remoteHostId: 'ssh-host' };
   }
+  async cleanupFailedConnect(_candidate: unknown): Promise<void> { this.cleanupCalls++; }
   async disconnect(_session: SshProviderSession): Promise<void> { this.disconnectCalls++; }
   async executeArgv(_session: SshProviderSession, _invocation: RemoteCommandInvocation, _limits: SshProviderExecLimits): Promise<RemoteDispatchOutcome<RemoteCommandResult>> {
     return { dispatch: 'dispatched-once', status: 'completed', value: { exitCode: 0 } };
@@ -61,6 +63,7 @@ test('SSH failed-candidate cleanup ignores a semantic clone and follows private 
     capabilities: [...connection.capabilities],
   };
   await backend.cleanupFailedConnection(forgedClone);
+  assert.equal(provider.cleanupCalls, 0);
   assert.equal(provider.disconnectCalls, 0);
   await backend.disconnect(connection);
   assert.equal(provider.disconnectCalls, 1);
@@ -71,6 +74,7 @@ test('SSH cleanup of the exact returned candidate consumes ownership', async () 
   const backend = new SshRemoteSessionBackend(provider);
   const connection = await backend.connect(sshEndpoint);
   await backend.cleanupFailedConnection(connection);
+  assert.equal(provider.cleanupCalls, 0);
   assert.equal(provider.disconnectCalls, 1);
   await assert.rejects(() => backend.disconnect(connection), /unknown ssh session/);
 });
