@@ -305,8 +305,8 @@ export function composeComputerUseCapabilityProfiles(
  * it is intentionally not a replacement meaning for standalone-chromium-0.43.
  */
 export const CURRENT_COMPUTER_USE_CAPABILITY_PROFILE = composeComputerUseCapabilityProfiles(
-  'computer-use-integrated-0.43',
-  '0.43',
+  'computer-use-integrated-1.0',
+  '1.0',
   [
     BROWSER_043_COMPUTER_CAPABILITY_PROFILE,
     COMPUTER_TASK_RUNTIME_CAPABILITY_PROFILE,
