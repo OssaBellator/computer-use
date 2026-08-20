@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { BrowserTargetState } from '../src/browser/targetController.js';
 import {
   BrowserComputerEnvironmentAdapter,
+  type BrowserComputerEnvironmentAdapterOptions,
   type BrowserComputerRuntime,
 } from '../src/computer/browserEnvironmentAdapter.js';
 import type { ComputerActionRequest, ComputerEntityRef } from '../src/computer/environmentAdapter.js';
@@ -228,6 +229,68 @@ test('validated action authority is immutable while entity resolution awaits', a
     risk: 'external-side-effect',
   }]);
   assert.equal(runtime.activateCalls, 0);
+});
+
+test('runtime approval policy is immutable after adapter construction', async () => {
+  const runtime = new GenerationRuntime();
+  const originalApprovals: string[] = [];
+  let mutatedApprovals = 0;
+  const runtimeOptions: NonNullable<BrowserComputerEnvironmentAdapterOptions['runtimeOptions']> = {
+    maxRisk: 'observe',
+    approve: async () => {
+      originalApprovals.push('original');
+      return false;
+    },
+  };
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime, { runtimeOptions });
+  const target = await observedTarget(adapter);
+
+  runtime.refreshMutation = () => {
+    runtimeOptions.maxRisk = 'external-side-effect';
+    runtimeOptions.approve = async () => {
+      mutatedApprovals += 1;
+      return true;
+    };
+  };
+
+  const result = await adapter.act({
+    adapterId: adapter.descriptor.id,
+    actionId: 'policy-snapshot',
+    capability: 'browser.activate',
+    effect: 'external-transaction',
+    idempotency: 'non-idempotent',
+    target,
+    payload: { method: 'pointer' },
+  });
+
+  assert.equal(result.status, 'rejected');
+  assert.equal(result.dispatch, 'not-dispatched');
+  assert.deepEqual(originalApprovals, ['original']);
+  assert.equal(mutatedApprovals, 0);
+  assert.equal(runtime.activateCalls, 0);
+  assert.equal(Object.isFrozen(adapter.options), true);
+  assert.equal(Object.isFrozen(adapter.options.runtimeOptions), true);
+  assert.equal(Object.isFrozen(adapter.descriptor), true);
+  assert.equal(Object.isFrozen(adapter.descriptor.capabilities), true);
+});
+
+test('adapter rejects accessor-backed policy objects without invoking accessors', () => {
+  const runtime = new GenerationRuntime();
+  let getterCalls = 0;
+  const runtimeOptions = Object.defineProperty({}, 'approve', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return async () => true;
+    },
+  });
+  const options = { runtimeOptions } as BrowserComputerEnvironmentAdapterOptions;
+
+  assert.throws(
+    () => new BrowserComputerEnvironmentAdapter(runtime, options),
+    /browser runtime options\.approve must be a data property/,
+  );
+  assert.equal(getterCalls, 0);
 });
 
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
