@@ -11,6 +11,9 @@ export const COMPUTER_TASK_MAX_RETRIES = 3;
 export const COMPUTER_TASK_MAX_OBSERVATION_ITEMS = 10_000;
 export const COMPUTER_TASK_MAX_OBSERVATION_TEXT_BYTES = 1024 * 1024;
 export const COMPUTER_TASK_MAX_OBSERVATION_DEPTH = 64;
+export const COMPUTER_TASK_MAX_SNAPSHOT_DEPTH = 48;
+export const COMPUTER_TASK_MAX_SNAPSHOT_ITEMS = 20_000;
+export const COMPUTER_TASK_MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
 export const COMPUTER_TASK_DEFAULT_OBSERVATION_LIMITS = Object.freeze({
   maxItems: 256,
@@ -189,37 +192,94 @@ export function validateComputerTaskProgram(program: ComputerTaskProgram): strin
   return errors;
 }
 
-function snapshotExecutableValue<T>(value: T, path: string): T {
-  if (value === null || value === undefined || typeof value === 'string' || typeof value === 'boolean') return value;
+interface SnapshotBudget {
+  items: number;
+  bytes: number;
+  active: WeakSet<object>;
+}
+
+function accountSnapshot(budget: SnapshotBudget, bytes: number, path: string): void {
+  budget.items += 1;
+  budget.bytes += bytes;
+  if (budget.items > COMPUTER_TASK_MAX_SNAPSHOT_ITEMS) throw new Error(`${path} exceeds executable snapshot item budget`);
+  if (budget.bytes > COMPUTER_TASK_MAX_SNAPSHOT_BYTES) throw new Error(`${path} exceeds executable snapshot byte budget`);
+}
+
+function snapshotExecutableValue<T>(value: T, path: string, depth: number, budget: SnapshotBudget): T {
+  if (depth > COMPUTER_TASK_MAX_SNAPSHOT_DEPTH) throw new Error(`${path} exceeds executable snapshot depth budget`);
+  if (value === null || value === undefined || typeof value === 'boolean') {
+    accountSnapshot(budget, 1, path);
+    return value;
+  }
+  if (typeof value === 'string') {
+    accountSnapshot(budget, new TextEncoder().encode(value).byteLength, path);
+    return value;
+  }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new Error(`${path} contains a non-finite number`);
+    accountSnapshot(budget, 8, path);
     return value;
   }
   if (typeof value !== 'object') throw new Error(`${path} contains a non-snapshotable executable value`);
-  if (Array.isArray(value)) {
-    return Object.freeze(value.map((entry, index) => snapshotExecutableValue(entry, `${path}[${index}]`))) as T;
+
+  const object = value as object;
+  if (budget.active.has(object)) throw new Error(`${path} contains a cyclic executable value`);
+  budget.active.add(object);
+  try {
+    if (Array.isArray(value)) {
+      accountSnapshot(budget, value.length, path);
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      const keys = Reflect.ownKeys(descriptors);
+      for (const key of keys) {
+        if (typeof key !== 'string') throw new Error(`${path} contains a symbol property`);
+        const descriptor = descriptors[key]!;
+        if ('get' in descriptor || 'set' in descriptor) throw new Error(`${path}.${key} contains an accessor property`);
+        if (key === 'length') continue;
+        if (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length) {
+          throw new Error(`${path} contains a non-index array property`);
+        }
+      }
+      const clone = new Array(value.length) as unknown[];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor) continue;
+        clone[index] = snapshotExecutableValue(descriptor.value, `${path}[${index}]`, depth + 1, budget);
+      }
+      return Object.freeze(clone) as T;
+    }
+
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`${path} must contain only plain snapshotable objects and arrays`);
+    }
+    accountSnapshot(budget, 1, path);
+    const descriptors = Object.getOwnPropertyDescriptors(value as object);
+    const clone: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const key of Reflect.ownKeys(descriptors)) {
+      if (typeof key !== 'string') throw new Error(`${path} contains a symbol property`);
+      const descriptor = descriptors[key]!;
+      if ('get' in descriptor || 'set' in descriptor) throw new Error(`${path}.${key} contains an accessor property`);
+      if (!descriptor.enumerable) throw new Error(`${path}.${key} contains a non-enumerable executable property`);
+      accountSnapshot(budget, new TextEncoder().encode(key).byteLength, `${path}.${key}`);
+      clone[key] = snapshotExecutableValue(descriptor.value, `${path}.${key}`, depth + 1, budget);
+    }
+    return Object.freeze(clone) as T;
+  } finally {
+    budget.active.delete(object);
   }
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    throw new Error(`${path} must contain only plain snapshotable objects and arrays`);
-  }
-  const clone: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    clone[key] = snapshotExecutableValue(entry, `${path}.${key}`);
-  }
-  return Object.freeze(clone) as T;
 }
 
 /**
  * Creates the immutable executable representation used by the runtime across all awaited gates.
- * The snapshot deliberately rejects mutable/exotic payload objects rather than retaining caller-owned handles.
+ * Snapshotting happens before semantic validation so accessors cannot drift between the two phases.
  */
 export function snapshotComputerTaskProgram(program: ComputerTaskProgram): ComputerTaskProgram {
-  const errors = validateComputerTaskProgram(program);
-  if (errors.length > 0) throw new Error(`invalid computer task program: ${errors.join('; ')}`);
-  const snapshot = snapshotExecutableValue(program, 'program');
-  return Object.freeze({
-    ...snapshot,
-    steps: Object.freeze([...snapshot.steps]),
+  const snapshot = snapshotExecutableValue(program, 'program', 0, {
+    items: 0,
+    bytes: 0,
+    active: new WeakSet<object>(),
   });
+  const errors = validateComputerTaskProgram(snapshot);
+  if (errors.length > 0) throw new Error(`invalid computer task program: ${errors.join('; ')}`);
+  return snapshot;
 }
