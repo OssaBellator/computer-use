@@ -1,5 +1,6 @@
 import type { BrowserStateSnapshot } from '../browser/browserState.js';
 import type { BrowserDialogHandleResult, BrowserDialogState } from '../browser/dialogController.js';
+import type { DocumentContentOptions, DocumentContentSnapshot } from '../browser/documentContent.js';
 import type { BrowserDownloadSummary } from '../browser/downloadController.js';
 import type { BrowserFileUploadResult } from '../browser/fileUploadController.js';
 import type { BrowserHistoryAction, BrowserHistoryOptions, BrowserHistoryResult } from '../browser/historyController.js';
@@ -19,6 +20,7 @@ export interface TaskRuntimeEngine {
   prepare?(): Promise<void>;
   refresh(): Promise<InteractionNode[]>;
   browserState?(): Promise<BrowserStateSnapshot | undefined>;
+  documentContent?(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined>;
   dialogState?(): BrowserDialogState | undefined;
   targetState?(): BrowserTargetSummary | undefined;
   downloadState?(): BrowserDownloadSummary | undefined;
