@@ -513,6 +513,8 @@ export class LocalComputeAdapter implements ComputerEnvironmentAdapter {
   }
 
   private updateLedger(snapshot: LocalComputeJobSnapshot): void {
+    const current = this.executionLedger.get(snapshot.identity.jobId);
+    if (current && current.generation > snapshot.identity.generation) return;
     this.executionLedger.set(snapshot.identity.jobId, {
       generation: snapshot.identity.generation,
       dispatch: snapshot.dispatch,
