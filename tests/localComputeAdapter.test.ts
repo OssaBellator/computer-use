@@ -109,6 +109,39 @@ test('in-flight detail eviction cannot cause non-idempotent redispatch', async (
   assert.equal((await pending).status, 'completed');
 });
 
+test('late completion of an older generation cannot reopen a newer non-idempotent generation', async () => {
+  let releaseSlow!: () => void;
+  const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+  let executions = 0;
+  const overlapOperation = {
+    id: 'test.overlap-artifact',
+    effect: 'local-artifact-creation' as const,
+    execute: async (input: LocalComputeJson) => {
+      executions += 1;
+      if (input === 'slow') await slowGate;
+      return input;
+    },
+  };
+  const a = new LocalComputeAdapter({ id: 'compute-test', operations: [overlapOperation], maxRetainedJobs: 1, maxRetainedJobIds: 1 });
+  const generation0 = request('overlap', 0, 'test.overlap-artifact', 'slow', 'local-reversible', 'non-idempotent');
+  const generation1 = request('overlap', 1, 'test.overlap-artifact', 'fast', 'local-reversible', 'non-idempotent');
+
+  const pending0 = a.act(generation0);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(executions, 1);
+  const result1 = await a.act(generation1);
+  assert.equal(result1.status, 'completed');
+  assert.equal(executions, 2);
+
+  releaseSlow();
+  assert.equal((await pending0).status, 'completed');
+
+  const replay1 = await a.act(generation1);
+  assert.equal(replay1.dispatch, 'dispatched-once');
+  assert.deepEqual(replay1.evidence, ['compute-job-state-evicted']);
+  assert.equal(executions, 2);
+});
+
 test('observation and evidence do not copy sensitive input/output', async () => {
   const a = adapter(); const secret = 'MODEL_INPUT_DO_NOT_TRACE'; const result = await a.act(request('privacy', 0, 'transform.upper', secret, 'local-reversible', 'non-idempotent'));
   assert.ok(!JSON.stringify(result.evidence).includes(secret));
