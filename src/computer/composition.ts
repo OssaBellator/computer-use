@@ -80,6 +80,10 @@ export class ComputerRuntimeComposition {
     return removed;
   }
 
+  descriptor(adapterId: string): ComputerEnvironmentAdapterDescriptor | undefined {
+    return this.registry.descriptor(adapterId);
+  }
+
   descriptors(): ComputerEnvironmentAdapterDescriptor[] {
     return this.registry.descriptors();
   }
