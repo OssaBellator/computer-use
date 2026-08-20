@@ -80,6 +80,19 @@ function mapLinuxState(value: string): ProcessState {
   return 'unknown';
 }
 function safeGeneration(startTicks: number): number { return Number.isSafeInteger(startTicks) && startTicks >= 0 ? startTicks : 0; }
+const PROCESS_STATES = new Set<ProcessState>(['running', 'sleeping', 'waiting', 'stopped', 'zombie', 'dead', 'unknown']);
+function validProcessRecordForPid(value: unknown, requestedPid: number): value is ProcessRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<ProcessRecord>;
+  if (record.pid !== requestedPid || !Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
+  if (!Number.isSafeInteger(record.startTicks) || (record.startTicks ?? -1) < 0) return false;
+  if (typeof record.name !== 'string' || typeof record.state !== 'string' || !PROCESS_STATES.has(record.state as ProcessState)) return false;
+  if (record.parentPid !== undefined && (!Number.isSafeInteger(record.parentPid) || record.parentPid < 0)) return false;
+  if (record.executable !== undefined && typeof record.executable !== 'string') return false;
+  if (record.cpuTimeTicks !== undefined && (!Number.isFinite(record.cpuTimeTicks) || record.cpuTimeTicks < 0)) return false;
+  if (record.rssBytes !== undefined && (!Number.isFinite(record.rssBytes) || record.rssBytes < 0)) return false;
+  return true;
+}
 
 export class HostProcessSnapshotSource implements ProcessSnapshotSource {
   private readonly currentStartTicks = Math.max(0, Math.floor(Date.now() - process.uptime() * 1000));
@@ -140,11 +153,11 @@ export class ProcessIdentityStore {
       if (items.length >= limit) break;
       inspected += 1;
       const record = await this.source.inspect(pid);
-      if (record) items.push(this.toSnapshot(record));
+      if (validProcessRecordForPid(record, pid)) items.push(this.toSnapshot(record));
     }
     return { items, truncated: batch.truncated || inspected < batch.pids.length };
   }
-  async inspect(pid: number): Promise<BoundedProcessSnapshot | undefined> { const record = await this.source.inspect(pid); return record ? this.toSnapshot(record) : undefined; }
+  async inspect(pid: number): Promise<BoundedProcessSnapshot | undefined> { const record = await this.source.inspect(pid); return validProcessRecordForPid(record, pid) ? this.toSnapshot(record) : undefined; }
   async acknowledgeSpawn(pid: number): Promise<ComputerEntityRef> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const record = await Promise.race([
@@ -154,7 +167,7 @@ export class ProcessIdentityStore {
       }),
     ]);
     if (timeout) clearTimeout(timeout);
-    if (record) return this.toSnapshot(record).ref;
+    if (validProcessRecordForPid(record, pid)) return this.toSnapshot(record).ref;
     const generation = SYNTHETIC_GENERATION_BASE + (this.syntheticCounter++ % 1_000_000);
     this.syntheticByPid.set(pid, generation);
     return this.ref(pid, generation);
