@@ -150,7 +150,7 @@ export class TaskRuntime {
             return failed('policy-blocked', index + 1);
           }
           verificationBaseline = await captureTaskStepCommitmentVerificationBaseline(this.engine, commitment, step, before);
-          if (!verificationBaseline || verificationBaseline.verification.status !== 'unknown') {
+          if (!verificationBaseline || verificationBaseline.verification.status !== 'unknown' || verificationBaseline.verification.documentContext !== 'available') {
             await emit({ index, stepId: step.id, kind: step.kind, outcome: 'policy-blocked', ...commitmentTraceFields(commitment), ...verificationTraceFields(verificationBaseline?.verification), beforeFingerprint: before.fingerprint, afterFingerprint: before.fingerprint, browserStateChanged: false, visit });
             return failed('policy-blocked', index + 1);
           }
