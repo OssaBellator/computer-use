@@ -108,6 +108,26 @@ function matchingFormatting(
     : undefined;
 }
 
+function isNativeInlineFormat(value: unknown): value is RichTextNativeInlineFormat {
+  return value === 'bold' || value === 'italic' || value === 'underline';
+}
+
+function sameFormattingSelection(
+  before: DocumentSelectionState,
+  after: DocumentSelectionState,
+): boolean {
+  if (before.collapsed !== after.collapsed) return false;
+  if (
+    !before.collapsed &&
+    !before.selectedTextTruncated &&
+    !after.selectedTextTruncated &&
+    (before.selectedText ?? '') !== (after.selectedText ?? '')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function resultWithoutDispatch(
   status: RichTextEditStatus,
   snapshot: DocumentSelectionSnapshot,
@@ -251,6 +271,13 @@ export class RichTextController {
     enabled: boolean,
     options: RichTextFormatOptions = {},
   ): Promise<RichTextFormatResult> {
+    if (!isNativeInlineFormat(format)) {
+      throw new Error('format must be bold, italic, or underline');
+    }
+    if (typeof enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean');
+    }
+
     const selectionBefore = await this.observe(options.selection);
     const candidate = uniqueEditableSelection(selectionBefore);
     if (selectionBefore.frameErrors.length > 0) {
@@ -303,7 +330,12 @@ export class RichTextController {
       return formatResult('unverified', format, enabled, before, after);
     }
     const afterSelection = matchingAfter(candidate.selection, selectionAfter);
-    if (!afterSelection || afterSelection.kind !== 'dom' || afterSelection.rangeCount !== 1) {
+    if (
+      !afterSelection ||
+      afterSelection.kind !== 'dom' ||
+      afterSelection.rangeCount !== 1 ||
+      !sameFormattingSelection(candidate.selection, afterSelection)
+    ) {
       const after = await this.formatting.snapshot(options.formatting);
       return formatResult('unverified', format, enabled, before, after);
     }
