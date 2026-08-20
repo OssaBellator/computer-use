@@ -7,6 +7,7 @@ import {
   type BrowserComputerRuntime,
 } from '../src/computer/browserEnvironmentAdapter.js';
 import type {
+  ComputerActionRequest,
   ComputerEntityRef,
   ComputerObservationRequest,
 } from '../src/computer/environmentAdapter.js';
@@ -45,6 +46,7 @@ class ObservationRuntime implements BrowserComputerRuntime {
   semanticOptions: BoundedSemanticSnapshotLimits | undefined;
   semanticCalls = 0;
   visualCalls = 0;
+  scrollCalls = 0;
   semanticEntered: (() => void) | undefined;
   semanticGate: Promise<void> | undefined;
 
@@ -92,7 +94,10 @@ class ObservationRuntime implements BrowserComputerRuntime {
   async hover(): Promise<any> { return { status: 'target-not-found', target: null }; }
   async typeInto(): Promise<any> { return { status: 'target-not-found', target: null }; }
   async pressKey(): Promise<any> { return { status: 'unverified' }; }
-  async scrollViewport(): Promise<any> { return { status: 'unverified' }; }
+  async scrollViewport(): Promise<any> {
+    this.scrollCalls += 1;
+    return { status: 'verified' };
+  }
 }
 
 async function observedTarget(adapter: BrowserComputerEnvironmentAdapter): Promise<ComputerEntityRef> {
@@ -103,6 +108,15 @@ async function observedTarget(adapter: BrowserComputerEnvironmentAdapter): Promi
     limits: { maxItems: 1, maxTextBytes: 64, maxDepth: 2 },
   });
   return (observed.data as Array<{ entity: ComputerEntityRef }>)[0].entity;
+}
+
+function noOwnKeys<T extends object>(value: T, onOwnKeys: () => void): T {
+  return new Proxy(value, {
+    ownKeys() {
+      onOwnKeys();
+      throw new Error('bulk own-key enumeration must not run');
+    },
+  });
 }
 
 test('browser observation authority stays immutable while bounded acquisition awaits', async () => {
@@ -166,4 +180,49 @@ test('accessor-backed browser observation envelopes fail closed without invoking
   );
   assert.equal(channelGetterCalls, 0);
   assert.equal(runtime.semanticCalls, 0);
+});
+
+test('browser envelope snapshots never enumerate arbitrary caller own keys', async () => {
+  const runtime = new ObservationRuntime();
+  let ownKeysCalls = 0;
+  const trap = () => { ownKeysCalls += 1; };
+
+  const runtimeOptions = noOwnKeys({ maxRisk: 'interaction' as const }, trap);
+  const options = noOwnKeys({ runtimeOptions }, trap);
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime, options);
+  const target = await observedTarget(adapter);
+
+  const hugeLimits: Record<string, unknown> = { maxItems: 1, maxTextBytes: 5, maxDepth: 1 };
+  for (let index = 0; index < 10_000; index += 1) hugeLimits[`ignored-${index}`] = index;
+  const proxiedLimits = noOwnKeys(hugeLimits, trap);
+  const proxiedTarget = noOwnKeys({ ...target, ignored: 'extra' }, trap);
+  const observation = noOwnKeys({
+    adapterId: adapter.descriptor.id,
+    channel: 'semantic-ui' as const,
+    target: proxiedTarget,
+    limits: proxiedLimits,
+    ignored: 'extra',
+  }, trap);
+
+  const observed = await adapter.observe(observation as ComputerObservationRequest);
+  assert.equal(observed.channel, 'semantic-ui');
+  assert.deepEqual(runtime.semanticOptions, { maxItems: 1, maxTextBytes: 5, maxDepth: 1 });
+  assert.equal((observed.data as Array<{ name?: string }>)[0].name, 'abcde');
+
+  const payload = noOwnKeys({ deltaY: 1, ignored: 'extra' }, trap);
+  const action = noOwnKeys({
+    adapterId: adapter.descriptor.id,
+    actionId: 'bounded-descriptors',
+    capability: 'browser.scroll-viewport',
+    effect: 'local-reversible' as const,
+    idempotency: 'idempotent' as const,
+    payload,
+    ignored: 'extra',
+  }, trap);
+  const result = await adapter.act(action as ComputerActionRequest);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.dispatch, 'dispatched-once');
+  assert.equal(runtime.scrollCalls, 1);
+  assert.equal(adapter.options.runtimeOptions?.maxRisk, 'interaction');
+  assert.equal(ownKeysCalls, 0);
 });
