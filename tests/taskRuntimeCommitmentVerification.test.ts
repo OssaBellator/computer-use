@@ -143,6 +143,46 @@ test('synthetic declined and canceled results terminate distinctly', async () =>
   }
 });
 
+test('pre-existing synthetic success result blocks dispatch instead of proving a new side effect', async () => {
+  let documentCalls = 0;
+  let activations = 0;
+  const state = [node()];
+  const engine: TaskRuntimeEngine = {
+    async refresh() { return state; },
+    async documentContent() {
+      documentCalls += 1;
+      return documentCalls === 1
+        ? reviewDocument()
+        : documentWith(['Order confirmed', 'Order total AUD 49.95', 'Merchant: Synthetic Shop']);
+    },
+    async activate() { activations += 1; return { status: 'verified', target: state[0]! }; },
+    async typeInto() { throw new Error('not used'); },
+  };
+  const result = await new TaskRuntime(engine).run(program(), {}, {
+    approve: async () => true,
+    commitmentVerificationMaxPolls: 1,
+  });
+  assert.equal(result.status, 'policy-blocked');
+  assert.equal(activations, 0);
+  assert.equal(result.trace[0]?.outcome, 'policy-blocked');
+  assert.equal(result.trace[0]?.commitmentVerificationStatus, 'confirmed');
+});
+
+test('missing fresh result channel blocks detected commitment before dispatch', async () => {
+  let activations = 0;
+  const state = [node()];
+  const engine: TaskRuntimeEngine = {
+    async refresh() { return state; },
+    async activate() { activations += 1; return { status: 'verified', target: state[0]! }; },
+    async typeInto() { throw new Error('not used'); },
+  };
+  const result = await new TaskRuntime(engine).run(program(), {}, {
+    approve: async () => true,
+  });
+  assert.equal(result.status, 'policy-blocked');
+  assert.equal(activations, 0);
+});
+
 test('post-commit verification can be explicitly disabled for compatibility', async () => {
   let activations = 0;
   const state = [node()];
