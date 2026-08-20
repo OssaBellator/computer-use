@@ -214,11 +214,6 @@ function sentenceLike(text: string): boolean {
   return text.length >= 60 && /[.!?](?:\s|$)/.test(text);
 }
 
-function commonContainerPrefix(info: PathInfo, depthFromLeaf: number): string {
-  const keep = Math.max(0, info.segments.length - depthFromLeaf);
-  return info.segments.slice(0, keep).join(' > ');
-}
-
 function clusterPrefixes(
   blocks: readonly DocumentContentBlock[],
   infos: readonly PathInfo[],
@@ -228,19 +223,19 @@ function clusterPrefixes(
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
     const info = infos[index];
-    if (!seed(block, combinedText(block)) || info.segments.length < 3) continue;
-    for (const depth of [1, 2]) {
-      const prefix = commonContainerPrefix(info, depth);
-      if (!prefix || prefix.split(' > ').length < 2) continue;
-      let members = 0;
-      for (let candidate = 0; candidate < infos.length; candidate += 1) {
-        if (blocks[candidate].frameId !== block.frameId) continue;
-        if (infos[candidate].path === prefix || infos[candidate].path.startsWith(`${prefix} > `)) members += 1;
-        if (members > 20) break;
-      }
-      if (members >= 1 && members <= 20) prefixes.add(`${block.frameId}:${prefix}`);
-      if (members >= 2) break;
+    if (!seed(block, combinedText(block)) || info.segments.length < 2) continue;
+    const parentTag = tagFromSegment(info.segments[info.segments.length - 2] ?? '');
+    // Never let a lexical seed classify an entire page/main/article. When a
+    // seed is that shallow, classify only the seed block itself.
+    const prefix = ['body', 'main', 'article'].includes(parentTag) ? info.path : info.parentPath;
+    if (!prefix) continue;
+    let members = 0;
+    for (let candidate = 0; candidate < infos.length; candidate += 1) {
+      if (blocks[candidate].frameId !== block.frameId) continue;
+      if (infos[candidate].path === prefix || infos[candidate].path.startsWith(`${prefix} > `)) members += 1;
+      if (members > 20) break;
     }
+    if (members >= 1 && members <= 20) prefixes.add(`${block.frameId}:${prefix}`);
   }
   return prefixes;
 }
