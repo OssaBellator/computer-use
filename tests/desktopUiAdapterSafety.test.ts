@@ -107,3 +107,51 @@ test('unavailable observation reasons must be bounded machine codes', async () =
   backend.visuals.set('win-1@1',{status:'unavailable',window:{nativeWindowId:'win-1',generation:1},reason:'contains spaces'});
   await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /reason code invalid/);
 });
+
+test('backend evidence is copied, bounded, and machine-readable', async () => {
+  const {backend,adapter} = fixture();
+  const evidence = ['safe-code'];
+  backend.focus = async () => ({status:'completed',dispatched:true,verified:true,evidence});
+  const result = await adapter.act({adapterId:'desktop:test',actionId:'evidence',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target});
+  evidence[0] = 'mutated-after-return';
+  assert.deepEqual(result.evidence,['safe-code']);
+
+  backend.focus = async () => ({status:'completed',dispatched:true,verified:true,evidence:['contains sensitive prose with spaces']});
+  const invalid = await adapter.act({adapterId:'desktop:test',actionId:'evidence-bad',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target});
+  assert.deepEqual(invalid.evidence,['desktop-backend-evidence-invalid']);
+
+  backend.focus = async () => ({status:'completed',dispatched:true,verified:true,evidence:Array.from({length:17},(_,i)=>`code-${i}`)});
+  const oversized = await adapter.act({adapterId:'desktop:test',actionId:'evidence-many',capability:'desktop.focus',effect:'local-reversible',idempotency:'idempotent',target});
+  assert.deepEqual(oversized.evidence,['desktop-backend-evidence-invalid']);
+});
+
+test('backend-owned nested observation metadata is rebuilt before return', async () => {
+  const backend = new SyntheticDesktopUiBackend();
+  const application:any = {applicationId:'app-1',processId:'proc-1',secret:'do-not-copy'};
+  const bounds:any = {x:1,y:2,width:300,height:200,secret:'do-not-copy'};
+  const artifact:any = {token:'frame-1',mediaType:'image/test',byteLength:12,secret:'do-not-copy'};
+  backend.windows = [{nativeWindowId:'win-1',generation:1,application,bounds,foreground:true,focused:true} as any];
+  backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},width:10,height:20,artifact} as any);
+  const adapter = new DesktopUiEnvironmentAdapter(backend,'desktop:test');
+  const system = await adapter.observe({adapterId:'desktop:test',channel:'system'});
+  const visual = await adapter.observe({adapterId:'desktop:test',channel:'visual',surface});
+  const systemWindow:any = (system.data as any).windows[0];
+  const visualArtifact:any = (visual.data as any).artifact;
+  assert.equal(systemWindow.application.secret,undefined);
+  assert.equal(systemWindow.bounds.secret,undefined);
+  assert.equal(visualArtifact.secret,undefined);
+  application.applicationId = 'mutated';
+  bounds.width = 999999;
+  artifact.token = 'mutated';
+  assert.equal(systemWindow.application.applicationId,'app-1');
+  assert.equal(systemWindow.bounds.width,300);
+  assert.equal(visualArtifact.token,'frame-1');
+});
+
+test('invalid visual dimensions are rejected at the neutral boundary', async () => {
+  for (const [width,height] of [[0,10],[10,-1],[100001,10],[1.5,10],[10,Number.POSITIVE_INFINITY]]) {
+    const {backend,adapter} = fixture();
+    backend.visuals.set('win-1@1',{status:'available',window:{nativeWindowId:'win-1',generation:1},width,height});
+    await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /visual dimensions invalid/);
+  }
+});
