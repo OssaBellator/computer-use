@@ -2,11 +2,11 @@
 
 A TypeScript foundation for a standalone, closed-loop browser agent that can eventually perform the broad range of tasks people carry out on the web.
 
-The engine can launch Chromium directly through Node, speak browser-root CDP over Chromium's `--remote-debugging-pipe`, route its own page sessions, build semantic/spatial interaction state, plan and verify actions, manage multiple pages and browser lifecycle features, and run bounded realtime control with automatic game visual perception, temporal motion tracking, resilient renderer lifecycle, and relative mouse-look input.
+The engine can launch Chromium directly through Node, speak browser-root CDP over Chromium's `--remote-debugging-pipe`, route its own page sessions, read structured document content, build semantic/spatial interaction state, plan and verify actions, manage multiple pages and browser lifecycle features, and run bounded realtime control with automatic game visual perception, temporal motion tracking, resilient renderer lifecycle, and relative mouse-look input.
 
 ## Scope
 
-The primary Chromium path does **not** require Playwright, Puppeteer, Selenium/WebDriver, or a third-party CDP websocket client. Browser startup, target/session routing, semantic observation, navigation, input, and multi-page task execution can run on the repository's own Node + CDP runtime. A structural Playwright-compatible input adapter remains only as an optional compatibility surface for callers that already have one.
+The primary Chromium path does **not** require Playwright, Puppeteer, Selenium/WebDriver, or a third-party CDP websocket client. Browser startup, target/session routing, structured reading, semantic observation, navigation, input, and multi-page task execution can run on the repository's own Node + CDP runtime. A structural Playwright-compatible input adapter remains only as an optional compatibility surface for callers that already have one.
 
 The project uses browser-native input/protocol operations rather than page-side synthetic `dispatchEvent()` calls. It is designed for browser testing, HCI research, accessibility tooling, reproducible workflows, and permitted interactive-page/game use. It does **not** claim hardware provenance, indistinguishability from a physical user, or anti-bot bypass capability. It does not include stealth patches, fingerprint spoofing, CAPTCHA bypass, navigator mutation, or timing camouflage intended to evade anti-abuse systems.
 
@@ -22,7 +22,7 @@ The eventual goal is a general browser agent capable of completing tasks across 
 6. **Identity & account management** — forms, profiles/privacy settings, password flows, and user-mediated identity/MFA steps.
 7. **Automation & process triggering** — submitting workflows, initiating web-app automations/webhooks, and scheduling tasks through browser interfaces.
 
-`WEB_TASK_CATEGORY_DEFINITIONS`, `WEB_TASK_CATEGORY_CAPABILITY_TARGETS`, and `STANDALONE_CHROMIUM_CAPABILITY_PROFILE` make that scope machine-readable. Capabilities with financial, identity, security, publishing, or other external effects still need explicit policy/confirmation boundaries; broad task coverage is not a reason to weaken fail-closed interaction or navigation rules.
+`WEB_TASK_CATEGORY_DEFINITIONS`, `WEB_TASK_CATEGORY_CAPABILITY_TARGETS`, and the standalone capability profiles make that scope machine-readable. Capabilities with financial, identity, security, publishing, or other external effects still need explicit policy/confirmation boundaries; broad task coverage is not a reason to weaken fail-closed interaction or navigation rules.
 
 ## Current architecture
 
@@ -46,7 +46,8 @@ The eventual goal is a general browser agent capable of completing tasks across 
 - seven stable task-category identifiers matching the long-term project scope
 - primitive browser/runtime capability taxonomy with `supported`, `partial`, and `unsupported` states
 - deliberately high full-category coverage targets, separate from individual-task requirements
-- conservative standalone Chromium profile that keeps optional/configuration-dependent controllers marked partial
+- historical 0.35 standalone capability profile plus a current 0.37 profile that promotes structured document reading without rewriting history
+- conservative handling of optional/configuration-dependent controllers as partial
 - mechanical `TaskProgram` requirement inference from action steps and observation predicates
 - explicit approval-capability inference for declared side effects and approval-gated steps
 - commitment classes separating browser mechanics from observe/reversible/publish/financial/identity/process consequences
@@ -54,6 +55,11 @@ The eventual goal is a general browser agent capable of completing tasks across 
 
 ### Perception and identity
 
+- bounded structured document-content observation for headings, paragraphs, lists, definitions, tables, code, quotes, figure captions, links, images, landmarks, and page metadata
+- independent browser-side visited-element/block/text/scalar/depth caps plus exact caller-side UTF-8 budgets
+- offscreen rendered content retained for reading; hidden content excluded by default; optional viewport-only reading
+- open Shadow DOM composed traversal including nested slots and assigned elements
+- frame-aware document snapshots with frame errors surfaced without discarding usable frames
 - frame-aware interactive DOM snapshots
 - traversal of open Shadow DOM, including non-interactive shadow hosts
 - shadow-boundary-aware structural identities
@@ -155,9 +161,9 @@ npm run test:chromium
 
 Set `CHROMIUM_BIN=/path/to/chromium` when Chromium is not at `/usr/bin/chromium`.
 
-The live suite includes a raw-pipe process fixture that launches Chromium without a websocket/debugging port, verifies `Browser.getVersion`, attaches/creates/closes page targets, and cleans its temporary profile. A second standalone fixture runs that runtime through `MultiPageCdpAgent`/`MultiPageTaskEngine` and verifies semantic button activation plus text entry.
+The live suite includes a raw-pipe process fixture that launches Chromium without a websocket/debugging port, verifies `Browser.getVersion`, attaches/creates/closes page targets, and cleans its temporary profile. A standalone semantic fixture runs that runtime through `MultiPageCdpAgent`/`MultiPageTaskEngine`. The structured-reading fixture then uses the same pure-CDP observer path for page metadata, ordinary document blocks, open-shadow/slotted content, URL resolution, hidden/offscreen distinctions, and viewport filtering.
 
-The wider Chromium suite also covers real open-Shadow-DOM traversal, stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation, roving-tabindex ownership, automatic dominant-canvas acquisition, renderer resize/replacement lifecycle, held controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, temporal velocity estimation from real canvas screenshots, the composed visual pipeline across movement/resize/renderer replacement, and downscaled visual-motion sampling.
+The wider Chromium suite also covers stable CDP identity, frame identity, normalized geometry, paint-order hit testing, DOM capability extraction, keyboard chord/Shift metadata, verified semantic activation/text entry, top-level and nested wheel reveal, `aria-activedescendant` listbox navigation, roving-tabindex ownership, automatic dominant-canvas acquisition, renderer resize/replacement lifecycle, held controls across animated canvas frames, browser-reported relative mouse deltas while a keyboard control remains held, temporal velocity estimation from real canvas screenshots, the composed visual pipeline across movement/resize/renderer replacement, and downscaled visual-motion sampling.
 
 ## Architecture
 
@@ -181,17 +187,17 @@ page session      page session       page session
               MultiPageTaskEngine
                      |
         +------------+-------------+
-        |                          |
-        v                          v
-semantic DOM/AX/geometry      CdpGameVisualPipeline
-        |                          |
-        v                    clipped screenshots
-InteractionModel                  |
-        |                    motion/temporal tracks
-        v                          |
-modality-aware planner            v
-        |                   RealtimeControlLoop
-        +------------+-------------+
+        |            |             |
+        v            v             v
+structured       semantic       CdpGameVisualPipeline
+document read    interaction          |
+        |            |          clipped screenshots
+        |            v                |
+        |      InteractionModel   motion/tracks
+        |            |                |
+        +------------+----------------+
+                     |
+             planner / policies
                      |
           browser-native CDP input
                      |
@@ -201,15 +207,15 @@ modality-aware planner            v
 
 ## Regression coverage
 
-The unit/regression suite covers raw CDP pipe framing and flattened-session routing, protocol-error propagation, transport limits/fail-closed behavior, the seven-category capability taxonomy, capability assessment, TaskProgram requirement/approval inference, graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, negative-tabindex Arrow destinations, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, nested scroll scopes, hit-tested target points, target-width calculations, deterministic/bounded game-region ranking, stable game-region refresh/reacquisition generations, composed visual-pipeline baseline generations, connected visual-motion regions, temporal track identity, velocity/projection, confidence decay, temporal coordinate-space/dimension resets, minimum-jerk trajectories, virtual-touchpad boundaries, finger/cursor transfer separation, long-stroke splitting, keyboard/mouse adapter mappings, relative pointer accumulation, modifier semantics, bounded/downscaled screenshot capture, PNG tile differencing and motion bounds, realtime observation freshness/cadence, realtime held-input diffs and cleanup, relative mouse-look capability/error handling, realtime time/tick budget enforcement, snapshot diffing, observation settling, semantic activation/typing, pointer target revalidation, scroll reveal, browser lifecycle controllers, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
+The unit/regression suite covers raw CDP pipe framing and flattened-session routing, protocol-error propagation, transport limits/fail-closed behavior, the seven-category capability taxonomy, historical/current capability assessment, TaskProgram requirement/approval inference, structured document frame ordering/metadata/identity, hidden/offscreen/viewport filtering, exact UTF-8 truncation, depth/block limits and frame failures, graph routing, directional scoring, conservative spatial priors, learned focus and Arrow-key topology, active-descendant state anchors, roving composite ownership/boundaries, modality-aware A*, planner cost explanations, target resolution/ambiguity, stable identities, frame mapping, geometry normalization, overflow clipping, hit-tested target points, deterministic/bounded game-region ranking, stable game-region generations, visual-pipeline generations, temporal motion tracks, minimum-jerk trajectories, keyboard/mouse adapter mappings, relative pointer accumulation, bounded/downscaled screenshot capture, realtime held-input cleanup/budgets, semantic activation/typing, browser lifecycle controllers, empirical edge costs, action dispatch, high-level engine acquisition, and replanning after divergence.
 
-See [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md) for the seven-category capability model and gap assessment, [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) for the dependency-free Chromium process/CDP path, [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md) for stable renderer refresh/reacquisition semantics, [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md) for bounded motion-region tracking and projection, [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) for the composed observation path, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling and motion differencing.
+See [`docs/document-content-observation.md`](docs/document-content-observation.md) for structured reading semantics and bounds, [`docs/web-task-capabilities.md`](docs/web-task-capabilities.md) for the seven-category capability model, [`docs/standalone-chromium-runtime.md`](docs/standalone-chromium-runtime.md) for the dependency-free Chromium process/CDP path, [`docs/realtime-control-loop.md`](docs/realtime-control-loop.md) for continuous input mechanics, [`docs/relative-game-input.md`](docs/relative-game-input.md) for relative mouse-look semantics and pointer-lock caveats, [`docs/game-region-acquisition.md`](docs/game-region-acquisition.md) for automatic visual-region discovery, [`docs/game-region-lifecycle.md`](docs/game-region-lifecycle.md) for stable renderer refresh/reacquisition semantics, [`docs/temporal-visual-tracking.md`](docs/temporal-visual-tracking.md) for bounded motion-region tracking and projection, [`docs/game-visual-pipeline.md`](docs/game-visual-pipeline.md) for the composed observation path, and [`docs/fast-visual-perception.md`](docs/fast-visual-perception.md) for downscaled visual sampling and motion differencing.
 
 ## Current limitations / next slices
 
-1. **General document-content observation:** the interaction snapshot is optimized for controls; broad research/reading still needs bounded structured extraction of headings, paragraphs, lists, tables, code, links, images/alt text, metadata, and non-interactive content across frames/shadow roots.
+1. **Rich document/editor semantics:** reading is now first-class, but creation/collaboration need selection/range state, caret geometry, formatting runs, contenteditable mutation/verification, clipboard-rich content, and drag/drop.
 2. **Permissions, clipboard, media and user-mediated authentication:** communication/content/identity workflows need first-class permission state, clipboard operations, media/fullscreen state, and explicit MFA/passkey/user-handoff boundaries.
-3. **Document/editor semantics:** creation/collaboration need selection/range editing, rich-text/contenteditable semantics, drag/drop, clipboard-rich content, and editor-specific verification beyond simple text inputs.
+3. **Research refinement:** structured reading still needs article/main-content ranking, boilerplate suppression, table relationships, incremental document diffs, and targeted refresh for very long/live documents.
 4. **Transaction safety:** commerce/booking/account flows need page-side commitment detection, amount/recipient/order summaries, specialized external-side-effect verification, and explicit confirmation immediately before irreversible effects.
 5. **Pointer capture state:** relative movement is available, but pointer-lock acquisition, loss detection, and recovery are not yet first-class control-loop state.
 6. **Semantic visual understanding and global motion:** temporal tracks follow coarse change regions; camera/scroll motion separation and higher-level appearance/task association are still needed.
