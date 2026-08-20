@@ -49,10 +49,7 @@ export interface StructuredTextFormattingRun {
   formatting: TextFormattingPatch;
 }
 
-export type StructuredTextNativeEdit =
-  | InsertTextIntent
-  | ReplaceTextIntent
-  | SaveDocumentIntent;
+export type StructuredTextNativeEdit = InsertTextIntent | ReplaceTextIntent | SaveDocumentIntent;
 
 export interface StructuredTextDispatchResult {
   dispatch: 'dispatched' | 'uncertain';
@@ -69,30 +66,10 @@ export interface StructuredTextNativeBackend {
 }
 
 export type StructuredTextExecution =
-  | {
-      status: 'verified';
-      effect: SemanticEffectClass;
-      dispatch: 'dispatched';
-      verification: PostEditVerification;
-    }
-  | {
-      status: 'uncertain';
-      effect: SemanticEffectClass;
-      dispatch: 'uncertain';
-      verification: PostEditVerification;
-    }
-  | {
-      status: 'rejected';
-      effect?: SemanticEffectClass;
-      dispatch: 'not-dispatched';
-      reason: string;
-    }
-  | {
-      status: 'verification-failed';
-      effect: SemanticEffectClass;
-      dispatch: 'dispatched';
-      verification: PostEditVerification;
-    };
+  | { status: 'verified'; effect: SemanticEffectClass; dispatch: 'dispatched'; verification: PostEditVerification }
+  | { status: 'uncertain'; effect: SemanticEffectClass; dispatch: 'uncertain'; verification: PostEditVerification }
+  | { status: 'rejected'; effect?: SemanticEffectClass; dispatch: 'not-dispatched'; reason: string }
+  | { status: 'verification-failed'; effect: SemanticEffectClass; dispatch: 'dispatched'; verification: PostEditVerification };
 
 interface SectionState {
   ref: StructuredEntityRef;
@@ -157,11 +134,7 @@ function replacementRange(intent: InsertTextIntent | ReplaceTextIntent): TextRan
 
 function expectationFor(intent: StructuredTextNativeEdit, beforeRevision: number): VerificationExpectation {
   if (intent.kind === 'save-document') {
-    return {
-      kind: 'saved-revision-at-least',
-      target: intent.document,
-      minimumRevision: beforeRevision,
-    };
+    return { kind: 'saved-revision-at-least', target: intent.document, minimumRevision: beforeRevision };
   }
   return {
     kind: 'text-equals',
@@ -173,7 +146,7 @@ function expectationFor(intent: StructuredTextNativeEdit, beforeRevision: number
 
 /**
  * Concrete deterministic application-semantic controller for a native structured-text model.
- * UI/accessibility/visual mechanisms are intentionally peers outside this native source of truth.
+ * Native structure is the semantic source of truth; UI/accessibility/visual mechanisms remain peers.
  */
 export class StructuredTextSemanticController {
   constructor(private readonly backend: StructuredTextNativeBackend) {}
@@ -187,7 +160,7 @@ export class StructuredTextSemanticController {
   }
 
   execute(intent: StructuredTextNativeEdit, verificationBounds: ObservationBounds): Promise<StructuredTextExecution> {
-    // Snapshot caller-owned material synchronously, before the first await in executeSnapshot().
+    // Snapshot all caller-owned edit material synchronously before the first await.
     const snapshot = snapshotIntent(intent);
     const bounds = { ...verificationBounds };
     return this.executeSnapshot(snapshot, bounds);
@@ -201,41 +174,36 @@ export class StructuredTextSemanticController {
     if (errors.length > 0) {
       return { status: 'rejected', dispatch: 'not-dispatched', reason: errors.join('; ') };
     }
+
     const effect = classifyIntentEffect(intent);
     const beforeRevision = await this.backend.readRevision();
 
-    // This is deliberately the final await before the one and only semantic side-effect dispatch.
+    // Final await before dispatch: generation authority is freshly revalidated immediately before the edit.
     const identity = await this.backend.readIdentity();
     const documentFreshness = checkDocumentFreshness(intent.document, identity.document);
     if (!documentFreshness.fresh) {
-      return {
-        status: 'rejected',
-        effect,
-        dispatch: 'not-dispatched',
-        reason: documentFreshness.reason,
-      };
+      return { status: 'rejected', effect, dispatch: 'not-dispatched', reason: documentFreshness.reason };
     }
     if (intent.kind !== 'save-document') {
       const entityFreshness = checkEntityFreshness(intent.target, identity);
       if (!entityFreshness.fresh) {
-        return {
-          status: 'rejected',
-          effect,
-          dispatch: 'not-dispatched',
-          reason: entityFreshness.reason,
-        };
+        return { status: 'rejected', effect, dispatch: 'not-dispatched', reason: entityFreshness.reason };
       }
     }
 
-    // Exactly one semantic edit dispatch. An uncertain result is never replayed automatically.
+    // Exactly one semantic side-effect dispatch. Snapshot the backend-owned outcome before any later await.
     const dispatchResult = await this.backend.dispatchSemanticEdit(intent);
+    const dispatch = dispatchResult.dispatch === 'dispatched' ? 'dispatched' : 'uncertain';
+
     const expectation = expectationFor(intent, beforeRevision);
     const observation = intent.kind === 'save-document'
       ? await this.backend.observeSavedState(intent.document)
       : await this.backend.observeText(intent.target, expectation.kind === 'text-equals' ? expectation.range : { start: 0, end: 0 }, verificationBounds);
-    const verification = verifyPostEdit({ identity: await this.backend.readIdentity(), beforeRevision, expectation, observation });
+    const verificationIdentity = await this.backend.readIdentity();
+    const verification = verifyPostEdit({ identity: verificationIdentity, beforeRevision, expectation, observation });
 
-    if (dispatchResult.dispatch === 'uncertain') {
+    // An uncertain side-effect outcome is never replayed automatically, even if model verification succeeds.
+    if (dispatch === 'uncertain') {
       return { status: 'uncertain', effect, dispatch: 'uncertain', verification };
     }
     if (verification.status === 'verified') {
@@ -245,7 +213,7 @@ export class StructuredTextSemanticController {
   }
 }
 
-/** In-memory native structured-document backend used for deterministic local semantic workflows/tests. */
+/** In-memory native structured-document backend for deterministic local semantic workflows/tests. */
 export class DeterministicStructuredTextBackend implements StructuredTextNativeBackend {
   private document: DocumentRef;
   private sections: SectionState[];
@@ -291,7 +259,11 @@ export class DeterministicStructuredTextBackend implements StructuredTextNativeB
     this.revision += 1;
     this.sections = this.sections.map(section => ({
       ...section,
-      ref: { ...cloneEntity(section.ref), document: cloneDocument(this.document), generation: section.ref.generation + 1 },
+      ref: {
+        ...cloneEntity(section.ref),
+        document: cloneDocument(this.document),
+        generation: section.ref.generation + 1,
+      },
       formattingRuns: section.formattingRuns.map(cloneRun),
     }));
     return this.currentDocument();
@@ -332,7 +304,9 @@ export class DeterministicStructuredTextBackend implements StructuredTextNativeB
       .filter(section => visibleIds.has(section.ref.entityId))
       .map(section => ({
         ref: cloneEntity(section.ref),
-        ...(bounds.maxDepth >= 1 ? { text: section.text, formattingRuns: section.formattingRuns.map(cloneRun) } : {}),
+        ...(bounds.maxDepth >= 1
+          ? { text: section.text, formattingRuns: section.formattingRuns.map(cloneRun) }
+          : {}),
         truncated: bounds.maxDepth < 1,
       }));
     return {
@@ -365,9 +339,10 @@ export class DeterministicStructuredTextBackend implements StructuredTextNativeB
   }
 
   async dispatchSemanticEdit(intent: StructuredTextNativeEdit): Promise<StructuredTextDispatchResult> {
-    // Snapshot once more at the backend boundary so later caller/result mutation cannot change the applied edit.
+    // Snapshot again at the native boundary so later caller/result mutation cannot alter the applied edit.
     const edit = snapshotIntent(intent);
     this.dispatchCountValue += 1;
+
     if (edit.kind === 'save-document') {
       this.revision += 1;
       this.savedRevision = this.revision;
@@ -382,6 +357,7 @@ export class DeterministicStructuredTextBackend implements StructuredTextNativeB
       }
       this.revision += 1;
     }
+
     const result: StructuredTextDispatchResult = {
       dispatch: this.uncertainDispatch ? 'uncertain' : 'dispatched',
       revision: this.revision,
