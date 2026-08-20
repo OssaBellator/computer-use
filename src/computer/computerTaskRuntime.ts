@@ -12,17 +12,28 @@ import {
 import { ComputerEnvironmentRegistry } from './environmentRegistry.js';
 import {
   normalizeComputerTaskObservationRequest,
-  validateComputerTaskProgram,
+  snapshotComputerTaskProgram,
   type ComputerTaskActionStep,
   type ComputerTaskProgram,
   type ComputerTaskStep,
 } from './computerTask.js';
 import {
-  computerTaskProgramHash,
   createComputerTaskCheckpoint,
+  validateComputerTaskCheckpoint,
   type ComputerTaskActionCheckpointState,
   type ComputerTaskCheckpoint,
 } from './computerTaskCheckpoint.js';
+
+export const COMPUTER_TASK_MAX_RETAINED_OBSERVATIONS = 64;
+const EVIDENCE_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
+const VERIFICATION_STATES: readonly ComputerVerificationState[] = [
+  'not-applicable',
+  'verified',
+  'pending',
+  'rejected',
+  'mismatch',
+  'unverified',
+];
 
 export type ComputerTaskTerminalStatus =
   | 'completed'
@@ -49,17 +60,19 @@ export interface ComputerTaskVerificationDecision {
 }
 
 export interface ComputerTaskApprovalContext {
+  /** Immutable runtime-owned executable snapshot. */
   step: ComputerTaskActionStep;
 }
 
 export interface ComputerTaskVerificationContext {
+  /** Immutable runtime-owned executable snapshot. */
   step: ComputerTaskActionStep;
   adapterResult: ComputerActionResult;
   registry: ComputerEnvironmentRegistry;
 }
 
 export interface ComputerTaskRuntimeHooks {
-  /** Must use bounded adapter/domain observations; raw observations are not retained in checkpoints. */
+  /** Must use bounded adapter/domain observations; raw observations are not retained by the runtime. */
   revalidateTarget?: (
     registry: ComputerEnvironmentRegistry,
     step: ComputerTaskActionStep,
@@ -74,17 +87,56 @@ export interface ComputerTaskRuntimeOptions {
   hooks?: ComputerTaskRuntimeHooks;
 }
 
+/** Bounded metadata-only observation record. `data` is intentionally not retained. */
+export interface ComputerTaskObservationRecord {
+  adapterId: ComputerObservationEnvelope['adapterId'];
+  environment: ComputerObservationEnvelope['environment'];
+  channel: ComputerObservationEnvelope['channel'];
+  sequence: number;
+  complete: boolean;
+  truncated: boolean;
+  surface?: ComputerSurfaceRef;
+  target?: ComputerEntityRef;
+}
+
 export interface ComputerTaskRunResult {
   status: ComputerTaskTerminalStatus;
   stepsExecuted: number;
   nextStepId?: string;
   evidence?: readonly string[];
-  observations: readonly ComputerObservationEnvelope[];
+  observations: readonly ComputerTaskObservationRecord[];
+  observationsDropped: number;
 }
 
 function evidence(...groups: Array<readonly string[] | undefined>): string[] | undefined {
-  const merged = groups.flatMap((group) => group ?? []);
-  return merged.length > 0 ? [...new Set(merged)].slice(0, 32) : undefined;
+  const accepted: string[] = [];
+  let invalid = false;
+  for (const group of groups) {
+    for (const code of group ?? []) {
+      if (!EVIDENCE_CODE.test(code)) {
+        invalid = true;
+        continue;
+      }
+      if (!accepted.includes(code) && accepted.length < 32) accepted.push(code);
+    }
+  }
+  if (invalid && accepted.length < 32 && !accepted.includes('runtime-evidence-invalid')) {
+    accepted.push('runtime-evidence-invalid');
+  }
+  return accepted.length > 0 ? accepted : undefined;
+}
+
+function observationRecord(observation: ComputerObservationEnvelope): ComputerTaskObservationRecord {
+  return Object.freeze({
+    adapterId: observation.adapterId,
+    environment: observation.environment,
+    channel: observation.channel,
+    sequence: observation.sequence,
+    complete: observation.complete,
+    truncated: observation.truncated,
+    surface: observation.surface ? Object.freeze({ ...observation.surface }) : undefined,
+    target: observation.target ? Object.freeze({ ...observation.target }) : undefined,
+  });
 }
 
 function terminalFromVerification(state: ComputerVerificationState): ComputerTaskTerminalStatus | undefined {
@@ -95,30 +147,37 @@ function terminalFromVerification(state: ComputerVerificationState): ComputerTas
 }
 
 export class ComputerTaskRuntime {
+  private readonly program: ComputerTaskProgram;
+  private readonly registry: ComputerEnvironmentRegistry;
+  private readonly executionId: string;
+  private readonly hooks: ComputerTaskRuntimeHooks;
   private readonly stepById: Map<string, ComputerTaskStep>;
   private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
   private currentStepId: string | undefined;
   private stepsExecuted = 0;
   private unresolvedCheckpointDispatch = false;
+  private observationsDropped = 0;
 
   constructor(
-    private readonly program: ComputerTaskProgram,
-    private readonly registry: ComputerEnvironmentRegistry,
-    private readonly options: ComputerTaskRuntimeOptions,
+    program: ComputerTaskProgram,
+    registry: ComputerEnvironmentRegistry,
+    options: ComputerTaskRuntimeOptions,
   ) {
-    const errors = validateComputerTaskProgram(program);
-    if (errors.length > 0) throw new Error(`invalid computer task program: ${errors.join('; ')}`);
-    if (!/^[0-9a-f]{32,64}$/.test(options.executionId)) {
+    this.program = snapshotComputerTaskProgram(program);
+    this.registry = registry;
+    this.executionId = options.executionId;
+    if (!/^[0-9a-f]{32,64}$/.test(this.executionId)) {
       throw new Error('computer task execution id must be 32 to 64 lowercase hexadecimal characters');
     }
-    this.stepById = new Map(program.steps.map((step) => [step.id, step]));
-    this.currentStepId = program.entry;
+    this.hooks = Object.freeze({
+      ...options.hooks,
+      verifiers: options.hooks?.verifiers ? Object.freeze({ ...options.hooks.verifiers }) : undefined,
+    });
+    this.stepById = new Map(this.program.steps.map((step) => [step.id, step]));
+    this.currentStepId = this.program.entry;
 
     if (options.checkpoint) {
-      if (options.checkpoint.program.id !== program.id || options.checkpoint.program.hash !== computerTaskProgramHash(program)) {
-        throw new Error('computer task checkpoint does not match program');
-      }
-      if (options.checkpoint.execution.id !== options.executionId) throw new Error('computer task checkpoint belongs to another execution');
+      validateComputerTaskCheckpoint(options.checkpoint, { program: this.program, executionId: this.executionId });
       this.currentStepId = options.checkpoint.cursor.nextStepId;
       this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
       for (const action of options.checkpoint.actions) {
@@ -133,7 +192,7 @@ export class ComputerTaskRuntime {
   checkpoint(): ComputerTaskCheckpoint {
     return createComputerTaskCheckpoint({
       program: this.program,
-      executionId: this.options.executionId,
+      executionId: this.executionId,
       nextStepId: this.currentStepId,
       stepsExecuted: this.stepsExecuted,
       actions: this.actionStates,
@@ -155,27 +214,35 @@ export class ComputerTaskRuntime {
   }
 
   private async targetFresh(step: ComputerTaskActionStep): Promise<ComputerTaskTargetRevalidation> {
-    if (!step.target) return { state: 'fresh' };
-    const revalidate = this.options.hooks?.revalidateTarget;
+    if (!step.target) {
+      return step.request.target
+        ? { state: 'missing', evidence: ['target-freshness-binding-missing'] }
+        : { state: 'fresh' };
+    }
+    const revalidate = this.hooks.revalidateTarget;
     if (!revalidate) return { state: 'missing', evidence: ['target-revalidator-required'] };
     const fresh = await revalidate(this.registry, step);
-    if (fresh.state !== 'fresh') return fresh;
+    if (fresh.state !== 'fresh') return { ...fresh, evidence: evidence(fresh.evidence) };
     if (step.target.surface && (!fresh.surface || !sameComputerSurface(step.target.surface, fresh.surface))) {
       return { state: 'stale', surface: fresh.surface, entity: fresh.entity, evidence: ['surface-generation-stale'] };
     }
     if (step.target.entity && (!fresh.entity || !sameComputerEntity(step.target.entity, fresh.entity))) {
       return { state: 'stale', surface: fresh.surface, entity: fresh.entity, evidence: ['entity-generation-stale'] };
     }
-    return fresh;
+    return { ...fresh, evidence: evidence(fresh.evidence) };
   }
 
   private async verify(step: ComputerTaskActionStep, adapterResult: ComputerActionResult): Promise<ComputerTaskVerificationDecision> {
     if (step.verification) {
-      const verifier = this.options.hooks?.verifiers?.[step.verification];
+      const verifier = this.hooks.verifiers?.[step.verification];
       if (!verifier) return { state: 'unverified', evidence: ['verifier-not-found'] };
-      return verifier({ step, adapterResult, registry: this.registry });
+      const decision = await verifier({ step, adapterResult, registry: this.registry });
+      if (!VERIFICATION_STATES.includes(decision.state)) {
+        return { state: 'unverified', evidence: ['verifier-response-invalid'] };
+      }
+      return { state: decision.state, evidence: evidence(decision.evidence) };
     }
-    return { state: adapterResult.verification, evidence: adapterResult.evidence };
+    return { state: adapterResult.verification, evidence: evidence(adapterResult.evidence) };
   }
 
   private async executeAction(step: ComputerTaskActionStep): Promise<{ result: ComputerTaskRunResult; next?: string }> {
@@ -192,7 +259,7 @@ export class ComputerTaskRuntime {
     }
 
     if (computerEffectRequiresApproval(step.request.effect)) {
-      const approved = this.options.hooks?.approve ? await this.options.hooks.approve({ step }) : false;
+      const approved = this.hooks.approve ? await this.hooks.approve({ step }) : false;
       if (!approved) return { result: this.result('rejected', [], ['approval-denied']) };
     }
 
@@ -248,7 +315,8 @@ export class ComputerTaskRuntime {
   }
 
   async run(): Promise<ComputerTaskRunResult> {
-    const observations: ComputerObservationEnvelope[] = [];
+    const observations: ComputerTaskObservationRecord[] = [];
+    this.observationsDropped = 0;
     if (this.unresolvedCheckpointDispatch) {
       return this.result('reconciliation-required', observations, ['checkpoint-unresolved-dispatch']);
     }
@@ -261,11 +329,15 @@ export class ComputerTaskRuntime {
       if (!step) return this.result('failed', observations, ['task-step-missing']);
 
       const preflight = this.preflight(step);
-      if (preflight) return { ...preflight, observations: Object.freeze([...observations]) };
+      if (preflight) return { ...preflight, observations: Object.freeze([...observations]), observationsDropped: this.observationsDropped };
 
       if (step.kind === 'observe') {
         const observation = await this.registry.observe(normalizeComputerTaskObservationRequest(step.request));
-        observations.push(observation);
+        if (observations.length === COMPUTER_TASK_MAX_RETAINED_OBSERVATIONS) {
+          observations.shift();
+          this.observationsDropped += 1;
+        }
+        observations.push(observationRecord(observation));
         this.stepsExecuted += 1;
         this.currentStepId = step.next;
         continue;
@@ -283,7 +355,13 @@ export class ComputerTaskRuntime {
         this.currentStepId = execution.next;
         continue;
       }
-      return { ...execution.result, stepsExecuted: this.stepsExecuted, nextStepId: this.currentStepId, observations: Object.freeze([...observations]) };
+      return {
+        ...execution.result,
+        stepsExecuted: this.stepsExecuted,
+        nextStepId: this.currentStepId,
+        observations: Object.freeze([...observations]),
+        observationsDropped: this.observationsDropped,
+      };
     }
 
     return this.result('completed', observations);
@@ -291,15 +369,16 @@ export class ComputerTaskRuntime {
 
   private result(
     status: ComputerTaskTerminalStatus,
-    observations: readonly ComputerObservationEnvelope[],
+    observations: readonly ComputerTaskObservationRecord[],
     resultEvidence?: readonly string[],
   ): ComputerTaskRunResult {
     return {
       status,
       stepsExecuted: this.stepsExecuted,
       nextStepId: this.currentStepId,
-      evidence: resultEvidence,
+      evidence: evidence(resultEvidence),
       observations: Object.freeze([...observations]),
+      observationsDropped: this.observationsDropped,
     };
   }
 }
