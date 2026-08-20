@@ -67,6 +67,7 @@ export interface ComputerTaskApprovalContext {
 export interface ComputerTaskVerificationContext {
   /** Immutable runtime-owned executable snapshot. */
   step: ComputerTaskActionStep;
+  /** Immutable top-level snapshot; verifier mutation cannot alter runtime safety fields. */
   adapterResult: ComputerActionResult;
   registry: ComputerEnvironmentRegistry;
 }
@@ -136,6 +137,28 @@ function observationRecord(observation: ComputerObservationEnvelope): ComputerTa
     truncated: observation.truncated,
     surface: observation.surface ? Object.freeze({ ...observation.surface }) : undefined,
     target: observation.target ? Object.freeze({ ...observation.target }) : undefined,
+  });
+}
+
+function snapshotAdapterResult(result: ComputerActionResult): ComputerActionResult {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('adapter result must be a plain object');
+  if (Object.getOwnPropertySymbols(result).length > 0) throw new Error('adapter result contains symbol properties');
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (descriptor.get || descriptor.set) throw new Error(`adapter result ${key} must be a data property`);
+  }
+  for (const key of ['status', 'dispatch', 'verification'] as const) {
+    if (!descriptors[key] || !('value' in descriptors[key])) throw new Error(`adapter result ${key} must be an own data property`);
+  }
+  if (descriptors.evidence && !('value' in descriptors.evidence)) throw new Error('adapter result evidence must be a data property');
+  if (descriptors.details && !('value' in descriptors.details)) throw new Error('adapter result details must be a data property');
+  const rawEvidence = descriptors.evidence?.value as readonly string[] | undefined;
+  return Object.freeze({
+    status: descriptors.status.value as ComputerActionResult['status'],
+    dispatch: descriptors.dispatch.value as ComputerActionResult['dispatch'],
+    verification: descriptors.verification.value as ComputerActionResult['verification'],
+    evidence: rawEvidence ? Object.freeze([...rawEvidence]) : undefined,
+    details: descriptors.details?.value,
   });
 }
 
@@ -259,7 +282,7 @@ export class ComputerTaskRuntime {
     }
   }
 
-  private verifierFailureResult(step: ComputerTaskActionStep, adapterResult: ComputerActionResult): ComputerTaskRunResult {
+  private verifierFailureResult(adapterResult: ComputerActionResult): ComputerTaskRunResult {
     if (adapterResult.dispatch === 'unknown') {
       return this.result('unknown-dispatch', [], evidence(adapterResult.evidence, ['verifier-threw-after-dispatch']));
     }
@@ -293,14 +316,21 @@ export class ComputerTaskRuntime {
       if (predispatch.state !== 'fresh') {
         return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
       }
-      const adapterResult = await this.registry.act(step.request);
+      const registryResult = await this.registry.act(step.request);
+      let adapterResult: ComputerActionResult;
+      try {
+        adapterResult = snapshotAdapterResult(registryResult);
+      } catch {
+        this.actionStates.set(step.id, 'unknown-dispatch');
+        return { result: this.result('unknown-dispatch', [], ['adapter-result-snapshot-invalid']) };
+      }
       this.recordDispatchBeforeVerification(step.id, adapterResult);
 
       let verification: ComputerTaskVerificationDecision;
       try {
         verification = await this.verify(step, adapterResult);
       } catch {
-        return { result: this.verifierFailureResult(step, adapterResult) };
+        return { result: this.verifierFailureResult(adapterResult) };
       }
 
       const verificationStatus = terminalFromVerification(verification.state);
