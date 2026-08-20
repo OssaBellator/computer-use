@@ -172,6 +172,27 @@ test('oversized visual artifact metadata cannot escape the observation boundary'
   );
 });
 
+test('visual acquisition limits prevent large lazy capture materialization', async () => {
+  const {backend,adapter} = fixture();
+  backend.lazyVisuals.set('win-1@1',{width:10_000,height:10_000,byteLength:100_000_000,token:'huge'});
+  const obs = await adapter.observe({adapterId:'desktop:test',channel:'visual',surface,limits:{maxItems:1,maxTextBytes:64,maxDepth:1}});
+  const data = obs.data as DesktopVisualObservationData;
+  assert.equal(data.status,'unavailable');
+  assert.equal(data.reason,'capture-budget-exceeded');
+  assert.equal(backend.visualMaterializations,0);
+  assert.deepEqual(backend.lastVisualLimits,{maxPixels:4096,maxBytes:64});
+  assert.equal(Object.isFrozen(backend.lastVisualLimits),true);
+});
+
+test('adapter rejects visual metadata that exceeds the acquisition budget', async () => {
+  const {backend,adapter} = fixture();
+  backend.observeVisual = async (window) => ({status:'available',window,width:100,height:100,artifact:{token:'ignored-budget',byteLength:65}});
+  await assert.rejects(
+    adapter.observe({adapterId:'desktop:test',channel:'visual',surface,limits:{maxItems:1,maxTextBytes:64,maxDepth:1}}),
+    /visual capture budget exceeded/,
+  );
+});
+
 test('surface entity supports window-targeted native input without inventing a control', async () => {
   const {backend,adapter} = fixture();
   const windowEntity = {adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'surface' as const,entityId:'win-1',generation:1};
