@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { DocumentFormattingSnapshot, FormattingValue, RichTextNativeInlineFormat } from '../src/browser/documentFormatting.js';
+import type { DocumentFormattingSnapshot, FormattingValue } from '../src/browser/documentFormatting.js';
 import { DocumentFormattingObserver } from '../src/browser/documentFormatting.js';
 import type { DocumentSelectionSnapshot } from '../src/browser/documentSelection.js';
 import { DocumentSelectionObserver } from '../src/browser/documentSelection.js';
-import { RichTextController } from '../src/controller/richTextController.js';
+import { RichTextController, type RichTextNativeInlineFormat } from '../src/controller/richTextController.js';
 import type { BrowserInput, MouseButton } from '../src/input/browserInput.js';
 import type { Point } from '../src/types.js';
 
