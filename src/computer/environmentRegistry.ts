@@ -274,6 +274,9 @@ function coherentActionResult(result: ComputerActionResult): boolean {
  * request routing/safety fields are snapshotted before validation and any adapter
  * await. Neutral adapter response metadata is likewise snapshotted immediately
  * after the await, so validation never rereads mutable adapter-owned envelopes.
+ * Snapshot acquisition failures before action invocation remain explicitly
+ * not-dispatched; response snapshot failures after action invocation remain
+ * conservatively unknown-dispatch.
  * Opaque request payloads and response data/details remain adapter-owned.
  *
  * Observation contract violations throw because observations are read-only.
@@ -285,7 +288,12 @@ export class ComputerEnvironmentRegistry {
   private readonly adapters = new Map<string, RegisteredAdapter>();
 
   register(adapter: ComputerEnvironmentAdapter): void {
-    const descriptor = snapshotDescriptor(adapter.descriptor);
+    let descriptor: ComputerEnvironmentAdapterDescriptor;
+    try {
+      descriptor = snapshotDescriptor(adapter.descriptor);
+    } catch {
+      throw new ComputerAdapterRoutingError('invalid-descriptor', 'adapter descriptor could not be snapshotted');
+    }
     const errors = validateDescriptor(descriptor);
     if (errors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-descriptor', errors.join('; '));
@@ -312,7 +320,15 @@ export class ComputerEnvironmentRegistry {
   }
 
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
-    const snapshot = snapshotObservationRequest(request);
+    let snapshot: ComputerObservationRequest;
+    try {
+      snapshot = snapshotObservationRequest(request);
+    } catch {
+      throw new ComputerAdapterRoutingError(
+        'invalid-observation-request',
+        'observation request could not be snapshotted',
+      );
+    }
     const registered = this.adapters.get(snapshot.adapterId);
     if (!registered) {
       throw new ComputerAdapterRoutingError('adapter-not-found', `adapter not found: ${snapshot.adapterId}`);
@@ -321,7 +337,16 @@ export class ComputerEnvironmentRegistry {
     if (requestErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-request', requestErrors.join('; '));
     }
-    const response = snapshotObservationResponse(await registered.adapter.observe(snapshot));
+    const rawResponse = await registered.adapter.observe(snapshot);
+    let response: ComputerObservationEnvelope;
+    try {
+      response = snapshotObservationResponse(rawResponse);
+    } catch {
+      throw new ComputerAdapterRoutingError(
+        'invalid-observation-response',
+        'observation response could not be snapshotted',
+      );
+    }
     const responseErrors = invalidObservationResponse(snapshot, registered.descriptor, response);
     if (responseErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-response', responseErrors.join('; '));
@@ -330,7 +355,12 @@ export class ComputerEnvironmentRegistry {
   }
 
   async act(request: ComputerActionRequest): Promise<ComputerActionResult> {
-    const snapshot = snapshotActionRequest(request);
+    let snapshot: ComputerActionRequest;
+    try {
+      snapshot = snapshotActionRequest(request);
+    } catch {
+      return nondispatched('rejected', 'invalid-action-request');
+    }
     const registered = this.adapters.get(snapshot.adapterId);
     if (!registered) return nondispatched('unsupported', 'adapter-not-found');
 
