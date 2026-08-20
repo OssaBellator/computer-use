@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { BoundedSemanticSnapshotLimits } from '../src/browser/boundedSemanticSnapshot.js';
 import type { BrowserTargetState } from '../src/browser/targetController.js';
 import {
   BrowserComputerEnvironmentAdapter,
@@ -84,6 +85,16 @@ class GenerationRuntime implements BrowserComputerRuntime {
       mutate?.();
     }
     return { ...this.frameTokens };
+  }
+  async semanticSnapshot(
+    _targetId: string | undefined,
+    limits: BoundedSemanticSnapshotLimits,
+  ) {
+    const mutate = this.refreshMutation;
+    this.refreshMutation = undefined;
+    mutate?.();
+    const nodes = this.nodes.slice(0, limits.maxItems).map((item) => ({ ...item }));
+    return { nodes, complete: this.nodes.length <= limits.maxItems, truncated: this.nodes.length > limits.maxItems };
   }
   async refresh(): Promise<InteractionNode[]> {
     const mutate = this.refreshMutation;
