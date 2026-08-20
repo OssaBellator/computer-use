@@ -327,6 +327,46 @@ test('malformed runtime policy shapes fail closed at construction', () => {
   }
 });
 
+test('runtime polling policy has adapter-owned hard ceilings', () => {
+  const oversized: Array<Record<string, unknown>> = [
+    { maxConsecutiveNoProgress: 17 },
+    { commitmentVerificationMaxPolls: 33 },
+    { waitMaxPolls: 33 },
+    { commitmentVerificationPollIntervalMs: 5_001 },
+    { waitPollIntervalMs: 5_001 },
+    { commitmentVerificationMaxPolls: Number.MAX_SAFE_INTEGER },
+    { waitPollIntervalMs: Number.MAX_SAFE_INTEGER },
+  ];
+
+  for (const runtimeOptions of oversized) {
+    const runtime = new GenerationRuntime();
+    const options = { runtimeOptions } as unknown as BrowserComputerEnvironmentAdapterOptions;
+    assert.throws(() => new BrowserComputerEnvironmentAdapter(runtime, options), /browser runtime options\./);
+    assert.equal(runtime.activateCalls, 0);
+  }
+});
+
+test('ordinary bounded runtime polling policy remains accepted', () => {
+  const runtime = new GenerationRuntime();
+  const adapter = new BrowserComputerEnvironmentAdapter(runtime, {
+    runtimeOptions: {
+      maxConsecutiveNoProgress: 16,
+      commitmentVerificationMaxPolls: 32,
+      commitmentVerificationPollIntervalMs: 5_000,
+      waitMaxPolls: 32,
+      waitPollIntervalMs: 5_000,
+    },
+  });
+
+  assert.deepEqual(adapter.options.runtimeOptions, {
+    maxConsecutiveNoProgress: 16,
+    commitmentVerificationMaxPolls: 32,
+    commitmentVerificationPollIntervalMs: 5_000,
+    waitPollIntervalMs: 5_000,
+    waitMaxPolls: 32,
+  });
+});
+
 test('typing rejects an aggregate per-character delay above the hard duration budget', async () => {
   const runtime = new GenerationRuntime();
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
