@@ -164,7 +164,9 @@ test('oversized visual artifact metadata cannot escape the observation boundary'
   backend.visuals.set('win-1@1', {
     status:'available',
     window:{nativeWindowId:'win-1',generation:1},
-    artifact:{token:'x'.repeat(257)},
+    width:10,
+    height:10,
+    artifact:{token:'x'.repeat(257),byteLength:1},
   });
   await assert.rejects(
     adapter.observe({adapterId:'desktop:test',channel:'visual',surface}),
@@ -191,6 +193,32 @@ test('adapter rejects visual metadata that exceeds the acquisition budget', asyn
     adapter.observe({adapterId:'desktop:test',channel:'visual',surface,limits:{maxItems:1,maxTextBytes:64,maxDepth:1}}),
     /visual capture budget exceeded/,
   );
+});
+
+test('available visual results require dimensions, artifact, and encoded size proof', async () => {
+  const malformed: unknown[] = [
+    {status:'available',window:{nativeWindowId:'win-1',generation:1},height:10,artifact:{token:'x',byteLength:1}},
+    {status:'available',window:{nativeWindowId:'win-1',generation:1},width:10,artifact:{token:'x',byteLength:1}},
+    {status:'available',window:{nativeWindowId:'win-1',generation:1},width:10,height:10},
+    {status:'available',window:{nativeWindowId:'win-1',generation:1},width:10,height:10,artifact:{token:'x'}},
+  ];
+  for (const candidate of malformed) {
+    const {backend,adapter} = fixture();
+    backend.observeVisual = async () => candidate as never;
+    await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /desktop visual/);
+  }
+});
+
+test('unavailable and unsupported visual results reject capture fields', async () => {
+  const malformed: unknown[] = [
+    {status:'unavailable',window:{nativeWindowId:'win-1',generation:1},reason:'not-ready',width:10},
+    {status:'unsupported',window:{nativeWindowId:'win-1',generation:1},artifact:{token:'x',byteLength:1}},
+  ];
+  for (const candidate of malformed) {
+    const {backend,adapter} = fixture();
+    backend.observeVisual = async () => candidate as never;
+    await assert.rejects(adapter.observe({adapterId:'desktop:test',channel:'visual',surface}), /desktop visual observation invalid/);
+  }
 });
 
 test('surface entity supports window-targeted native input without inventing a control', async () => {
