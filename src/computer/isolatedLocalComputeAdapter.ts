@@ -119,6 +119,20 @@ function bytes(value: string): number { return Buffer.byteLength(value, 'utf8');
 function sha256(value: string): string { return `sha256-${createHash('sha256').update(value, 'utf8').digest('hex')}`; }
 function identityKey(identity: LocalComputeIdentity): string { return `${identity.jobId}:${identity.generation}`; }
 function artifactKey(identity: LocalComputeArtifactIdentity): string { return `${identity.artifactId}:${identity.generation}`; }
+function requestBinding(operation: Readonly<IsolatedLocalComputeOperationDefinition>, inputArtifact: LocalComputeArtifactIdentity, limits: LocalComputeResourceLimits): string {
+  return sha256([
+    operation.id,
+    operation.effect,
+    inputArtifact.contentHash,
+    limits.timeBudgetMs,
+    limits.maxInputBytes,
+    limits.maxOutputBytes,
+    limits.maxDiagnosticBytes,
+    limits.maxJsonDepth,
+    limits.maxJsonItems,
+    limits.memoryBytesHint ?? '',
+  ].join('\n'));
+}
 
 function canonicalizeJson(value: unknown, maxBytes: number, maxDepth: number, maxItems: number): CanonicalizedJson {
   let itemCount = 0;
@@ -249,6 +263,8 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
   private readonly terminationUncertain: Set<string>;
   private readonly jobs = new Map<string, IsolatedLocalComputeJobSnapshot>();
   private readonly ledger = new Map<string, LedgerEntry>();
+  /** Non-evicted immutable request binding paired one-to-one with ledger identities. */
+  private readonly requestBindings = new Map<string, string>();
   private readonly highestGeneration = new Map<string, number>();
   private readonly artifacts = new Map<string, StoredArtifact>();
   private readonly maxRetainedJobs: number;
@@ -320,8 +336,10 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (payload.expectedInputArtifactId !== undefined && payload.expectedInputArtifactId !== inputArtifact.artifactId) return this.reject('compute-isolated-input-artifact-mismatch');
 
     const key = identityKey(payload.job);
+    const binding = requestBinding(operation, inputArtifact, limits);
     const prior = this.ledger.get(key);
     if (prior) {
+      if (this.requestBindings.get(key) !== binding) return this.reject('compute-isolated-job-identity-conflict');
       const known = this.jobs.get(key);
       return known ? this.resultForKnown(known) : this.resultForEvictedLedger(prior);
     }
@@ -330,6 +348,7 @@ export class IsolatedLocalComputeAdapter implements ComputerEnvironmentAdapter {
     if (this.ledger.size >= this.maxLedgerEntries) return this.reject('compute-isolated-ledger-full');
 
     // Seal before launch: after this point no uncertain outcome can authorize redispatch.
+    this.requestBindings.set(key, binding);
     this.ledger.set(key, { dispatch: 'unknown', executionState: 'accepted' });
     this.highestGeneration.set(payload.job.jobId, Math.max(highest ?? payload.job.generation, payload.job.generation));
     let snapshot = freezeSnapshot({ identity: payload.job, operation: operation.id, effect: operation.effect, inputArtifact, executionState: 'accepted', dispatch: 'unknown', diagnostics: [] });
