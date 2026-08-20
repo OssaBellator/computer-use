@@ -5,6 +5,7 @@ import type {
   BrowserCommitmentKind,
   BrowserCommitmentSummary,
 } from './commitmentDetector.js';
+import type { BrowserCommitmentIdentityEvaluation } from './commitmentIdentity.js';
 import type { DocumentContentSnapshot } from './documentContent.js';
 
 export type BrowserCommitmentVerificationStatus =
@@ -32,6 +33,12 @@ export type BrowserCommitmentVerificationEvidenceCode =
   | 'schedule-visible'
   | 'recurrence-visible'
   | 'material-mismatch'
+  | 'identity-match'
+  | 'fresh-result-identity'
+  | 'identity-conflict'
+  | 'provider-origin-changed'
+  | 'provider-handoff-unbound'
+  | 'bound-popup-result'
   | 'document-context-incomplete'
   | 'document-context-unavailable';
 
@@ -56,12 +63,18 @@ export interface BrowserCommitmentVerificationSummary {
   observed: BrowserCommitmentObservedTerms;
   documentContext: 'available' | 'incomplete' | 'unavailable';
   evidence: BrowserCommitmentVerificationEvidence[];
+  /** Bounded detailed IDs are intentionally available only through the explicit verification result/callback. */
+  identity?: BrowserCommitmentIdentityEvaluation;
 }
+
+export type BrowserCommitmentResultContext = 'same-page' | 'bound-popup';
 
 export interface BrowserCommitmentVerificationOptions {
   maxDocumentBlocks?: number;
   maxEvidence?: number;
   maxScalarBytes?: number;
+  identity?: BrowserCommitmentIdentityEvaluation;
+  resultContext?: BrowserCommitmentResultContext;
 }
 
 type OutcomeStatus = Exclude<BrowserCommitmentVerificationStatus, 'mismatch' | 'unknown'>;
@@ -278,10 +291,25 @@ function materialMismatches(
   return mismatches;
 }
 
+function addIdentityEvidence(
+  evidence: BrowserCommitmentVerificationEvidence[],
+  maxEvidence: number,
+  identity: BrowserCommitmentIdentityEvaluation,
+  resultContext: BrowserCommitmentResultContext,
+): void {
+  if (identity.relation === 'matched-expected') addEvidence(evidence, maxEvidence, 'identity-match', 'policy');
+  if (identity.relation === 'fresh-result-identity') addEvidence(evidence, maxEvidence, 'fresh-result-identity', 'policy');
+  if (identity.relation === 'conflict') addEvidence(evidence, maxEvidence, 'identity-conflict', 'policy');
+  if (identity.providerRelation === 'origin-changed') addEvidence(evidence, maxEvidence, 'provider-origin-changed', 'policy');
+  if (resultContext === 'bound-popup') addEvidence(evidence, maxEvidence, 'bound-popup-result', 'policy');
+}
+
 /**
  * Verify an already-approved browser commitment from bounded structured document
  * state. Generic navigation or DOM mutation is deliberately insufficient:
  * confirmation requires explicit outcome text for the approved commitment kind.
+ * When a pre-dispatch identity baseline is supplied, a conflicting labelled ID
+ * fails closed and cross-origin confirmation requires an exact baseline ID match.
  */
 export function verifyBrowserCommitment(
   approved: BrowserCommitmentSummary,
@@ -293,12 +321,15 @@ export function verifyBrowserCommitment(
   const maxEvidence = positiveInteger(options.maxEvidence, 8);
   const maxScalarBytes = positiveInteger(options.maxScalarBytes, 256);
   const evidence: BrowserCommitmentVerificationEvidence[] = [];
+  const identity = options.identity;
+  const resultContext = options.resultContext ?? 'same-page';
 
   if (!document) {
     addEvidence(evidence, maxEvidence, 'document-context-unavailable', 'policy');
     return {
       status: 'unknown', confidence: 'low', commitmentKind: approved.kind,
       mismatchedFields: [], observed: {}, documentContext: 'unavailable', evidence,
+      ...(identity ? { identity } : {}),
     };
   }
 
@@ -320,14 +351,16 @@ export function verifyBrowserCommitment(
   if (counterparty) addEvidence(evidence, maxEvidence, 'counterparty-visible');
   if (schedule) addEvidence(evidence, maxEvidence, 'schedule-visible');
   if (recurrence !== 'unknown') addEvidence(evidence, maxEvidence, 'recurrence-visible');
+  if (identity) addIdentityEvidence(evidence, maxEvidence, identity, resultContext);
 
   const mismatchedFields = materialMismatches(approved, observed);
-  if (mismatchedFields.length) {
-    addEvidence(evidence, maxEvidence, 'material-mismatch', 'policy');
+  if (mismatchedFields.length || identity?.relation === 'conflict') {
+    if (mismatchedFields.length) addEvidence(evidence, maxEvidence, 'material-mismatch', 'policy');
     return {
       status: 'mismatch', confidence: incomplete ? 'medium' : 'high',
       commitmentKind: approved.kind, mismatchedFields, observed,
       documentContext: incomplete ? 'incomplete' : 'available', evidence,
+      ...(identity ? { identity } : {}),
     };
   }
 
@@ -337,17 +370,53 @@ export function verifyBrowserCommitment(
       status: 'unknown', confidence: incomplete ? 'low' : 'none',
       commitmentKind: approved.kind, mismatchedFields, observed,
       documentContext: incomplete ? 'incomplete' : 'available', evidence,
+      ...(identity ? { identity } : {}),
     };
   }
 
   addEvidence(evidence, maxEvidence, `${status}-outcome` as BrowserCommitmentVerificationEvidenceCode);
+
+  // Adverse and pending outcomes are useful even if a provider handoff cannot be
+  // positively bound. Identity restrictions only strengthen positive confirmation.
+  if (status !== 'confirmed') {
+    return {
+      status,
+      confidence: incomplete ? 'medium' : 'high',
+      commitmentKind: approved.kind,
+      mismatchedFields,
+      observed,
+      documentContext: incomplete ? 'incomplete' : 'available',
+      evidence,
+      ...(identity ? { identity } : {}),
+    };
+  }
+
+  if (identity?.providerRelation === 'origin-changed' && identity.relation !== 'matched-expected') {
+    addEvidence(evidence, maxEvidence, 'provider-handoff-unbound', 'policy');
+    return {
+      status: 'unknown',
+      confidence: incomplete ? 'low' : 'none',
+      commitmentKind: approved.kind,
+      mismatchedFields,
+      observed,
+      documentContext: incomplete ? 'incomplete' : 'available',
+      evidence,
+      identity,
+    };
+  }
+
+  const identityStrengthened = identity &&
+    (identity.relation === 'matched-expected' || identity.relation === 'fresh-result-identity');
   return {
-    status,
-    confidence: incomplete ? 'medium' : 'high',
+    status: 'confirmed',
+    // A phrase-only success remains partial evidence when identity tracking is
+    // active. Exact ID binding or a fresh same-provider result ID raises it.
+    confidence: incomplete ? 'medium' : identity ? (identityStrengthened ? 'high' : 'medium') : 'high',
     commitmentKind: approved.kind,
     mismatchedFields,
     observed,
     documentContext: incomplete ? 'incomplete' : 'available',
     evidence,
+    ...(identity ? { identity } : {}),
   };
 }

@@ -7,10 +7,19 @@ import {
 import { MultiPageCdpAgent } from '../src/engine/multiPageCdpAgent.js';
 import type { CdpBrowserAgentEngine } from '../src/engine/cdpBrowserAgentEngine.js';
 
+interface FixtureTarget {
+  targetId: string;
+  type: string;
+  attached: boolean;
+  url: unknown;
+  title: string;
+  openerId?: string;
+}
+
 class Connection {
   readonly calls: Array<[string, Record<string, unknown>, string | undefined]> = [];
   readonly listeners = new Map<string, Set<CdpMultiplexEventListener>>();
-  targets = [
+  targets: FixtureTarget[] = [
     { targetId: 'page-1', type: 'page', attached: false, url: 'https://secret.example/', title: 'Secret' },
     { targetId: 'worker-1', type: 'worker', attached: false, url: 'https://secret.example/worker.js', title: '' },
   ];
@@ -84,6 +93,36 @@ test('multi-page agent lazily attaches, activates, reuses, and redacts target me
   const serialized = JSON.stringify(agent.summary());
   assert.equal(serialized.includes('secret.example'), false);
   assert.equal(serialized.includes('Secret'), false);
+});
+
+test('read-only page inspection attaches without activating or switching the active page', async () => {
+  const connection = new Connection();
+  connection.targets.push({
+    targetId: 'page-2', type: 'page', attached: false,
+    openerId: 'page-1', url: 'https://result.example/', title: 'Result',
+  });
+  const router = new CdpTargetSessionRouter(connection);
+  const agent = new MultiPageCdpAgent(
+    router,
+    {},
+    undefined,
+    async (session) => fakeEngine(session.targetId),
+  );
+
+  await agent.switchTo('page-1');
+  const activationCallsBefore = connection.calls.filter(([method]) => method === 'Target.activateTarget').length;
+  const inspected = await agent.inspectEngine('page-2');
+
+  assert.equal((inspected as unknown as { marker?: string })?.marker, 'page-2');
+  assert.equal(agent.summary().activeTargetId, 'page-1');
+  assert.equal(
+    connection.calls.filter(([method]) => method === 'Target.activateTarget').length,
+    activationCallsBefore,
+  );
+  assert.equal(
+    connection.calls.filter(([method, params]) => method === 'Target.attachToTarget' && params.targetId === 'page-2').length,
+    1,
+  );
 });
 
 test('multi-page create-and-switch enforces target navigation policy before creation', async () => {

@@ -59,7 +59,17 @@ function actionSucceeded(step: ActionStep, result: RuntimeActionResult | undefin
 function successOutcome(step: ActionStep): TaskTraceOutcome { switch (step.kind) { case 'upload': return 'uploaded'; case 'switch-page': return 'page-switched'; case 'navigate': return 'navigated'; case 'history': return 'history-navigated'; case 'handle-dialog': return 'dialog-handled'; case 'open-tab': return 'target-created'; case 'close-latest-tab': return 'target-closed'; default: return 'verified'; } }
 function isCommitmentCapableStep(step: ActionStep): step is ActivateTaskStep | PressKeyTaskStep { return step.kind === 'activate' || step.kind === 'press-key'; }
 function commitmentTraceFields(commitment: BrowserCommitmentSummary | undefined) { if (!commitment) return {}; return { commitmentStatus: commitment.status, ...(commitment.kind ? { commitmentKind: commitment.kind } : {}), commitmentConfidence: commitment.confidence }; }
-function verificationTraceFields(verification: BrowserCommitmentVerificationSummary | undefined) { if (!verification) return {}; return { commitmentVerificationStatus: verification.status, ...(verification.mismatchedFields.length ? { commitmentMismatchedFields: verification.mismatchedFields } : {}) }; }
+function verificationTraceFields(verification: BrowserCommitmentVerificationSummary | undefined) {
+  if (!verification) return {};
+  return {
+    commitmentVerificationStatus: verification.status,
+    ...(verification.mismatchedFields.length ? { commitmentMismatchedFields: verification.mismatchedFields } : {}),
+    ...(verification.identity ? {
+      commitmentIdentityRelation: verification.identity.relation,
+      commitmentProviderRelation: verification.identity.providerRelation,
+    } : {}),
+  };
+}
 function verificationOutcome(verification: BrowserCommitmentVerificationSummary): TaskTraceOutcome { switch (verification.status) { case 'confirmed': return 'commitment-confirmed'; case 'pending': return 'commitment-pending'; case 'declined': return 'commitment-declined'; case 'canceled': return 'commitment-canceled'; case 'mismatch': return 'commitment-mismatch'; case 'unknown': return 'commitment-unverified'; } }
 function verificationFailureStatus(verification: BrowserCommitmentVerificationSummary): TaskRunStatus | undefined { switch (verification.status) { case 'confirmed': return undefined; case 'pending': return 'side-effect-pending'; case 'declined': return 'side-effect-declined'; case 'canceled': return 'side-effect-canceled'; case 'mismatch': return 'side-effect-mismatch'; case 'unknown': return 'side-effect-unverified'; } }
 

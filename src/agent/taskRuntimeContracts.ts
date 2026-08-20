@@ -6,6 +6,10 @@ import type {
   BrowserCommitmentSummary,
 } from '../browser/commitmentDetector.js';
 import type {
+  BrowserCommitmentIdentityRelation,
+  BrowserCommitmentProviderRelation,
+} from '../browser/commitmentIdentity.js';
+import type {
   BrowserCommitmentMaterialField,
   BrowserCommitmentVerificationStatus,
   BrowserCommitmentVerificationSummary,
@@ -32,6 +36,12 @@ export interface TaskRuntimeEngine {
   refresh(): Promise<InteractionNode[]>;
   browserState?(): Promise<BrowserStateSnapshot | undefined>;
   documentContent?(options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined>;
+  /** Current page target ID when the engine has browser-root multi-page identity. */
+  activePageTargetId?(): string | undefined;
+  /** Read another already-known page without activating it. */
+  browserStateForPage?(targetId: string): Promise<BrowserStateSnapshot | undefined>;
+  /** Read another already-known page without activating it. */
+  documentContentForPage?(targetId: string, options?: DocumentContentOptions): Promise<DocumentContentSnapshot | undefined>;
   dialogState?(): BrowserDialogState | undefined;
   targetState?(): BrowserTargetSummary | undefined;
   downloadState?(): BrowserDownloadSummary | undefined;
@@ -108,6 +118,8 @@ export interface TaskTraceEntry {
   /** Non-sensitive post-commit classification only. */
   commitmentVerificationStatus?: BrowserCommitmentVerificationStatus;
   commitmentMismatchedFields?: BrowserCommitmentMaterialField[];
+  commitmentIdentityRelation?: BrowserCommitmentIdentityRelation;
+  commitmentProviderRelation?: BrowserCommitmentProviderRelation;
   beforeFingerprint: string;
   afterFingerprint: string;
   browserStateChanged: boolean;
@@ -130,7 +142,7 @@ export interface TaskCommitmentVerificationContext {
   kind: 'activate' | 'press-key';
   visit: number;
   commitment: BrowserCommitmentSummary;
-  /** Explicit callback channel for detailed observed terms; ordinary traces omit those values. */
+  /** Explicit callback channel for detailed observed terms/IDs; ordinary traces omit those values. */
   verification: BrowserCommitmentVerificationSummary;
 }
 
