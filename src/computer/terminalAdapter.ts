@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import type { Readable } from 'node:stream';
 import type {
@@ -13,13 +14,18 @@ import type {
   ComputerObservationEnvelope,
   ComputerObservationRequest,
 } from './environmentAdapter.js';
-import { validateComputerActionRequest, validateComputerObservationRequest } from './environmentAdapter.js';
+import {
+  sameComputerEntity,
+  validateComputerActionRequest,
+  validateComputerObservationRequest,
+} from './environmentAdapter.js';
 import { ProcessIdentityStore } from './processAdapter.js';
 
 const DEFAULT_OUTPUT_BYTES = 64 * 1024;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 30_000;
+const TIMEOUT_CLEANUP_GRACE_MS = 250;
 const MAX_ARGV_ITEMS = 128;
 const MAX_ARG_BYTES = 4096;
 const MAX_ARGV_BYTES = 32 * 1024;
@@ -50,7 +56,6 @@ interface TerminalExecutionBase {
   timeoutMs?: number;
   maxOutputBytes?: number;
   classification: TerminalCommandClassification;
-  approvedEffects: readonly ComputerEffectClass[];
 }
 
 export interface ArgvExecutionPayload extends TerminalExecutionBase {
@@ -92,36 +97,75 @@ export interface ProcessSpawner {
   spawn(executable: string, argv: readonly string[], options: SpawnOptions): SpawnedProcessLike;
 }
 
+export interface ExecutionPathIdentity {
+  realPath: string;
+  kind: 'file' | 'directory';
+  dev: number;
+  ino: number;
+  mode: number;
+  size?: number;
+  mtimeMs?: number;
+  birthtimeMs?: number;
+}
+
+export interface ExecutionPathBinder {
+  bind(path: string, kind: 'file' | 'directory'): Promise<ExecutionPathIdentity | undefined>;
+}
+
 const defaultSpawner: ProcessSpawner = {
   spawn(executable, argv, options) {
     return spawn(executable, argv, options) as ChildProcess as SpawnedProcessLike;
   },
 };
 
-function classificationEffects(classification: TerminalCommandClassification): readonly ComputerEffectClass[] {
-  switch (classification) {
-    case 'local-compute': return ['process-execution'];
-    case 'filesystem-write': return ['process-execution', 'local-destructive'];
-    case 'system-configuration': return ['process-execution', 'system-configuration'];
-    case 'security-sensitive': return ['process-execution', 'security-sensitive'];
-    case 'network-change': return ['process-execution', 'system-configuration'];
-    case 'remote-execution': return ['process-execution', 'remote-execution'];
-    case 'package-installation': return ['process-execution', 'system-configuration', 'security-sensitive'];
-    case 'account-change': return ['process-execution', 'system-configuration', 'security-sensitive'];
-    case 'unknown': return ['process-execution', 'security-sensitive'];
+function statsIdentity(realPath: string, kind: 'file' | 'directory', value: Stats): ExecutionPathIdentity {
+  return {
+    realPath,
+    kind,
+    dev: value.dev,
+    ino: value.ino,
+    mode: value.mode,
+    ...(kind === 'file' ? { size: value.size, mtimeMs: value.mtimeMs } : {}),
+    birthtimeMs: value.birthtimeMs,
+  };
+}
+
+const hostPathBinder: ExecutionPathBinder = {
+  async bind(path, kind) {
+    try {
+      const resolved = await realpath(path);
+      const value = await stat(resolved);
+      if (kind === 'file' ? !value.isFile() : !value.isDirectory()) return undefined;
+      return statsIdentity(resolved, kind, value);
+    } catch {
+      return undefined;
+    }
+  },
+};
+
+function sameExecutionPath(left: ExecutionPathIdentity, right: ExecutionPathIdentity): boolean {
+  return left.realPath === right.realPath &&
+    left.kind === right.kind &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.birthtimeMs === right.birthtimeMs &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs;
+}
+
+function requiredEffect(payload: TerminalExecutionPayload): ComputerEffectClass {
+  if (payload.classification === 'remote-execution') return 'remote-execution';
+  if (payload.classification === 'security-sensitive' ||
+      payload.classification === 'package-installation' ||
+      payload.classification === 'account-change' ||
+      payload.classification === 'unknown' ||
+      payload.mode === 'shell') return 'security-sensitive';
+  if (payload.classification === 'system-configuration' || payload.classification === 'network-change') {
+    return 'system-configuration';
   }
-}
-
-function primaryEffect(payload: TerminalExecutionPayload): ComputerEffectClass {
-  const effects = [...classificationEffects(payload.classification)];
-  if (payload.mode === 'shell' && !effects.includes('security-sensitive')) effects.push('security-sensitive');
-  return effects.find((effect) => effect !== 'process-execution') ?? 'process-execution';
-}
-
-function requiredEffects(payload: TerminalExecutionPayload): readonly ComputerEffectClass[] {
-  const effects = [...classificationEffects(payload.classification)];
-  if (payload.mode === 'shell' && !effects.includes('security-sensitive')) effects.push('security-sensitive');
-  return effects;
+  if (payload.classification === 'filesystem-write') return 'local-destructive';
+  return 'process-execution';
 }
 
 function isExecutionPayload(value: unknown): value is TerminalExecutionPayload {
@@ -136,9 +180,6 @@ function validateString(value: string, maxBytes: number): boolean {
 
 function validateExecutionPayload(payload: TerminalExecutionPayload): string | undefined {
   if (!isAbsolute(payload.cwd) || !validateString(payload.cwd, MAX_CWD_BYTES)) return 'terminal.cwd.invalid';
-  if (!Array.isArray(payload.approvedEffects)) return 'terminal.effects.invalid';
-  const required = requiredEffects(payload);
-  if (required.some((effect) => !payload.approvedEffects.includes(effect))) return 'terminal.effects.insufficient';
   if (payload.mode === 'argv') {
     if (!isAbsolute(payload.executable) || !validateString(payload.executable, MAX_EXECUTABLE_BYTES)) return 'terminal.executable.invalid';
     if (!Array.isArray(payload.argv) || payload.argv.length > MAX_ARGV_ITEMS) return 'terminal.argv.invalid';
@@ -152,9 +193,12 @@ function validateExecutionPayload(payload: TerminalExecutionPayload): string | u
     if (!isAbsolute(payload.shellExecutable) || !validateString(payload.shellExecutable, MAX_EXECUTABLE_BYTES)) return 'terminal.shell.invalid';
     if (!Array.isArray(payload.shellArgs) || payload.shellArgs.length > MAX_ARGV_ITEMS) return 'terminal.shell.invalid';
     if (!validateString(payload.command, MAX_ARGV_BYTES)) return 'terminal.shell.invalid';
+    let bytes = utf8Bytes(payload.command);
     for (const arg of payload.shellArgs) {
       if (typeof arg !== 'string' || utf8Bytes(arg) > MAX_ARG_BYTES || arg.includes('\0')) return 'terminal.shell.invalid';
+      bytes += utf8Bytes(arg);
     }
+    if (bytes > MAX_ARGV_BYTES) return 'terminal.shell.invalid';
   }
   if (payload.timeoutMs !== undefined && (!Number.isSafeInteger(payload.timeoutMs) || payload.timeoutMs < 1 || payload.timeoutMs > MAX_TIMEOUT_MS)) {
     return 'terminal.timeout.invalid';
@@ -173,14 +217,6 @@ function validateExecutionPayload(payload: TerminalExecutionPayload): string | u
   }
   if (envBytes > MAX_ENV_BYTES) return 'terminal.env.invalid';
   return undefined;
-}
-
-async function validateCwd(cwd: string): Promise<boolean> {
-  try {
-    return (await stat(cwd)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 class BoundedCapture {
@@ -219,6 +255,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     adapterId: string,
     private readonly identities: ProcessIdentityStore,
     private readonly spawner: ProcessSpawner = defaultSpawner,
+    private readonly pathBinder: ExecutionPathBinder = hostPathBinder,
     version = '1.0.0',
   ) {
     this.descriptor = {
@@ -239,7 +276,9 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
   async observe(request: ComputerObservationRequest): Promise<ComputerObservationEnvelope> {
     const sequence = ++this.sequence;
     const invalid = validateComputerObservationRequest(request, this.descriptor);
-    const valid = invalid.length === 0 && request.channel === 'terminal';
+    const channelValid = invalid.length === 0 && request.channel === 'terminal';
+    const targetValid = request.target === undefined || sameComputerEntity(request.target, this.sessionRef);
+    const valid = channelValid && targetValid;
     return {
       adapterId: this.descriptor.id,
       environment: 'terminal',
@@ -250,7 +289,7 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
       ...(request.target ? { target: request.target } : {}),
       data: valid
         ? { session: this.sessionRef, state: 'ready' }
-        : { code: 'terminal.observation.invalid' },
+        : { code: channelValid ? 'terminal.session.stale' : 'terminal.observation.invalid' },
     };
   }
 
@@ -272,10 +311,16 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     }
     const payloadError = validateExecutionPayload(payload);
     if (payloadError) return this.prelaunchFailure(payloadError);
-    if (request.effect !== primaryEffect(payload)) return this.prelaunchFailure('terminal.effect.mismatch');
-    if (!(await validateCwd(payload.cwd))) return this.prelaunchFailure('terminal.cwd.unavailable');
+    if (request.effect !== requiredEffect(payload)) return this.prelaunchFailure('terminal.effect.mismatch');
 
-    const executable = payload.mode === 'argv' ? payload.executable : payload.shellExecutable;
+    const executableInput = payload.mode === 'argv' ? payload.executable : payload.shellExecutable;
+    const preflightExecutable = await this.pathBinder.bind(executableInput, 'file');
+    if (!preflightExecutable) return this.prelaunchFailure('terminal.executable.unavailable');
+    const preflightCwd = await this.pathBinder.bind(payload.cwd, 'directory');
+    if (!preflightCwd) return this.prelaunchFailure('terminal.cwd.unavailable');
+
+    const executable = preflightExecutable.realPath;
+    const cwd = preflightCwd.realPath;
     const argv = payload.mode === 'argv' ? [...payload.argv] : [...payload.shellArgs, payload.command];
     const outputLimit = payload.maxOutputBytes ?? DEFAULT_OUTPUT_BYTES;
     const timeoutMs = payload.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -284,10 +329,19 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     let child: SpawnedProcessLike;
     let invocationStarted = false;
 
+    const refreshedExecutable = await this.pathBinder.bind(executableInput, 'file');
+    const refreshedCwd = await this.pathBinder.bind(payload.cwd, 'directory');
+    if (!refreshedExecutable || !sameExecutionPath(preflightExecutable, refreshedExecutable)) {
+      return this.prelaunchFailure('terminal.executable.replaced');
+    }
+    if (!refreshedCwd || !sameExecutionPath(preflightCwd, refreshedCwd)) {
+      return this.prelaunchFailure('terminal.cwd.replaced');
+    }
+
     try {
       invocationStarted = true;
       child = this.spawner.spawn(executable, argv, {
-        cwd: payload.cwd,
+        cwd,
         env: { ...(payload.env ?? {}) },
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -323,20 +377,29 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
     const outcomePromise = new Promise<Outcome>((resolve) => {
       let settled = false;
       let timedOut = false;
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      let executionTimer: ReturnType<typeof setTimeout>;
       const finish = (outcome: Outcome): void => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        if (executionTimer) clearTimeout(executionTimer);
+        if (cleanupTimer) clearTimeout(cleanupTimer);
         resolve(outcome);
       };
       child.once('error', () => finish({ kind: 'error', timedOut }));
       child.once('close', (code: number | null, signal: NodeJS.Signals | null) => {
         finish({ kind: 'close', code, signal, timedOut });
       });
-      const timer = setTimeout(() => {
+      executionTimer = setTimeout(() => {
         timedOut = true;
         try {
-          child.kill('SIGKILL');
+          if (!child.kill('SIGKILL')) {
+            finish({ kind: 'cleanup-ambiguous', timedOut: true });
+            return;
+          }
+          cleanupTimer = setTimeout(() => {
+            finish({ kind: 'cleanup-ambiguous', timedOut: true });
+          }, TIMEOUT_CLEANUP_GRACE_MS);
         } catch {
           finish({ kind: 'cleanup-ambiguous', timedOut: true });
         }
@@ -375,11 +438,29 @@ export class HostTerminalAdapter implements ComputerEnvironmentAdapter {
         details,
       };
     }
+    if (outcome.timedOut) {
+      return {
+        status: 'failed',
+        dispatch: 'dispatched-once',
+        verification: 'verified',
+        evidence: ['terminal.execution.timeout'],
+        details,
+      };
+    }
+    if (outcome.code === 0) {
+      return {
+        status: 'completed',
+        dispatch: 'dispatched-once',
+        verification: 'verified',
+        evidence: ['terminal.execution.exited-zero'],
+        details,
+      };
+    }
     return {
-      status: outcome.timedOut ? 'failed' : 'completed',
+      status: 'failed',
       dispatch: 'dispatched-once',
       verification: 'verified',
-      evidence: [outcome.timedOut ? 'terminal.execution.timeout' : 'terminal.execution.exited'],
+      evidence: [outcome.code === null ? 'terminal.execution.signaled' : 'terminal.execution.nonzero-exit'],
       details,
     };
   }
