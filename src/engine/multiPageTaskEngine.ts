@@ -84,6 +84,11 @@ export class MultiPageTaskEngine implements TaskRuntimeEngine {
     return (await this.pages.inspectEngine(targetId))?.browserState();
   }
 
+  async frameDocumentTokens(targetId: string | undefined): Promise<Readonly<Record<string, string>> | undefined> {
+    const engine = targetId ? await this.pages.inspectEngine(targetId) : this.pages.activeEngine;
+    return engine?.frameDocumentTokens();
+  }
+
   async documentContentForPage(
     targetId: string,
     options?: DocumentContentOptions,
