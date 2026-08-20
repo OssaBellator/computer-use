@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import type { DocumentContentSnapshot } from '../src/browser/documentContent.js';
@@ -141,7 +142,7 @@ test('document observation returns an immutable bounded snapshot independent of 
   });
   const data = observed.data as DocumentContentSnapshot;
 
-  (live.blocks as unknown as object[])[0] = { ...live.blocks[0], text: 'mutated' };
+  live.blocks[0].text = 'mutated';
   live.truncated = true;
   live.frameErrors.push({ frameId: 'main', message: 'late error' });
 
@@ -195,7 +196,16 @@ test('visual observation rejects producer results whose byte metadata is incoher
 test('media observation returns immutable bounded nested data with coherent completeness', async () => {
   const runtime = new NonSemanticRuntime();
   const live = mediaSnapshot();
-  live.media.push({ ...live.media[0], identity: { ...live.media[0].identity, backendNodeId: 42, ordinal: 1 } });
+  live.media.push({
+    identity: { frameId: 'main', backendNodeId: 42, ordinal: 1, tagName: 'video' },
+    playbackState: 'paused',
+    muted: true,
+    volume: 0,
+    currentTimeSeconds: 0,
+    durationSeconds: 30,
+    playbackRate: 1,
+    visible: false,
+  });
   runtime.mediaResult = live;
   const adapter = new BrowserComputerEnvironmentAdapter(runtime);
 
