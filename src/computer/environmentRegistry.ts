@@ -149,7 +149,9 @@ function snapshotActionResult(result: ComputerActionResult): ComputerActionResul
     dispatch: result.dispatch,
     verification: result.verification,
     ...(evidence === undefined ? {} : {
-      evidence: Array.isArray(evidence) ? Object.freeze([...evidence]) : evidence,
+      evidence: Array.isArray(evidence) && evidence.length <= 32
+        ? Object.freeze([...evidence])
+        : evidence,
     }),
     ...(details === undefined ? {} : { details }),
   }) as ComputerActionResult;
