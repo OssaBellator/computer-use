@@ -124,6 +124,37 @@ function snapshotActionRequest(request: ComputerActionRequest): ComputerActionRe
   });
 }
 
+function snapshotObservationResponse(response: ComputerObservationEnvelope): ComputerObservationEnvelope {
+  const surface = response.surface;
+  const target = response.target;
+  const data = response.data;
+  return Object.freeze({
+    adapterId: response.adapterId,
+    environment: response.environment,
+    channel: response.channel,
+    sequence: response.sequence,
+    complete: response.complete,
+    truncated: response.truncated,
+    ...(surface === undefined ? {} : { surface: snapshotSurface(surface) }),
+    ...(target === undefined ? {} : { target: snapshotEntity(target) }),
+    data,
+  });
+}
+
+function snapshotActionResult(result: ComputerActionResult): ComputerActionResult {
+  const evidence = (result as { evidence?: unknown }).evidence;
+  const details = result.details;
+  return Object.freeze({
+    status: result.status,
+    dispatch: result.dispatch,
+    verification: result.verification,
+    ...(evidence === undefined ? {} : {
+      evidence: Array.isArray(evidence) ? Object.freeze([...evidence]) : evidence,
+    }),
+    ...(details === undefined ? {} : { details }),
+  }) as ComputerActionResult;
+}
+
 function invalidObservationResponse(
   request: ComputerObservationRequest,
   descriptor: ComputerEnvironmentAdapterDescriptor,
@@ -167,12 +198,12 @@ function nondispatched(
   status: Extract<ComputerActionResult['status'], 'rejected' | 'unsupported'>,
   evidence: string,
 ): ComputerActionResult {
-  return {
+  return Object.freeze({
     status,
     dispatch: 'not-dispatched',
     verification: 'unverified',
-    evidence: [evidence],
-  };
+    evidence: Object.freeze([evidence]),
+  });
 }
 
 function validEvidence(evidence: readonly string[] | undefined): boolean {
@@ -199,9 +230,10 @@ function coherentActionResult(result: ComputerActionResult): boolean {
  *
  * Descriptors are snapshotted at registration so an adapter cannot mutate its
  * validated identity/kind/capability authority after registration. Neutral
- * request routing/safety fields are also snapshotted before validation and any
- * adapter await so caller mutation cannot create TOCTOU drift. Opaque action
- * payloads remain adapter-owned and adapters must snapshot their own schema.
+ * request routing/safety fields are snapshotted before validation and any adapter
+ * await. Neutral adapter response metadata is likewise snapshotted immediately
+ * after the await, so validation never rereads mutable adapter-owned envelopes.
+ * Opaque request payloads and response data/details remain adapter-owned.
  *
  * Observation contract violations throw because observations are read-only.
  * Action adapter failures after invocation never throw through this boundary:
@@ -248,7 +280,7 @@ export class ComputerEnvironmentRegistry {
     if (requestErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-request', requestErrors.join('; '));
     }
-    const response = await registered.adapter.observe(snapshot);
+    const response = snapshotObservationResponse(await registered.adapter.observe(snapshot));
     const responseErrors = invalidObservationResponse(snapshot, registered.descriptor, response);
     if (responseErrors.length > 0) {
       throw new ComputerAdapterRoutingError('invalid-observation-response', responseErrors.join('; '));
@@ -268,34 +300,34 @@ export class ComputerEnvironmentRegistry {
     }
 
     try {
-      const result = await registered.adapter.act(snapshot);
+      const result = snapshotActionResult(await registered.adapter.act(snapshot));
       if (
         !['completed', 'rejected', 'unsupported', 'failed', 'unknown'].includes(result.status) ||
         !['not-dispatched', 'dispatched-once', 'unknown'].includes(result.dispatch) ||
         !['not-applicable', 'verified', 'pending', 'rejected', 'mismatch', 'unverified'].includes(result.verification) ||
         !coherentActionResult(result)
       ) {
-        return {
+        return Object.freeze({
           status: 'unknown',
           dispatch: 'unknown',
           verification: 'unverified',
-          evidence: ['adapter-response-invalid'],
-        };
+          evidence: Object.freeze(['adapter-response-invalid']),
+        });
       }
       if (!validEvidence(result.evidence)) {
-        return {
+        return Object.freeze({
           ...result,
-          evidence: ['adapter-evidence-invalid'],
-        };
+          evidence: Object.freeze(['adapter-evidence-invalid']),
+        });
       }
       return result;
     } catch {
-      return {
+      return Object.freeze({
         status: 'unknown',
         dispatch: 'unknown',
         verification: 'unverified',
-        evidence: ['adapter-threw-after-invocation'],
-      };
+        evidence: Object.freeze(['adapter-threw-after-invocation']),
+      });
     }
   }
 }
