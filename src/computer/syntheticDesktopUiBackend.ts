@@ -7,6 +7,7 @@ import type {
   DesktopNativeWindowRef,
   DesktopRelativePointerInput,
   DesktopSystemObservation,
+  DesktopVisualAcquisitionLimits,
   DesktopVisualObservation,
   DesktopWindowSnapshot,
   NativeDesktopUiBackend,
@@ -32,6 +33,9 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
   focusedControlId?: string;
   accessibility = new Map<string, DesktopAccessibilityObservation>();
   visuals = new Map<string, DesktopVisualObservation>();
+  lazyVisuals = new Map<string, {width:number;height:number;byteLength:number;token?:string;mediaType?:string}>();
+  visualMaterializations = 0;
+  lastVisualLimits?: DesktopVisualAcquisitionLimits;
   actions: Array<{kind:string;window:DesktopNativeWindowRef;payload?:unknown;effect:ComputerEffectClass}> = [];
   throwOnAction?: string;
 
@@ -59,7 +63,19 @@ export class SyntheticDesktopUiBackend implements NativeDesktopUiBackend {
   observeAccessibility(window:DesktopNativeWindowRef, _limits:Required<ComputerObservationLimits>):Promise<DesktopAccessibilityObservation> {
     return Promise.resolve(this.accessibility.get(this.key(window)) ?? {status:'unavailable',window,reason:'not-configured'});
   }
-  observeVisual(window:DesktopNativeWindowRef):Promise<DesktopVisualObservation> {
+  observeVisual(window:DesktopNativeWindowRef, limits:DesktopVisualAcquisitionLimits):Promise<DesktopVisualObservation> {
+    this.lastVisualLimits = limits;
+    const lazy = this.lazyVisuals.get(this.key(window));
+    if (lazy) {
+      if (lazy.width * lazy.height > limits.maxPixels || lazy.byteLength > limits.maxBytes) {
+        return Promise.resolve({status:'unavailable',window,reason:'capture-budget-exceeded'});
+      }
+      this.visualMaterializations += 1;
+      return Promise.resolve({
+        status:'available', window, width:lazy.width, height:lazy.height,
+        artifact:{token:lazy.token ?? 'synthetic-lazy-visual',...(lazy.mediaType ? {mediaType:lazy.mediaType} : {}),byteLength:lazy.byteLength},
+      });
+    }
     return Promise.resolve(this.visuals.get(this.key(window)) ?? {status:'unsupported',window,reason:'not-configured'});
   }
   private dispatch(kind:string,window:DesktopNativeWindowRef,payload:unknown,effect:ComputerEffectClass):DesktopBackendActionResult {
