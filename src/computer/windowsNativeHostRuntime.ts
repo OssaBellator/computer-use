@@ -1,7 +1,9 @@
+import { DesktopInteractionLeaseManager } from './desktopInteractionLease.js';
 import { WindowsComApartmentExecutor } from './windowsComApartment.js';
 import { WindowsGraphicsCaptureRuntime } from './windowsGraphicsCaptureRuntime.js';
 import { WindowsNativeHostCaptureBridge, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
 import { WindowsNativeHostComApartmentHost } from './windowsNativeHostComApartment.js';
+import { WindowsNativeHostHumanInputObserver } from './windowsNativeHostHumanInput.js';
 import { WINDOWS_NATIVE_HOST_OPERATIONS, WindowsNativeHostProtocolClient, type WindowsNativeHostOperation, type WindowsNativeHostRequestIdSource } from './windowsNativeHostProtocol.js';
 import { WindowsNativeHostStdioTransport } from './windowsNativeHostStdioTransport.js';
 import { WindowsNativeHostSystemObserver } from './windowsNativeHostSystem.js';
@@ -51,6 +53,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
   const input=has(implemented,'input.send');
   const integrity=has(implemented,'integrity.current','integrity.process');
   const capture=has(implemented,'capture.next-frame','artifact.release');
+  const human=has(implemented,'input.human-sequence');
   return Object.freeze({
     id:'windows-native-host',
     capabilities:Object.freeze({
@@ -64,15 +67,15 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'uia-range-value':capability(uiaAct?'supported':'unsupported'),
       'uia-window':capability(uiaAct?'supported':'unsupported'),
       'window-modal-authority':capability(uiaObserve?'partial':'unsupported','authority model exists; native modal snapshot composition remains incomplete'),
-      'wgc-hwnd-capture':capability(capture?'supported':'unsupported','native Windows.Graphics.Capture operations unavailable'),
-      'visual-frame-binding':capability(capture?'supported':'partial','frame/generation validation exists without a native capture producer'),
-      'visual-grounding':capability(capture?'partial':'unsupported','native capture exists but grounding-provider inference remains separately composed'),
+      'wgc-hwnd-capture':capability(capture?'supported':'unsupported','native Windows.Graphics.Capture unavailable in this host/session'),
+      'visual-frame-binding':capability(capture?'supported':'partial','frame/generation validation exists without a live native capture producer'),
+      'visual-grounding':capability(capture?'partial':'unsupported','capture is available but a production grounding provider remains separate'),
       'keyboard-input':capability(input?'supported':'unsupported'),
       'pointer-input':capability(input?'supported':'unsupported'),
       'input-integrity-gating':capability(integrity&&input?'supported':'unsupported'),
-      'foreground-interaction-lease':capability(input?'partial':'unsupported','lease model exists; production foreground ownership acquisition is not yet composed here'),
-      'human-interference-detection':capability(input?'partial':'unsupported','lease model exists; native human-input sequence observer is not yet exposed by the host'),
-      'transient-capture-retention':capability(capture?'supported':'unsupported','native capture artifact ownership unavailable'),
+      'foreground-interaction-lease':capability(input&&human?'partial':'unsupported','target/expiry/human lease model exists; foreground acquisition policy remains caller-composed'),
+      'human-interference-detection':capability(human?'supported':'unsupported','native non-injected input monitor is unavailable'),
+      'transient-capture-retention':capability(capture?'supported':'unsupported','no live native artifact producer exists in this host/session'),
       'side-effect-verification':capability('partial','verification remains a separate post-action observation/reconciliation layer'),
     }),
   });
@@ -86,8 +89,10 @@ export interface WindowsNativeHostRuntime {
   readonly system:WindowsNativeHostSystemObserver;
   readonly integrity:WindowsNativeHostIntegrityReader;
   readonly input:WindowsNativeHostSendInputBridge;
-  readonly capture:WindowsGraphicsCaptureRuntime;
-  readonly retention:WindowsVisualArtifactRetentionManager;
+  readonly humanInput?:WindowsNativeHostHumanInputObserver;
+  readonly leases?:DesktopInteractionLeaseManager;
+  readonly capture?:WindowsGraphicsCaptureRuntime;
+  readonly retention?:WindowsVisualArtifactRetentionManager;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
@@ -96,7 +101,7 @@ export interface WindowsNativeHostRuntime {
 
 /**
  * Opens the production Windows native sidecar and composes its validated semantic,
- * visual, and native-input services into one runtime. Capability support is
+ * input, and optional visual services into one runtime. Capability support is
  * derived from the host's hello handshake rather than assumed from reserved verbs.
  */
 export async function openWindowsNativeHostRuntime(
@@ -113,6 +118,7 @@ export async function openWindowsNativeHostRuntime(
     const host=await WindowsNativeHostComApartmentHost.create(protocol);
     const apartment=new WindowsComApartmentExecutor(host);
     const implemented=captureOperations(host.implementedOperations);
+    const implementedSet=new Set(implemented);
     const nativeUia=new WindowsNativeHostUiaClient(protocol);
     const bridge=new WindowsUiaMtaBridge(apartment,nativeUia);
     const uia=new WindowsUiaProviderRuntime(bridge);
@@ -121,17 +127,34 @@ export async function openWindowsNativeHostRuntime(
     const system=new WindowsNativeHostSystemObserver(protocol);
     const integrity=new WindowsNativeHostIntegrityReader(protocol);
     const input=new WindowsNativeHostSendInputBridge(protocol);
-    const captureBridge=new WindowsNativeHostCaptureBridge(protocol);
-    const capture=new WindowsGraphicsCaptureRuntime(captureBridge);
-    const retention=new WindowsVisualArtifactRetentionManager(captureBridge);
+
+    const humanInput=implementedSet.has('input.human-sequence')?new WindowsNativeHostHumanInputObserver(protocol):undefined;
+    const leases=humanInput?new DesktopInteractionLeaseManager(humanInput):undefined;
+
+    let capture:WindowsGraphicsCaptureRuntime|undefined;
+    let retention:WindowsVisualArtifactRetentionManager|undefined;
+    if(implementedSet.has('capture.next-frame')&&implementedSet.has('artifact.release')){
+      const captureBridge=new WindowsNativeHostCaptureBridge(protocol);
+      capture=new WindowsGraphicsCaptureRuntime(captureBridge);
+      retention=new WindowsVisualArtifactRetentionManager(captureBridge);
+    }
+
     let closed=false;
     return Object.freeze({
-      protocol,apartment,uia,events,system,integrity,input,capture,retention,
+      protocol,apartment,uia,events,system,integrity,input,
+      ...(humanInput?{humanInput}:{}),
+      ...(leases?{leases}:{}),
+      ...(capture?{capture}:{}),
+      ...(retention?{retention}:{}),
       capabilities:deriveWindowsNativeHostCapabilityProfile(implemented),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;
         closed=true;
+        // Artifact leases remain authority-invalid even if a native destroy call
+        // becomes uncertain during shutdown. The sidecar itself zeroes all retained
+        // bytes when its process/session is disposed.
+        if(retention)await retention.releaseExpired().catch(()=>undefined);
         await apartment.dispose();
       },
     });
