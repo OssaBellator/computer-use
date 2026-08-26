@@ -26,7 +26,6 @@ export class WindowsNativeHostStdioTransport implements WindowsNativeHostTranspo
   private readonly decoder=new TextDecoder('utf-8',{fatal:true});
   private readonly pending:PendingExchange[]=[];
   private text='';
-  private bufferedBytes=0;
   private closed=false;
   private terminalError:Error|undefined;
 
@@ -89,20 +88,21 @@ export class WindowsNativeHostStdioTransport implements WindowsNativeHostTranspo
   private onStdout(chunk:Uint8Array):void{
     if(this.closed)return;
     try{
-      this.bufferedBytes+=chunk.byteLength;
-      if(this.bufferedBytes>this.maxMessageBytes){this.fail(new Error('windows-native-host-response-too-large'));return;}
       this.text+=this.decoder.decode(chunk,{stream:true});
       while(true){
         const index=this.text.indexOf('\n');
         if(index<0)break;
         const line=this.text.slice(0,index).replace(/\r$/,'');
         this.text=this.text.slice(index+1);
-        this.bufferedBytes=encoder.encode(this.text).byteLength;
         if(line.length===0){this.fail(new Error('windows-native-host-empty-response'));return;}
+        if(encoder.encode(line).byteLength+1>this.maxMessageBytes){this.fail(new Error('windows-native-host-response-too-large'));return;}
         const pending=this.pending.shift();
         if(!pending){this.fail(new Error('windows-native-host-unsolicited-response'));return;}
         try{pending.resolve(JSON.parse(line));}
         catch{pending.reject(new Error('windows-native-host-response-json-invalid'));}
+      }
+      if(encoder.encode(this.text).byteLength>this.maxMessageBytes){
+        this.fail(new Error('windows-native-host-response-too-large'));
       }
     }catch{
       this.fail(new Error('windows-native-host-response-utf8-invalid'));
