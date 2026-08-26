@@ -9,44 +9,19 @@ import type {
 } from './windowsUiaContract.js';
 import type { DesktopBackendActionResult } from './desktopUiBackend.js';
 import { WindowsUiaCacheState, type WindowsUiaInvalidationReason } from './windowsUiaCacheState.js';
+import { buildWindowsUiaCacheRequestPlan, type WindowsUiaCacheRequestPlan } from './windowsUiaCacheRequestPlan.js';
 
 export interface WindowsUiaNativeElementHandle {
   readonly token: string;
 }
 
-export interface WindowsUiaCachePlan {
-  readonly scope: 'element' | 'children' | 'subtree';
-  readonly properties: readonly string[];
-  readonly patterns: readonly string[];
-  readonly maxItems: number;
-  readonly maxDepth: number;
-  readonly maxTextBytes: number;
-}
-
 export interface WindowsUiaProviderBridge {
   resolveWindow(window: WindowsUiaWindowRef): Promise<{ readonly status:'current'; readonly root:WindowsUiaNativeElementHandle } | { readonly status:'missing'|'stale'|'inaccessible' }>;
-  buildCache(root: WindowsUiaNativeElementHandle, plan: WindowsUiaCachePlan, invalidationEpoch:number): Promise<WindowsUiaCachedObservation>;
+  buildCache(root: WindowsUiaNativeElementHandle, plan: WindowsUiaCacheRequestPlan, invalidationEpoch:number): Promise<WindowsUiaCachedObservation>;
   resolveControl(ref: WindowsUiaControlRef): Promise<{ readonly status:'candidate'; readonly element:WindowsUiaNativeElementHandle } | { readonly status:'missing'|'ambiguous'|'inaccessible' }>;
   compareElements(a: WindowsUiaNativeElementHandle, b: WindowsUiaNativeElementHandle): Promise<boolean>;
   snapshotControl(element: WindowsUiaNativeElementHandle, ref: WindowsUiaControlRef): Promise<WindowsUiaRevalidation>;
   performPattern(element: WindowsUiaNativeElementHandle, action: WindowsUiaSemanticAction, effect:ComputerEffectClass): Promise<DesktopBackendActionResult>;
-}
-
-const DEFAULT_PROPERTIES = Object.freeze([
-  'runtime-id','automation-id','control-type','name','value','is-enabled','is-offscreen','bounding-rectangle',
-  'window-is-modal','window-interaction-state',
-]);
-const DEFAULT_PATTERNS = Object.freeze(['invoke','value','toggle','selection-item','expand-collapse','scroll','range-value','window']);
-
-function boundedPlan(limits:Required<ComputerObservationLimits>): WindowsUiaCachePlan {
-  return Object.freeze({
-    scope: limits.maxDepth <= 1 ? 'children' : 'subtree',
-    properties: DEFAULT_PROPERTIES,
-    patterns: DEFAULT_PATTERNS,
-    maxItems: limits.maxItems,
-    maxDepth: limits.maxDepth,
-    maxTextBytes: limits.maxTextBytes,
-  });
 }
 
 /**
@@ -71,7 +46,7 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
     const resolved = await this.bridge.resolveWindow(window);
     if (resolved.status !== 'current') throw new Error(`windows-uia-window-${resolved.status}`);
     const epoch = this.cache.currentEpoch(window);
-    const observation = await this.bridge.buildCache(resolved.root, boundedPlan(limits), epoch);
+    const observation = await this.bridge.buildCache(resolved.root, buildWindowsUiaCacheRequestPlan(limits), epoch);
     if (observation.invalidationEpoch !== epoch) throw new Error('windows-uia-cache-epoch-mismatch');
     this.cache.register(observation);
     return observation;
