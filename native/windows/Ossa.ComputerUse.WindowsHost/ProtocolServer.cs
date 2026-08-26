@@ -70,9 +70,6 @@ internal sealed class ProtocolServer : IDisposable
         }
         catch
         {
-            // Host remains usable for semantic/background work. The hello
-            // capability snapshot omits input.human-sequence so interactive-host
-            // leases stay fail closed instead of assuming human-input coverage.
             _humanInput = null;
         }
         _input = input;
@@ -150,9 +147,6 @@ internal sealed class ProtocolServer : IDisposable
             }
             if (operation is "input.human-sequence" or "input.send")
             {
-                // Production SendInput requires the same physical-input monitor
-                // used by the interaction lease. If hooks are unavailable, both
-                // monitoring and interactive native dispatch stay unsupported.
                 if (_humanInput is not null) result.Add(operation);
                 continue;
             }
@@ -201,24 +195,23 @@ internal sealed class ProtocolServer : IDisposable
 
     private Task<object> SendInputBoundAsync(SendInputRequest request)
     {
-        if (_humanInput is null)
+        var monitor = _humanInput;
+        if (monitor is null)
             return Task.FromResult<object>(new { insertedEventCount = 0u, preDispatchFailure = "windows-input-human-monitor-unavailable" });
 
-        // Exact UIA generation revalidation and SendInput execute inside one MTA
-        // work item with no await in between. NativeHostServices repeats process,
-        // foreground and physical-input checks immediately beside the Win32 call.
         return _mta.InvokeAsync(() =>
         {
-            nint hwnd;
             try
             {
-                hwnd = _windows.ValidateObserved(request.TargetWindow);
+                var hwnd = _windows.ValidateObserved(request.TargetWindow);
+                return _services.SendInput(request, hwnd, () => monitor.Sequence);
             }
-            catch (ProtocolException)
+            catch (ProtocolException error)
             {
-                return (object)new { insertedEventCount = 0u, preDispatchFailure = "windows-input-target-window-stale" };
+                // This path has not crossed the one SendInput call: all protocol
+                // validation errors remain definitely not-dispatched.
+                return (object)new { insertedEventCount = 0u, preDispatchFailure = error.Code };
             }
-            return _services.SendInput(request, hwnd, () => _humanInput.Sequence);
         });
     }
 
