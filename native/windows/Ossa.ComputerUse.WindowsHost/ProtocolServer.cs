@@ -148,8 +148,11 @@ internal sealed class ProtocolServer : IDisposable
                 if (_captureAvailable) result.Add(operation);
                 continue;
             }
-            if (operation == "input.human-sequence")
+            if (operation is "input.human-sequence" or "input.send")
             {
+                // Production SendInput requires the same physical-input monitor
+                // used by the interaction lease. If hooks are unavailable, both
+                // monitoring and interactive native dispatch stay unsupported.
                 if (_humanInput is not null) result.Add(operation);
                 continue;
             }
@@ -175,7 +178,7 @@ internal sealed class ProtocolServer : IDisposable
             "system.virtual-desktop" => Task.FromResult(VirtualDesktopService.Read()),
             "integrity.current" => Task.FromResult(_services.ReadCurrentIntegrity()),
             "integrity.process" => Task.FromResult(_services.ReadProcessIntegrity(ProtocolJson.DeserializeBody<IntegrityProcessRequest>(request.Body))),
-            "input.send" => Task.FromResult(_services.SendInput(ProtocolJson.DeserializeBody<SendInputRequest>(request.Body))),
+            "input.send" => SendInputBoundAsync(ProtocolJson.DeserializeBody<SendInputRequest>(request.Body)),
             "input.human-sequence" => Task.FromResult<object>(new
             {
                 sequence = _humanInput?.Sequence ?? throw new ProtocolException("input.human-monitor-unavailable"),
@@ -196,13 +199,33 @@ internal sealed class ProtocolServer : IDisposable
         };
     }
 
+    private Task<object> SendInputBoundAsync(SendInputRequest request)
+    {
+        if (_humanInput is null)
+            return Task.FromResult<object>(new { insertedEventCount = 0u, preDispatchFailure = "windows-input-human-monitor-unavailable" });
+
+        // Exact UIA generation revalidation and SendInput execute inside one MTA
+        // work item with no await in between. NativeHostServices repeats process,
+        // foreground and physical-input checks immediately beside the Win32 call.
+        return _mta.InvokeAsync(() =>
+        {
+            nint hwnd;
+            try
+            {
+                hwnd = _windows.ValidateObserved(request.TargetWindow);
+            }
+            catch (ProtocolException)
+            {
+                return (object)new { insertedEventCount = 0u, preDispatchFailure = "windows-input-target-window-stale" };
+            }
+            return _services.SendInput(request, hwnd, () => _humanInput.Sequence);
+        });
+    }
+
     private async Task<object> CaptureFrameAsync(CaptureNextFrameRequest request)
     {
         if (!_captureAvailable) throw new ProtocolException("capture.unsupported");
 
-        // Window identity is owned by the UIA MTA. Validate immediately before
-        // crossing into the capture apartment, then again before returning the
-        // retained artifact to the caller.
         var hwnd = await _mta.InvokeAsync(() => _windows.ValidateObserved(request.Window)).ConfigureAwait(false);
         var response = await _captureMta.InvokeAsync(() => _capture.Capture(request, hwnd)).ConfigureAwait(false);
         try
