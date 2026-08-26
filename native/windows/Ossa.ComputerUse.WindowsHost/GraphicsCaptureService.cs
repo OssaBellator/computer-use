@@ -40,6 +40,15 @@ internal sealed class GraphicsCaptureService : IDisposable
 
     internal GraphicsCaptureService(WindowEnumerationService windows) => _windows = windows;
 
+    internal bool IsAvailable
+    {
+        get
+        {
+            try { return GraphicsCaptureSession.IsSupported(); }
+            catch { return false; }
+        }
+    }
+
     internal async Task<object> CaptureAsync(CaptureNextFrameRequest request)
     {
         ThrowIfDisposed();
@@ -48,8 +57,7 @@ internal sealed class GraphicsCaptureService : IDisposable
         // Capture authority must originate from the generation-bearing system
         // observation, not from a caller-provided HWND alone.
         var hwnd = _windows.ValidateObserved(request.Window);
-        if (!GraphicsCaptureSession.IsSupported())
-            throw new ProtocolException("capture.unsupported");
+        if (!IsAvailable) throw new ProtocolException("capture.unsupported");
 
         var item = CreateItemForWindow(hwnd);
         var initialSize = item.Size;
@@ -93,6 +101,8 @@ internal sealed class GraphicsCaptureService : IDisposable
                 throw new ProtocolException("capture.frame-timeout");
             }
             frame = await completion.Task.ConfigureAwait(false);
+            // This timestamp belongs to frame acquisition, before potentially slow PNG encoding.
+            var capturedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             var contentSize = frame.ContentSize;
             ValidateDimensions(contentSize.Width, contentSize.Height, request.Limits.MaxPixels);
@@ -126,13 +136,16 @@ internal sealed class GraphicsCaptureService : IDisposable
                 throw new ProtocolException("capture.window-dpi-invalid");
             }
 
+            // Geometry is sampled only after the post-frame generation check. If
+            // a caller moves/resizes the same-generation window after this return,
+            // the TypeScript frame binding will reject coordinates on revalidation.
             var captureGeneration = NextCaptureGeneration(request.Window);
             return new
             {
                 window = request.Window,
                 captureGeneration,
                 frameSequence = 0,
-                capturedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                capturedAtMs,
                 systemRelativeTime100ns = frame.SystemRelativeTime.Ticks,
                 contentWidth = contentSize.Width,
                 contentHeight = contentSize.Height,
@@ -183,6 +196,8 @@ internal sealed class GraphicsCaptureService : IDisposable
 
     private static GraphicsCaptureItem CreateItemForWindow(nint hwnd)
     {
+        // C#/WinRT's ComImport projection maps the HRESULT/out-result ABI to the
+        // pointer-returning managed signature used here.
         var interop = GraphicsCaptureItem.As<IGraphicsCaptureItemInterop>();
         var iid = GraphicsCaptureItemGuid;
         var pointer = interop.CreateForWindow(hwnd, ref iid);
