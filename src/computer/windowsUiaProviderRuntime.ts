@@ -7,7 +7,7 @@ import type {
   WindowsUiaSemanticAction,
   WindowsUiaWindowRef,
 } from './windowsUiaContract.js';
-import { requiredWindowsUiaPattern, sameWindowsUiaControl } from './windowsUiaContract.js';
+import { requiredWindowsUiaPattern, sameWindowsUiaControl, sameWindowsUiaWindow } from './windowsUiaContract.js';
 import type { DesktopBackendActionResult } from './desktopUiBackend.js';
 import { WindowsUiaCacheState, type WindowsUiaInvalidationReason } from './windowsUiaCacheState.js';
 import { buildWindowsUiaCacheRequestPlan, type WindowsUiaCacheRequestPlan } from './windowsUiaCacheRequestPlan.js';
@@ -54,6 +54,7 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
     if (resolved.status !== 'current') throw new Error(`windows-uia-window-${resolved.status}`);
     const epoch = this.cache.currentEpoch(window);
     const observation = await this.bridge.buildCache(resolved.root, buildWindowsUiaCacheRequestPlan(limits), epoch);
+    if (!sameWindowsUiaWindow(observation.window,window)) throw new Error('windows-uia-cache-window-mismatch');
     if (observation.invalidationEpoch !== epoch) throw new Error('windows-uia-cache-epoch-mismatch');
     this.cache.register(observation);
     return observation;
