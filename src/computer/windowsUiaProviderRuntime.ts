@@ -59,6 +59,10 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
 
   constructor(readonly bridge: WindowsUiaProviderBridge) {}
 
+  currentEpoch(window:WindowsUiaWindowRef): number {
+    return this.cache.currentEpoch(window);
+  }
+
   invalidate(window:WindowsUiaWindowRef, epoch:number, reason:WindowsUiaInvalidationReason): void {
     this.cache.invalidate(window, epoch, reason);
   }
@@ -76,7 +80,6 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
   async revalidateControl(ref:WindowsUiaControlRef): Promise<WindowsUiaRevalidation> {
     const candidate = await this.bridge.resolveControl(ref);
     if (candidate.status !== 'candidate') return {status:candidate.status};
-
     const fresh = await this.bridge.snapshotControl(candidate.element, ref);
     if (fresh.status !== 'current') return fresh;
     const currentCandidate = await this.bridge.resolveControl(fresh.control.ref);
