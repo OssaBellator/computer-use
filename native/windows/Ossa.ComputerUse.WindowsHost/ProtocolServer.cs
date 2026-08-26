@@ -29,10 +29,8 @@ internal sealed class ProtocolServer : IDisposable
         "integrity.current",
         "integrity.process",
         "input.send",
+        "input.human-sequence",
     };
-    private static readonly string[] ImplementedOperations = Operations
-        .OrderBy(value => value, StringComparer.Ordinal)
-        .ToArray();
 
     private readonly MtaExecutor _mta;
     private readonly NativeHostServices _services = new();
@@ -40,6 +38,7 @@ internal sealed class ProtocolServer : IDisposable
     private readonly UiaEventService _events;
     private readonly WindowEnumerationService _windows = new();
     private readonly GraphicsCaptureService _capture;
+    private readonly HumanInputMonitor? _humanInput;
     private readonly TextReader _input;
     private readonly TextWriter _output;
     private int _disposed;
@@ -50,6 +49,17 @@ internal sealed class ProtocolServer : IDisposable
         _uia = new UiaService(mta.ThreadToken);
         _events = new UiaEventService(mta.ThreadToken);
         _capture = new GraphicsCaptureService(_windows);
+        try
+        {
+            _humanInput = new HumanInputMonitor();
+        }
+        catch
+        {
+            // Host remains usable for semantic/background work. The hello
+            // capability snapshot omits input.human-sequence so interactive-host
+            // leases stay fail closed instead of assuming human-input coverage.
+            _humanInput = null;
+        }
         _input = input;
         _output = output;
     }
@@ -103,6 +113,26 @@ internal sealed class ProtocolServer : IDisposable
         if (request.Body.ValueKind is JsonValueKind.Undefined) throw new ProtocolException("protocol.body-invalid");
     }
 
+    private string[] ImplementedOperations()
+    {
+        var result = new List<string>(Operations.Count);
+        foreach (var operation in Operations.OrderBy(value => value, StringComparer.Ordinal))
+        {
+            if (operation is "capture.next-frame" or "artifact.release")
+            {
+                if (_capture.IsAvailable) result.Add(operation);
+                continue;
+            }
+            if (operation == "input.human-sequence")
+            {
+                if (_humanInput is not null) result.Add(operation);
+                continue;
+            }
+            result.Add(operation);
+        }
+        return result.ToArray();
+    }
+
     private Task<object> DispatchAsync(HostRequest request)
     {
         return request.Operation switch
@@ -114,13 +144,17 @@ internal sealed class ProtocolServer : IDisposable
                 apartment = "mta",
                 threadToken = _mta.ThreadToken,
                 operations = Operations.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
-                implementedOperations = ImplementedOperations,
+                implementedOperations = ImplementedOperations(),
             }),
             "system.windows" => _mta.InvokeAsync(() => _windows.List(ProtocolJson.DeserializeBody<WindowListRequest>(request.Body))),
             "system.virtual-desktop" => Task.FromResult(VirtualDesktopService.Read()),
             "integrity.current" => Task.FromResult(_services.ReadCurrentIntegrity()),
             "integrity.process" => Task.FromResult(_services.ReadProcessIntegrity(ProtocolJson.DeserializeBody<IntegrityProcessRequest>(request.Body))),
             "input.send" => Task.FromResult(_services.SendInput(ProtocolJson.DeserializeBody<SendInputRequest>(request.Body))),
+            "input.human-sequence" => Task.FromResult<object>(new
+            {
+                sequence = _humanInput?.Sequence ?? throw new ProtocolException("input.human-monitor-unavailable"),
+            }),
             "uia.resolve-window" => _mta.InvokeAsync(() => _uia.ResolveWindow(ProtocolJson.DeserializeBody<ResolveWindowRequest>(request.Body))),
             "uia.build-cache" => _mta.InvokeAsync(() => _uia.BuildCache(ProtocolJson.DeserializeBody<BuildCacheRequest>(request.Body))),
             "uia.resolve-control" => _mta.InvokeAsync(() => _uia.ResolveControl(ProtocolJson.DeserializeBody<ResolveControlRequest>(request.Body))),
@@ -130,8 +164,12 @@ internal sealed class ProtocolServer : IDisposable
             "uia.events.register" => _mta.InvokeAsync(() => _events.Register(ProtocolJson.DeserializeBody<UiaEventRegisterRequest>(request.Body))),
             "uia.events.unregister" => _mta.InvokeAsync(() => _events.Unregister(ProtocolJson.DeserializeBody<UiaEventUnregisterRequest>(request.Body))),
             "uia.events.poll" => _mta.InvokeAsync(() => _events.Poll(ProtocolJson.DeserializeBody<UiaEventPollRequest>(request.Body))),
-            "capture.next-frame" => _capture.CaptureAsync(ProtocolJson.DeserializeBody<CaptureNextFrameRequest>(request.Body)),
-            "artifact.release" => Task.FromResult(_capture.Release(ProtocolJson.DeserializeBody<ArtifactReleaseRequest>(request.Body))),
+            "capture.next-frame" => _capture.IsAvailable
+                ? _capture.CaptureAsync(ProtocolJson.DeserializeBody<CaptureNextFrameRequest>(request.Body))
+                : throw new ProtocolException("capture.unsupported"),
+            "artifact.release" => _capture.IsAvailable
+                ? Task.FromResult(_capture.Release(ProtocolJson.DeserializeBody<ArtifactReleaseRequest>(request.Body)))
+                : throw new ProtocolException("capture.unsupported"),
             _ => throw new ProtocolException("protocol.operation-unsupported"),
         };
     }
@@ -156,6 +194,7 @@ internal sealed class ProtocolServer : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _humanInput?.Dispose();
         _capture.Dispose();
         try
         {
