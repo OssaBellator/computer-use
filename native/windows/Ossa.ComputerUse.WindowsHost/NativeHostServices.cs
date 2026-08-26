@@ -43,18 +43,52 @@ internal sealed class NativeHostServices
         }
     }
 
-    internal object SendInput(SendInputRequest request)
+    /**
+     * Compiles and dispatches exactly one SendInput call. The caller must invoke
+     * this from the same serialized MTA work item that revalidated TargetWindow.
+     * Every failure returned by PreDispatch happens before the Win32 effect
+     * boundary and is therefore definitely not-dispatched.
+     */
+    internal object SendInput(SendInputRequest request, nint validatedHwnd, Func<long> humanInputSequence)
     {
         if (request.Events is null || request.Events.Length is < 1 or > 4_096)
-        {
             throw new ProtocolException("input.event-count-invalid");
-        }
+        if (request.TargetWindow is null || request.ExpectedHumanInputSequence < 0)
+            throw new ProtocolException("input.authority-invalid");
 
         var inputs = new NativeMethods.INPUT[request.Events.Length];
         for (var index = 0; index < request.Events.Length; index++)
-        {
             inputs[index] = CompileInput(request.Events[index]);
+
+        // Repeat process identity even though WindowEnumerationService already
+        // compared the UIA element; PID reuse must not redirect native input.
+        try
+        {
+            ValidateProcessGeneration(request.TargetWindow.Process);
         }
+        catch (ProtocolException)
+        {
+            return PreDispatch("windows-input-target-process-stale");
+        }
+
+        NativeMethods.GetWindowThreadProcessId(validatedHwnd, out var pidRaw);
+        if (pidRaw == 0 || pidRaw > int.MaxValue || (int)pidRaw != request.TargetWindow.Process.ProcessId)
+            return PreDispatch("windows-input-target-window-stale");
+
+        // Human input can arrive after the TypeScript lease revalidation. Check
+        // the exact baseline again directly beside the effect boundary.
+        if (humanInputSequence() != request.ExpectedHumanInputSequence)
+            return PreDispatch("windows-input-human-interference-at-dispatch");
+
+        // SendInput targets the foreground input queue. Never inject into whatever
+        // application happens to own focus when it differs from the authorized HWND.
+        if (NativeMethods.GetForegroundWindow() != validatedHwnd)
+            return PreDispatch("windows-input-target-not-foreground");
+
+        // One last physical-input check minimizes the window between foreground
+        // verification and the actual Win32 call.
+        if (humanInputSequence() != request.ExpectedHumanInputSequence)
+            return PreDispatch("windows-input-human-interference-at-dispatch");
 
         var inserted = NativeMethods.SendInput(
             checked((uint)inputs.Length),
@@ -62,6 +96,12 @@ internal sealed class NativeHostServices
             Marshal.SizeOf<NativeMethods.INPUT>());
         return new { insertedEventCount = inserted };
     }
+
+    private static object PreDispatch(string reason) => new
+    {
+        insertedEventCount = 0u,
+        preDispatchFailure = reason,
+    };
 
     private static NativeMethods.INPUT CompileInput(SendInputEventDto value) => value.Kind switch
     {
@@ -124,9 +164,7 @@ internal sealed class NativeHostServices
         var x = value.NormalizedX ?? throw new ProtocolException("input.mouse-absolute-invalid");
         var y = value.NormalizedY ?? throw new ProtocolException("input.mouse-absolute-invalid");
         if (x is < 0 or > 65_535 || y is < 0 or > 65_535 || value.VirtualDesktop is not true)
-        {
             throw new ProtocolException("input.mouse-absolute-invalid");
-        }
         return new NativeMethods.INPUT
         {
             type = NativeMethods.INPUT_MOUSE,
@@ -147,9 +185,7 @@ internal sealed class NativeHostServices
         var dx = value.Dx ?? throw new ProtocolException("input.mouse-relative-invalid");
         var dy = value.Dy ?? throw new ProtocolException("input.mouse-relative-invalid");
         if (Math.Abs((long)dx) > 100_000 || Math.Abs((long)dy) > 100_000)
-        {
             throw new ProtocolException("input.mouse-relative-invalid");
-        }
         return new NativeMethods.INPUT
         {
             type = NativeMethods.INPUT_MOUSE,
@@ -169,9 +205,7 @@ internal sealed class NativeHostServices
     {
         var keyUp = value.KeyUp ?? throw new ProtocolException("input.mouse-button-invalid");
         if (value.Button is not ("left" or "middle" or "right"))
-        {
             throw new ProtocolException("input.mouse-button-invalid");
-        }
         var flags = (value.Button, keyUp) switch
         {
             ("left", false) => NativeMethods.MOUSEEVENTF_LEFTDOWN,
@@ -196,16 +230,12 @@ internal sealed class NativeHostServices
     {
         NativeMethods.GetTokenInformation(token, NativeMethods.TokenIntegrityLevel, 0, 0, out var required);
         if (required <= 0 || required > 65_536)
-        {
             throw new ProtocolException("integrity.token-buffer-invalid");
-        }
         var buffer = Marshal.AllocHGlobal(required);
         try
         {
             if (!NativeMethods.GetTokenInformation(token, NativeMethods.TokenIntegrityLevel, buffer, required, out _))
-            {
                 NativeMethods.ThrowLastWin32("GetTokenInformation(TokenIntegrityLevel)");
-            }
             var label = Marshal.PtrToStructure<NativeMethods.TOKEN_MANDATORY_LABEL>(buffer);
             if (label.Label.Sid == 0) throw new ProtocolException("integrity.sid-invalid");
             var countPointer = NativeMethods.GetSidSubAuthorityCount(label.Label.Sid);
@@ -225,17 +255,13 @@ internal sealed class NativeHostServices
     internal static void ValidateProcessGeneration(ProcessGenerationDto expected)
     {
         if (expected.ProcessId <= 0 || string.IsNullOrWhiteSpace(expected.StartIdentity) || expected.StartIdentity.Length > 256)
-        {
             throw new ProtocolException("process.generation-invalid");
-        }
         try
         {
             using var process = Process.GetProcessById(expected.ProcessId);
             var actual = process.StartTime.ToUniversalTime().ToString("O");
             if (!StringComparer.Ordinal.Equals(actual, expected.StartIdentity))
-            {
                 throw new ProtocolException("process.generation-mismatch");
-            }
         }
         catch (ProtocolException)
         {
