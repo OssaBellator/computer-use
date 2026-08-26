@@ -40,10 +40,15 @@ internal sealed class WindowAuthorityService
             if (!element.TryGetCurrentPattern(WindowPattern.Pattern, out var raw) || raw is not WindowPattern pattern)
                 continue;
 
-            WindowPattern.WindowPatternInformation current;
+            bool isModal;
+            bool isTopmost;
+            WindowInteractionState interactionState;
             try
             {
-                current = pattern.Current;
+                var current = pattern.Current;
+                isModal = current.IsModal;
+                isTopmost = current.IsTopmost;
+                interactionState = current.WindowInteractionState;
             }
             catch (ElementNotAvailableException)
             {
@@ -55,9 +60,9 @@ internal sealed class WindowAuthorityService
             states.Add(new
             {
                 window,
-                isModal = current.IsModal,
-                isTopmost = current.IsTopmost,
-                interactionState = InteractionState(current.WindowInteractionState),
+                isModal,
+                isTopmost,
+                interactionState = InteractionState(interactionState),
                 owner,
             });
         }
