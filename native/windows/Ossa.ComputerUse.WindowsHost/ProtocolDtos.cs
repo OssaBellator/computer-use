@@ -89,6 +89,9 @@ internal sealed record UiaEventUnregisterRequest(string ThreadToken, string Regi
 internal sealed record UiaEventPollRequest(string ThreadToken, string RegistrationId, int MaxEvents = 64);
 internal sealed record WindowListRequest(int MaxItems = 256, int MaxTextBytes = 16_384);
 internal sealed record IntegrityProcessRequest(ProcessGenerationDto Process);
+
+internal sealed record CaptureLimitsDto(int MaxPixels, int MaxBytes);
+internal sealed record CaptureNextFrameRequest(WindowRefDto Window, CaptureLimitsDto Limits);
 internal sealed record ArtifactReleaseRequest(string Token);
 
 internal sealed record SendInputEventDto(
