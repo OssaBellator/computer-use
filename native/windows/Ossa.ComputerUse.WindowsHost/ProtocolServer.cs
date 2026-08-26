@@ -1,0 +1,140 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace Ossa.ComputerUse.WindowsHost;
+
+internal sealed class ProtocolServer
+{
+    private const int ProtocolVersion = 1;
+    private const int MaxMessageChars = 1_048_576;
+    private static readonly Regex IdPattern = new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+    private static readonly HashSet<string> Operations = new(StringComparer.Ordinal)
+    {
+        "hello",
+        "system.windows",
+        "uia.resolve-window",
+        "uia.build-cache",
+        "uia.resolve-control",
+        "uia.compare-elements",
+        "uia.snapshot-control",
+        "uia.perform-pattern",
+        "capture.next-frame",
+        "artifact.release",
+        "integrity.current",
+        "integrity.process",
+        "input.send",
+    };
+
+    private readonly MtaExecutor _mta;
+    private readonly TextReader _input;
+    private readonly TextWriter _output;
+
+    internal ProtocolServer(MtaExecutor mta, TextReader input, TextWriter output)
+    {
+        _mta = mta;
+        _input = input;
+        _output = output;
+    }
+
+    internal async Task<int> RunAsync()
+    {
+        while (true)
+        {
+            var line = await _input.ReadLineAsync().ConfigureAwait(false);
+            if (line is null)
+            {
+                return 0;
+            }
+
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (line.Length > MaxMessageChars)
+            {
+                await WriteErrorAsync("invalid", "protocol.message-too-large").ConfigureAwait(false);
+                continue;
+            }
+
+            await HandleLineAsync(line).ConfigureAwait(false);
+        }
+    }
+
+    private async Task HandleLineAsync(string line)
+    {
+        HostRequest? request = null;
+        try
+        {
+            request = JsonSerializer.Deserialize<HostRequest>(line, ProtocolJson.Options)
+                      ?? throw new ProtocolException("protocol.request-invalid");
+            ValidateRequest(request);
+
+            var body = await DispatchAsync(request).ConfigureAwait(false);
+            await WriteOkAsync(request.Id, body).ConfigureAwait(false);
+        }
+        catch (ProtocolException error)
+        {
+            await WriteErrorAsync(ValidId(request?.Id) ? request!.Id : "invalid", error.Code).ConfigureAwait(false);
+        }
+        catch
+        {
+            await WriteErrorAsync(ValidId(request?.Id) ? request!.Id : "invalid", "host.internal-error").ConfigureAwait(false);
+        }
+    }
+
+    private static void ValidateRequest(HostRequest request)
+    {
+        if (request.Protocol != ProtocolVersion)
+        {
+            throw new ProtocolException("protocol.version-unsupported");
+        }
+        if (!ValidId(request.Id))
+        {
+            throw new ProtocolException("protocol.id-invalid");
+        }
+        if (!Operations.Contains(request.Operation))
+        {
+            throw new ProtocolException("protocol.operation-unsupported");
+        }
+        if (request.Body.ValueKind is JsonValueKind.Undefined)
+        {
+            throw new ProtocolException("protocol.body-invalid");
+        }
+    }
+
+    private Task<object> DispatchAsync(HostRequest request)
+    {
+        return request.Operation switch
+        {
+            "hello" => Task.FromResult<object>(new
+            {
+                protocol = ProtocolVersion,
+                host = "ossa-computer-use-windows-host",
+                apartment = "mta",
+                threadToken = _mta.ThreadToken,
+                operations = Operations.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            }),
+            _ => throw new ProtocolException("feature.not-implemented"),
+        };
+    }
+
+    private async Task WriteOkAsync(string id, object body)
+    {
+        var json = JsonSerializer.Serialize(new { protocol = ProtocolVersion, id, status = "ok", body }, ProtocolJson.Options);
+        await _output.WriteLineAsync(json).ConfigureAwait(false);
+        await _output.FlushAsync().ConfigureAwait(false);
+    }
+
+    private async Task WriteErrorAsync(string id, string error)
+    {
+        var safeError = Regex.IsMatch(error, "^[a-z0-9][a-z0-9._:-]{0,127}$", RegexOptions.CultureInvariant)
+            ? error
+            : "host.internal-error";
+        var json = JsonSerializer.Serialize(new { protocol = ProtocolVersion, id, status = "error", error = safeError }, ProtocolJson.Options);
+        await _output.WriteLineAsync(json).ConfigureAwait(false);
+        await _output.FlushAsync().ConfigureAwait(false);
+    }
+
+    private static bool ValidId(string? id) => id is not null && IdPattern.IsMatch(id);
+}
