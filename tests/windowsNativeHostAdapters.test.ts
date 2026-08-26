@@ -14,6 +14,7 @@ const windowRef:WindowsUiaWindowRef=Object.freeze({
 });
 const ref:WindowsUiaControlRef=Object.freeze({window:windowRef,runtimeId:Object.freeze([1,2,3]),controlType:'Button',generation:4});
 const context=Object.freeze({apartment:'mta' as const,threadToken:'uia-mta'});
+const inputAuthority=Object.freeze({targetWindow:windowRef,humanInputSequence:7});
 
 function protocol(handler:(operation:string,body:unknown)=>unknown) {
   let sequence=0;
@@ -71,24 +72,45 @@ test('capture adapter returns bounded frame structure for runtime revalidation',
   await client.releaseArtifact('capture-2-3');
 });
 
-test('integrity and SendInput adapters require bounded numeric native results', async () => {
-  const p=protocol((operation)=>{
+test('integrity and SendInput adapters require bounded numeric native results and exact authority payload', async () => {
+  let inputBody:unknown;
+  const p=protocol((operation,body)=>{
     if(operation==='integrity.current')return {rid:0x2000};
     if(operation==='integrity.process')return {rid:0x1000};
-    if(operation==='input.send')return {insertedEventCount:2};
+    if(operation==='input.send'){inputBody=body;return {insertedEventCount:2};}
     return {};
   });
   const integrity=new WindowsNativeHostIntegrityReader(p);
   assert.equal(await integrity.currentProcessIntegrityRid(),0x2000);
   assert.equal(await integrity.processIntegrityRid(windowRef.process),0x1000);
   const input=new WindowsNativeHostSendInputBridge(p);
-  assert.equal(await input.sendInput([
+  assert.deepEqual(await input.sendInput([
     {kind:'keyboard-unicode',codeUnit:65,keyUp:false},
     {kind:'keyboard-unicode',codeUnit:65,keyUp:true},
-  ]),2);
+  ],inputAuthority),{insertedEventCount:2});
+  assert.deepEqual(inputBody,{
+    events:[
+      {kind:'keyboard-unicode',codeUnit:65,keyUp:false},
+      {kind:'keyboard-unicode',codeUnit:65,keyUp:true},
+    ],
+    targetWindow:windowRef,
+    expectedHumanInputSequence:7,
+  });
 });
 
-test('native adapter rejects impossible inserted count before gate sees it', async () => {
-  const input=new WindowsNativeHostSendInputBridge(protocol(()=>({insertedEventCount:5000})));
-  await assert.rejects(()=>input.sendInput([{kind:'mouse-relative-move',dx:1,dy:1}]),/input-response-invalid/);
+test('native SendInput adapter preserves definite pre-dispatch failure without crossing into UNKNOWN',async()=>{
+  const input=new WindowsNativeHostSendInputBridge(protocol(()=>({
+    insertedEventCount:0,preDispatchFailure:'windows-input-target-not-foreground',
+  })));
+  assert.deepEqual(await input.sendInput([{kind:'mouse-relative-move',dx:0,dy:0}],inputAuthority),{
+    insertedEventCount:0,preDispatchFailure:'windows-input-target-not-foreground',
+  });
+});
+
+test('native adapter rejects impossible inserted count and malformed pre-dispatch result before gate sees it', async () => {
+  const impossible=new WindowsNativeHostSendInputBridge(protocol(()=>({insertedEventCount:5000})));
+  await assert.rejects(()=>impossible.sendInput([{kind:'mouse-relative-move',dx:1,dy:1}],inputAuthority),/input-response-invalid/);
+
+  const contradictory=new WindowsNativeHostSendInputBridge(protocol(()=>({insertedEventCount:1,preDispatchFailure:'windows-input-target-not-foreground'})));
+  await assert.rejects(()=>contradictory.sendInput([{kind:'mouse-relative-move',dx:1,dy:1}],inputAuthority),/input-response-invalid/);
 });
