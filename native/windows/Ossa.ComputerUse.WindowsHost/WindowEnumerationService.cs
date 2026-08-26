@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Windows.Automation;
 
@@ -42,7 +43,7 @@ internal sealed class WindowEnumerationService
             catch (ElementNotAvailableException) { return true; }
             catch (InvalidOperationException) { return true; }
 
-            var key = $"session:{sessionId}:{hwnd.ToInt64():x}:{pid}:{startIdentity}";
+            var key = Key(sessionId, hwnd, pid, startIdentity);
             var generation = Generation(key, element);
             var title = ReadWindowText(hwnd);
             var bytes = Encoding.UTF8.GetByteCount(title);
@@ -76,6 +77,44 @@ internal sealed class WindowEnumerationService
         return new { windows, truncated, itemCount = windows.Count, textBytes };
     }
 
+    /**
+     * Re-resolves an exact generation-bearing window that was previously emitted
+     * by List(). HWND/PID/start identity alone are insufficient because a native
+     * window can be replaced inside the same process; Automation.Compare keeps
+     * the generation tied to the underlying UIA window instance.
+     */
+    internal nint ValidateObserved(WindowRefDto window)
+    {
+        NativeHostServices.ValidateProcessGeneration(window.Process);
+        var sessionId = Process.GetCurrentProcess().SessionId;
+        if (!StringComparer.Ordinal.Equals(window.DesktopSessionId, $"session:{sessionId}") || window.Generation < 0)
+            throw new ProtocolException("windows.window-generation-mismatch");
+
+        var hwnd = ParseHwnd(window.Hwnd);
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var pidRaw);
+        if (pidRaw == 0 || pidRaw > int.MaxValue || (int)pidRaw != window.Process.ProcessId)
+            throw new ProtocolException("windows.window-generation-mismatch");
+
+        var key = Key(sessionId, hwnd, window.Process.ProcessId, window.Process.StartIdentity);
+        if (!_identities.TryGetValue(key, out var prior) || prior.Generation != window.Generation)
+            throw new ProtocolException("windows.window-generation-unobserved");
+
+        AutomationElement current;
+        try { current = AutomationElement.FromHandle(hwnd); }
+        catch (ElementNotAvailableException) { throw new ProtocolException("windows.window-generation-mismatch"); }
+        catch (InvalidOperationException) { throw new ProtocolException("windows.window-generation-mismatch"); }
+        try
+        {
+            if (!Automation.Compare(prior.Element, current))
+                throw new ProtocolException("windows.window-generation-mismatch");
+        }
+        catch (ElementNotAvailableException)
+        {
+            throw new ProtocolException("windows.window-generation-mismatch");
+        }
+        return hwnd;
+    }
+
     private long Generation(string key, AutomationElement current)
     {
         if (_identities.TryGetValue(key, out var prior))
@@ -94,6 +133,17 @@ internal sealed class WindowEnumerationService
         }
         _identities[key] = new Identity(current, 0);
         return 0;
+    }
+
+    private static string Key(int sessionId, nint hwnd, int pid, string startIdentity) =>
+        $"session:{sessionId}:{hwnd.ToInt64():x}:{pid}:{startIdentity}";
+
+    private static nint ParseHwnd(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 32 || !value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
+            !long.TryParse(value.AsSpan(2), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var parsed) || parsed == 0)
+            throw new ProtocolException("windows.hwnd-invalid");
+        return checked((nint)parsed);
     }
 
     private static string ReadWindowText(nint hwnd)
