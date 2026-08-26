@@ -104,6 +104,10 @@ internal sealed class GraphicsCaptureService : IDisposable
                 throw new ProtocolException("capture.frame-timeout");
             }
             frame = completion.Task.GetAwaiter().GetResult();
+            // This is the authority/freshness timestamp for the captured frame.
+            // Encoding and retention may take materially longer and must not make
+            // an old screen frame look newer than it actually is.
+            var capturedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             var contentSize = frame.ContentSize;
             ValidateDimensions(contentSize.Width, contentSize.Height, request.Limits.MaxPixels);
@@ -130,7 +134,7 @@ internal sealed class GraphicsCaptureService : IDisposable
                     request.Window,
                     NextCaptureGeneration(request.Window),
                     0,
-                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    capturedAtMs,
                     frame.SystemRelativeTime.Ticks,
                     contentSize.Width,
                     contentSize.Height,
