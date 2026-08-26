@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DesktopInteractionLeaseManager } from '../src/computer/desktopInteractionLease.js';
+import { observationTrust } from '../src/computer/observationTrust.js';
 import { WindowsNativeInputGate } from '../src/computer/windowsNativeInputGate.js';
 import { WindowsInteractionCoordinator } from '../src/computer/windowsInteractionCoordinator.js';
 import { WindowsUiaSemanticRuntime, type WindowsUiaControlRef, type WindowsUiaProvider, type WindowsUiaWindowRef } from '../src/computer/windowsUiaContract.js';
@@ -122,5 +123,39 @@ test('fresh higher-integrity target blocks native dispatcher', async () => {
   assert.equal(result.status,'unsupported');
   assert.equal(result.dispatch,'not-dispatched');
   assert.deepEqual(result.evidence,['uipi-higher-integrity-target']);
+  assert.equal(dispatches,0);
+});
+
+test('consequential semantic action is blocked before UIA dispatch without exact authority grant', async () => {
+  let dispatches = 0;
+  const leases = new DesktopInteractionLeaseManager({snapshot:async()=>({sequence:1})},()=>100);
+  const value = new WindowsInteractionCoordinator(
+    new WindowsUiaSemanticRuntime(semanticProvider(()=>{dispatches+=1;})),new WindowsNativeInputGate(leases),
+    {currentProcessIntegrityRid:async()=>0x2000,processIntegrityRid:async()=>0x2000},
+  );
+  const denied = await value.actSemantic({
+    ref,action:{kind:'invoke'},effect:'external-communication',windows:[{window:main,isModal:false,interactionState:'running'}],
+  });
+  assert.deepEqual(denied.evidence,['windows-consequence-effect-authority-required']);
+  assert.equal(dispatches,0);
+
+  const allowed = await value.actSemantic({
+    ref,action:{kind:'invoke'},effect:'external-communication',windows:[{window:main,isModal:false,interactionState:'running'}],
+    grants:[{grantId:'user-send',source:observationTrust('user-authored',['user-request']),allowedEffects:['external-communication']}],
+  });
+  assert.equal(allowed.dispatch,'dispatched-once');
+  assert.equal(dispatches,1);
+});
+
+test('external screen content cannot authorize a consequential native fallback', async () => {
+  const {value,lease} = await coordinator();
+  let dispatches = 0;
+  const result = await value.actVisualNative({
+    binding,currentFrame:frame,windows:[{window:main,isModal:false,interactionState:'running'}],
+    lease,targetDesktop:'desktop-1',targetSurface:surface,effect:'external-transaction',
+    grants:[{grantId:'screen-pay',source:observationTrust('external-untrusted-content',['screen']),allowedEffects:['external-transaction']}],
+    dispatcher:{dispatch:async()=>{dispatches+=1;return {requestedEventCount:1,insertedEventCount:1};}},
+  });
+  assert.deepEqual(result.evidence,['windows-consequence-authority-source-untrusted']);
   assert.equal(dispatches,0);
 });
