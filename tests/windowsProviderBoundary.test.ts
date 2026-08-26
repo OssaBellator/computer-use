@@ -40,16 +40,28 @@ test('native input gate requires interactive lease and equal-or-lower target int
   const lease = await leases.acquire({leaseId:'native-input',mode:'interactive-host',targetDesktop:'desktop-1',targetSurface:surface,durationMs:1_000});
   const gate = new WindowsNativeInputGate(leases);
   let calls = 0;
-  const blocked = await gate.dispatch({lease,targetDesktop:'desktop-1',targetSurface:surface,integrity:{caller:'medium',target:'high'},effect:'local-reversible'},{dispatch:async()=>{calls+=1;return {dispatched:true};}});
+  const blocked = await gate.dispatch({lease,targetDesktop:'desktop-1',targetSurface:surface,integrity:{caller:'medium',target:'high'},effect:'local-reversible'},{dispatch:async()=>{calls+=1;return {requestedEventCount:1,insertedEventCount:1};}});
   assert.equal(blocked.dispatch,'not-dispatched');
   assert.deepEqual(blocked.evidence,['uipi-higher-integrity-target']);
   assert.equal(calls,0);
 
   sequence += 1;
-  const interfered = await gate.dispatch({lease,targetDesktop:'desktop-1',targetSurface:surface,integrity:{caller:'medium',target:'medium'},effect:'local-reversible'},{dispatch:async()=>{calls+=1;return {dispatched:true};}});
+  const interfered = await gate.dispatch({lease,targetDesktop:'desktop-1',targetSurface:surface,integrity:{caller:'medium',target:'medium'},effect:'local-reversible'},{dispatch:async()=>{calls+=1;return {requestedEventCount:1,insertedEventCount:1};}});
   assert.equal(interfered.dispatch,'not-dispatched');
   assert.deepEqual(interfered.evidence,['windows-input-lease-human-interference']);
   assert.equal(calls,0);
+});
+
+test('partial SendInput insertion is sticky unknown, zero insertion is definitely not dispatched', async () => {
+  const leases = new DesktopInteractionLeaseManager({snapshot:async()=>({sequence:1})},()=>100);
+  const lease = await leases.acquire({leaseId:'native-partial',mode:'interactive-host',targetDesktop:'desktop-1',targetSurface:surface,durationMs:1_000});
+  const gate = new WindowsNativeInputGate(leases);
+  const partial = await gate.dispatch({lease,targetDesktop:'desktop-1',targetSurface:surface,integrity:{caller:'high',target:'medium'},effect:'local-reversible'},{dispatch:async()=>({requestedEventCount:3,insertedEventCount:1})});
+  assert.deepEqual({status:partial.status,dispatch:partial.dispatch},{status:'unknown',dispatch:'unknown'});
+  assert.equal(partial.evidence?.[0],'windows-input-partial-dispatch');
+
+  const zero = await gate.dispatch({lease,targetDesktop:'desktop-1',targetSurface:surface,integrity:{caller:'high',target:'medium'},effect:'local-reversible'},{dispatch:async()=>({requestedEventCount:2,insertedEventCount:0})});
+  assert.deepEqual({status:zero.status,dispatch:zero.dispatch},{status:'failed',dispatch:'not-dispatched'});
 });
 
 test('native input exception is sticky unknown after dispatch boundary', async () => {
