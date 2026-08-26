@@ -71,6 +71,7 @@ export * from './computer/windowsUiaCacheState.js';
 export * from './computer/windowsInputIntegrity.js';
 export * from './computer/windowsNativeInputGate.js';
 export * from './computer/windowsVisualFrame.js';
+export * from './computer/windowsWindowAuthority.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
 export * from './input/browserInput.js';
