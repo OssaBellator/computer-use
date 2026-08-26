@@ -7,6 +7,7 @@ import type {
   WindowsUiaSemanticAction,
   WindowsUiaWindowRef,
 } from './windowsUiaContract.js';
+import { requiredWindowsUiaPattern, sameWindowsUiaControl } from './windowsUiaContract.js';
 import type { DesktopBackendActionResult } from './desktopUiBackend.js';
 import { WindowsUiaCacheState, type WindowsUiaInvalidationReason } from './windowsUiaCacheState.js';
 import { buildWindowsUiaCacheRequestPlan, type WindowsUiaCacheRequestPlan } from './windowsUiaCacheRequestPlan.js';
@@ -21,7 +22,13 @@ export interface WindowsUiaProviderBridge {
   resolveControl(ref: WindowsUiaControlRef): Promise<{ readonly status:'candidate'; readonly element:WindowsUiaNativeElementHandle } | { readonly status:'missing'|'ambiguous'|'inaccessible' }>;
   compareElements(a: WindowsUiaNativeElementHandle, b: WindowsUiaNativeElementHandle): Promise<boolean>;
   snapshotControl(element: WindowsUiaNativeElementHandle, ref: WindowsUiaControlRef): Promise<WindowsUiaRevalidation>;
-  performPattern(element: WindowsUiaNativeElementHandle, action: WindowsUiaSemanticAction, effect:ComputerEffectClass): Promise<DesktopBackendActionResult>;
+  /**
+   * Cross the semantic action boundary for exactly the element/ref pair that was
+   * revalidated immediately before this call. Native implementations must make
+   * their final generation/identity check inside the same serialized MTA operation
+   * before invoking the control pattern.
+   */
+  performPattern(element: WindowsUiaNativeElementHandle, ref:WindowsUiaControlRef, action: WindowsUiaSemanticAction, effect:ComputerEffectClass): Promise<DesktopBackendActionResult>;
 }
 
 /**
@@ -57,6 +64,7 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
     if (candidate.status !== 'candidate') return {status:candidate.status};
     const fresh = await this.bridge.snapshotControl(candidate.element, ref);
     if (fresh.status !== 'current') return fresh;
+    if (!sameWindowsUiaControl(ref,fresh.control.ref)) return {status:'stale',evidence:['windows-uia-control-identity-mismatch']};
     const currentCandidate = await this.bridge.resolveControl(fresh.control.ref);
     if (currentCandidate.status !== 'candidate') return {status:currentCandidate.status};
     const same = await this.bridge.compareElements(candidate.element, currentCandidate.element);
@@ -65,10 +73,33 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
   }
 
   async performSemanticAction(ref:WindowsUiaControlRef, action:WindowsUiaSemanticAction, effect:ComputerEffectClass): Promise<DesktopBackendActionResult> {
+    // Revalidate again at the provider boundary. The outer semantic runtime also
+    // validates, but UI state can change during any await between that check and
+    // dispatch. This second pass intentionally narrows the TOCTOU window.
     const candidate = await this.bridge.resolveControl(ref);
     if (candidate.status !== 'candidate') {
       return {status:candidate.status === 'inaccessible' ? 'unsupported' : 'rejected',dispatched:false,verified:false,evidence:[`windows-uia-${candidate.status}`]};
     }
-    return this.bridge.performPattern(candidate.element, action, effect);
+    const fresh = await this.bridge.snapshotControl(candidate.element,ref);
+    if (fresh.status !== 'current') {
+      return {status:fresh.status === 'inaccessible' ? 'unsupported' : 'rejected',dispatched:false,verified:false,evidence:[`windows-uia-${fresh.status}`,...(fresh.evidence ?? [])]};
+    }
+    if (!sameWindowsUiaControl(ref,fresh.control.ref)) {
+      return {status:'rejected',dispatched:false,verified:false,evidence:['windows-uia-control-replaced-before-dispatch']};
+    }
+    if (fresh.control.enabled === false) {
+      return {status:'rejected',dispatched:false,verified:false,evidence:['windows-uia-control-disabled-before-dispatch']};
+    }
+    if (!fresh.control.patterns.includes(requiredWindowsUiaPattern(action))) {
+      return {status:'unsupported',dispatched:false,verified:false,evidence:['windows-uia-pattern-unsupported-before-dispatch']};
+    }
+    const currentCandidate = await this.bridge.resolveControl(fresh.control.ref);
+    if (currentCandidate.status !== 'candidate') {
+      return {status:currentCandidate.status === 'inaccessible' ? 'unsupported' : 'rejected',dispatched:false,verified:false,evidence:[`windows-uia-${currentCandidate.status}`]};
+    }
+    if (!await this.bridge.compareElements(candidate.element,currentCandidate.element)) {
+      return {status:'rejected',dispatched:false,verified:false,evidence:['windows-uia-compare-elements-mismatch-before-dispatch']};
+    }
+    return this.bridge.performPattern(currentCandidate.element,ref,action,effect);
   }
 }
