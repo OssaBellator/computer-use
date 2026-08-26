@@ -103,6 +103,79 @@ test('provider exception after invocation boundary is sticky unknown', async () 
   assert.equal(result.dispatch,'unknown');
 });
 
+test('caller mutation during revalidation cannot redirect target or action', async () => {
+  const mutableRef = {
+    window:{...ref.window,process:{...ref.window.process}},
+    runtimeId:[...ref.runtimeId],
+    automationId:ref.automationId,
+    controlType:ref.controlType,
+    generation:ref.generation,
+  };
+  const mutableAction:{kind:'set-value';value:string} = {kind:'set-value',value:'safe-value'};
+  let resolveRevalidation:()=>void = ()=>undefined;
+  const revalidationBarrier = new Promise<void>((resolve)=>{resolveRevalidation=resolve;});
+  let seenRef:WindowsUiaControlRef|undefined;
+  let seenValue:string|undefined;
+  const runtime = new WindowsUiaSemanticRuntime(provider({
+    revalidateControl: async (captured) => {
+      await revalidationBarrier;
+      return {status:'current',control:{ref:captured,enabled:true,patterns:['value']}};
+    },
+    performSemanticAction: async (captured,action) => {
+      seenRef = captured;
+      seenValue = action.kind === 'set-value' ? action.value : undefined;
+      return {status:'completed',dispatched:true};
+    },
+  }));
+  const pending = runtime.act(mutableRef,mutableAction,'local-reversible');
+  mutableRef.runtimeId[0] = 999;
+  mutableRef.window.generation = 99;
+  mutableAction.value = 'attacker-mutated';
+  resolveRevalidation();
+  const result = await pending;
+  assert.equal(result.dispatch,'dispatched-once');
+  assert.deepEqual(seenRef?.runtimeId,[42,7,9]);
+  assert.equal(seenRef?.window.generation,3);
+  assert.equal(seenValue,'safe-value');
+});
+
+test('accessor-bearing authority is rejected without invoking getter', async () => {
+  let getterCalls = 0;
+  const action = {} as {kind:'invoke'};
+  Object.defineProperty(action,'kind',{enumerable:true,get(){getterCalls+=1;return 'invoke';}});
+  const runtime = new WindowsUiaSemanticRuntime(provider());
+  const result = await runtime.act(ref,action,'local-reversible');
+  assert.equal(result.dispatch,'not-dispatched');
+  assert.equal(result.status,'rejected');
+  assert.equal(getterCalls,0);
+});
+
+test('invalid semantic enums are rejected at runtime even when TypeScript is bypassed', async () => {
+  const runtime = new WindowsUiaSemanticRuntime(provider());
+  const invalid = await runtime.act(ref,{kind:'window',operation:'teleport'} as never,'local-reversible');
+  assert.equal(invalid.status,'rejected');
+  assert.equal(invalid.dispatch,'not-dispatched');
+});
+
+test('malformed revalidation is pre-dispatch failure while malformed dispatch result is sticky unknown', async () => {
+  let dispatches = 0;
+  const badRevalidation = new WindowsUiaSemanticRuntime(provider({
+    revalidateControl:async()=>({status:'current',control:{ref,enabled:true,patterns:['bogus' as never]}}),
+    performSemanticAction:async()=>{dispatches+=1;return {status:'completed',dispatched:true};},
+  }));
+  const before = await badRevalidation.act(ref,{kind:'invoke'},'local-reversible');
+  assert.equal(before.status,'failed');
+  assert.equal(before.dispatch,'not-dispatched');
+  assert.equal(dispatches,0);
+
+  const badResult = new WindowsUiaSemanticRuntime(provider({
+    performSemanticAction:async()=>({status:'completed',dispatched:'yes' as never}),
+  }));
+  const after = await badResult.act(ref,{kind:'invoke'},'local-reversible');
+  assert.equal(after.status,'unknown');
+  assert.equal(after.dispatch,'unknown');
+});
+
 test('UIPI input integrity decision fails closed for unknown or higher-integrity targets', () => {
   assert.deepEqual(decideWindowsInputIntegrity({caller:'medium',target:'high'}),{
     allowed:false,reason:'uipi-higher-integrity-target',
