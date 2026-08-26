@@ -79,8 +79,15 @@ internal sealed class WindowEnumerationService
         if (!completed && !truncated)
             throw new ProtocolException("windows.enumeration-failed");
 
-        foreach (var hwnd in _observed.Keys.Where(hwnd => !seen.Contains(hwnd)).ToArray())
-            _observed.Remove(hwnd);
+        // Only a complete enumeration proves that an older observed HWND is no
+        // longer in the bounded system observation. A deliberately truncated pass
+        // is incomplete by construction, so retain older refs and revalidate them
+        // lazily in TryObserved before they can contribute owner authority.
+        if (completed && !truncated)
+        {
+            foreach (var hwnd in _observed.Keys.Where(hwnd => !seen.Contains(hwnd)).ToArray())
+                _observed.Remove(hwnd);
+        }
 
         return new { windows, truncated, itemCount = windows.Count, textBytes };
     }
