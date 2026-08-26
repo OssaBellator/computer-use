@@ -27,6 +27,14 @@ test('native runtime capability profile follows implemented operations rather th
   assert.equal(support(profile,'human-interference-detection'),'unsupported');
 });
 
+test('native window-state observation upgrades modal authority only with the semantic observation surface',()=>{
+  const semantic:WindowsNativeHostOperation[]=[
+    'hello','uia.resolve-window','uia.build-cache','uia.resolve-control','uia.compare-elements','uia.snapshot-control',
+  ];
+  assert.equal(support(deriveWindowsNativeHostCapabilityProfile([...semantic,'uia.window-states']),'window-modal-authority'),'supported');
+  assert.equal(support(deriveWindowsNativeHostCapabilityProfile(['hello','uia.window-states']),'window-modal-authority'),'unsupported');
+});
+
 test('native human input monitor upgrades interference detection without overstating foreground lease ownership',()=>{
   const profile=deriveWindowsNativeHostCapabilityProfile(['hello','input.send','input.human-sequence']);
   assert.equal(support(profile,'human-interference-detection'),'supported');
