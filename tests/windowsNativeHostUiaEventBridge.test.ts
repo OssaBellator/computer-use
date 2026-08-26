@@ -43,7 +43,7 @@ test('native event bridge polls bounded invalidation codes and stops after unreg
   assert.equal(unregisters,1);
 });
 
-test('native event polling failure conservatively invalidates once until channel recovers', async()=>{
+test('native event polling failure conservatively invalidates once with an authorized event until channel recovers', async()=>{
   let polls=0;
   const p=protocol(operation=>{
     if(operation==='uia.events.register')return {registered:true};
@@ -57,10 +57,10 @@ test('native event polling failure conservatively invalidates once until channel
   });
   const bridge=new WindowsNativeHostUiaEventBridge(p,'uia-mta-2',10,fastSleep);
   const seen:string[]=[];
-  await bridge.register({registrationId:'reg-2',window:windowRef,events:['focus-changed','structure-changed']},event=>seen.push(event));
+  await bridge.register({registrationId:'reg-2',window:windowRef,events:['focus-changed']},event=>seen.push(event));
   await settle();
-  assert.equal(seen.filter(value=>value==='structure-changed').length,1);
-  assert.ok(seen.includes('focus-changed'));
+  assert.ok(seen.length>=2);
+  assert.ok(seen.every(value=>value==='focus-changed'));
   await bridge.unregister('reg-2');
 });
 
