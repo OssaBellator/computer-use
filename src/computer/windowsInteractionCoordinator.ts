@@ -1,5 +1,6 @@
 import type { ComputerActionResult, ComputerEffectClass, ComputerSurfaceRef } from './environmentAdapter.js';
 import type { DesktopInteractionLease } from './desktopInteractionLease.js';
+import { decideComputerConsequenceAuthority, type ComputerEffectAuthorityGrant } from './consequenceAuthority.js';
 import { WindowsNativeInputGate, type WindowsNativeInputDispatcher } from './windowsNativeInputGate.js';
 import { resolveWindowsInputIntegrityContext, type WindowsProcessTokenIntegrityReader } from './windowsProcessIntegrity.js';
 import {
@@ -15,11 +16,17 @@ function rejected(reason:string):ComputerActionResult {
   return Object.freeze({status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:Object.freeze([reason])});
 }
 
+function consequence(effect:ComputerEffectClass,grants:readonly ComputerEffectAuthorityGrant[]|undefined):ComputerActionResult|undefined {
+  const decision = decideComputerConsequenceAuthority(effect,grants ?? []);
+  return decision.allowed ? undefined : rejected(`windows-consequence-${decision.reason}`);
+}
+
 export interface WindowsSemanticInteractionRequest {
   readonly ref:WindowsUiaControlRef;
   readonly action:WindowsUiaSemanticAction;
   readonly effect:ComputerEffectClass;
   readonly windows:readonly WindowsWindowAuthoritySnapshot[];
+  readonly grants?:readonly ComputerEffectAuthorityGrant[];
 }
 
 export interface WindowsVisualNativeInteractionRequest {
@@ -31,17 +38,19 @@ export interface WindowsVisualNativeInteractionRequest {
   readonly targetDesktop:string;
   readonly targetSurface:ComputerSurfaceRef;
   readonly effect:ComputerEffectClass;
+  readonly grants?:readonly ComputerEffectAuthorityGrant[];
   readonly dispatcher:WindowsNativeInputDispatcher;
 }
 
 /**
  * Cross-channel Windows authority coordinator.
  *
- * Semantic and visual/native embodiments share one window/modal authority model.
- * A modal reroute never carries an old control ref or old visual coordinate into
- * the new window; the caller must re-observe/re-ground against the authoritative
- * modal first. Visual input additionally requires an exact current frame and a
- * fresh process-token integrity read immediately before the native input gate.
+ * Semantic and visual/native embodiments share one consequence gate and one
+ * window/modal authority model. A modal reroute never carries an old control ref
+ * or old visual coordinate into the new window; the caller must re-observe or
+ * re-ground against the authoritative modal first. Visual input additionally
+ * requires an exact current frame and a fresh process-token integrity read
+ * immediately before the native input gate.
  */
 export class WindowsInteractionCoordinator {
   constructor(
@@ -51,6 +60,8 @@ export class WindowsInteractionCoordinator {
   ) {}
 
   async actSemantic(request:WindowsSemanticInteractionRequest):Promise<ComputerActionResult> {
+    const consequenceDenied = consequence(request.effect,request.grants);
+    if (consequenceDenied) return consequenceDenied;
     const authority = decideWindowsWindowAuthority(request.ref.window,request.windows);
     if (!authority.allowed) return rejected(`windows-window-authority-${authority.reason}`);
     if (!sameWindowsUiaWindow(authority.target,request.ref.window)) {
@@ -60,6 +71,8 @@ export class WindowsInteractionCoordinator {
   }
 
   async actVisualNative(request:WindowsVisualNativeInteractionRequest):Promise<ComputerActionResult> {
+    const consequenceDenied = consequence(request.effect,request.grants);
+    if (consequenceDenied) return consequenceDenied;
     const requestedWindow = request.binding.frame.window;
     const authority = decideWindowsWindowAuthority(requestedWindow,request.windows);
     if (!authority.allowed) return rejected(`windows-window-authority-${authority.reason}`);
