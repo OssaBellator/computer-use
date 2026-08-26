@@ -26,10 +26,11 @@ internal sealed class UiaEventService : IDisposable
         internal StructureChangedEventHandler? StructureHandler { get; set; }
         internal AutomationPropertyChangedEventHandler? PropertyHandler { get; set; }
         internal AutomationEventHandler? WindowHandler { get; set; }
+        internal int Active = 1;
     }
 
     private readonly string _threadToken;
-    private readonly Dictionary<string, Registration> _registrations = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Registration> _registrations = new(StringComparer.Ordinal);
     private readonly AutomationFocusChangedEventHandler _focusHandler;
     private bool _focusInstalled;
     private bool _disposed;
@@ -104,13 +105,15 @@ internal sealed class UiaEventService : IDisposable
                     Automation.AddAutomationEventHandler(WindowPattern.WindowClosedEvent, root, TreeScope.Subtree, registration.WindowHandler);
             }
 
-            _registrations.Add(registration.Id, registration);
+            if (!_registrations.TryAdd(registration.Id, registration)) throw new ProtocolException("uia.events.registration-duplicate");
             EnsureFocusHandler();
             return new { registered = true };
         }
         catch
         {
+            Volatile.Write(ref registration.Active, 0);
             RemoveHandlers(registration);
+            _registrations.TryRemove(registration.Id, out _);
             throw;
         }
     }
@@ -120,7 +123,8 @@ internal sealed class UiaEventService : IDisposable
         ThrowIfDisposed();
         RequireThread(request.ThreadToken);
         if (!ValidRegistrationId(request.RegistrationId)) throw new ProtocolException("uia.events.registration-id-invalid");
-        if (!_registrations.Remove(request.RegistrationId, out var registration)) return new { unregistered = false };
+        if (!_registrations.TryRemove(request.RegistrationId, out var registration)) return new { unregistered = false };
+        Volatile.Write(ref registration.Active, 0);
         RemoveHandlers(registration);
         RemoveFocusHandlerIfUnused();
         return new { unregistered = true };
@@ -144,8 +148,14 @@ internal sealed class UiaEventService : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        foreach (var registration in _registrations.Values) RemoveHandlers(registration);
-        _registrations.Clear();
+        foreach (var pair in _registrations.ToArray())
+        {
+            if (_registrations.TryRemove(pair.Key, out var registration))
+            {
+                Volatile.Write(ref registration.Active, 0);
+                RemoveHandlers(registration);
+            }
+        }
         if (_focusInstalled)
         {
             Automation.RemoveAutomationFocusChangedEventHandler(_focusHandler);
@@ -208,6 +218,7 @@ internal sealed class UiaEventService : IDisposable
 
     private static void Enqueue(Registration registration, string value)
     {
+        if (Volatile.Read(ref registration.Active) == 0) return;
         if (registration.Queue.Count >= MaxQueuedEventsPerRegistration) return;
         registration.Queue.Enqueue(value);
     }
