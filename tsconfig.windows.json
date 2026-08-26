@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-windows",
+    "rootDir": ".",
+    "noEmit": false,
+    "noEmitOnError": true
+  },
+  "include": [
+    "tests/consequenceAuthority.test.ts",
+    "tests/dp11Foundations.test.ts",
+    "tests/windows*.test.ts"
+  ],
+  "exclude": [
+    "dist",
+    "dist-windows",
+    "node_modules"
+  ]
+}
