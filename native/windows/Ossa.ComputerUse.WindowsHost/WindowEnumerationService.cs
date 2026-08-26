@@ -9,6 +9,7 @@ internal sealed class WindowEnumerationService
 {
     private sealed record Identity(AutomationElement Element, long Generation);
     private readonly Dictionary<string, Identity> _identities = new(StringComparer.Ordinal);
+    private readonly Dictionary<nint, WindowRefDto> _observed = new();
 
     internal object List(WindowListRequest request)
     {
@@ -18,6 +19,7 @@ internal sealed class WindowEnumerationService
         var foreground = NativeMethods.GetForegroundWindow();
         var sessionId = Process.GetCurrentProcess().SessionId;
         var windows = new List<object>();
+        var seen = new HashSet<nint>();
         var textBytes = 0;
         var truncated = false;
 
@@ -45,6 +47,11 @@ internal sealed class WindowEnumerationService
 
             var key = Key(sessionId, hwnd, pid, startIdentity);
             var generation = Generation(key, element);
+            var window = new WindowRefDto(
+                $"0x{hwnd.ToInt64():x}",
+                $"session:{sessionId}",
+                new ProcessGenerationDto(pid, startIdentity),
+                generation);
             var title = ReadWindowText(hwnd);
             var bytes = Encoding.UTF8.GetByteCount(title);
             if (textBytes + bytes > request.MaxTextBytes) { truncated = true; return false; }
@@ -53,11 +60,7 @@ internal sealed class WindowEnumerationService
             NativeMethods.GetWindowRect(hwnd, out var rect);
             windows.Add(new
             {
-                window = new WindowRefDto(
-                    $"0x{hwnd.ToInt64():x}",
-                    $"session:{sessionId}",
-                    new ProcessGenerationDto(pid, startIdentity),
-                    generation),
+                window,
                 title,
                 foreground = hwnd == foreground,
                 bounds = new
@@ -68,11 +71,16 @@ internal sealed class WindowEnumerationService
                     height = Math.Max(0, rect.Bottom - rect.Top),
                 },
             });
+            _observed[hwnd] = window;
+            seen.Add(hwnd);
             return true;
         }, 0);
 
         if (!completed && !truncated)
             throw new ProtocolException("windows.enumeration-failed");
+
+        foreach (var hwnd in _observed.Keys.Where(hwnd => !seen.Contains(hwnd)).ToArray())
+            _observed.Remove(hwnd);
 
         return new { windows, truncated, itemCount = windows.Count, textBytes };
     }
@@ -113,6 +121,22 @@ internal sealed class WindowEnumerationService
             throw new ProtocolException("windows.window-generation-mismatch");
         }
         return hwnd;
+    }
+
+    /** Returns only an already-observed exact ref; never synthesizes authority from an HWND. */
+    internal WindowRefDto? TryObserved(nint hwnd)
+    {
+        if (hwnd == 0 || !_observed.TryGetValue(hwnd, out var window)) return null;
+        try
+        {
+            ValidateObserved(window);
+            return window;
+        }
+        catch (ProtocolException)
+        {
+            _observed.Remove(hwnd);
+            return null;
+        }
     }
 
     private long Generation(string key, AutomationElement current)
