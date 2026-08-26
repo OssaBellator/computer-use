@@ -3,6 +3,7 @@ export const WINDOWS_NATIVE_HOST_PROTOCOL_VERSION = 1 as const;
 export const WINDOWS_NATIVE_HOST_OPERATIONS = [
   'hello',
   'system.windows',
+  'system.virtual-desktop',
   'uia.resolve-window',
   'uia.build-cache',
   'uia.resolve-control',
@@ -64,9 +65,8 @@ export class WindowsNativeHostError extends Error {
 
 /**
  * Correlates each request to exactly one bounded native-host response. The host
- * protocol intentionally contains no shell/command operation; only typed window
- * discovery, UIA, capture, integrity, artifact, and SendInput primitives cross
- * this boundary.
+ * protocol intentionally contains no shell/command operation; only typed system,
+ * UIA, capture, integrity, artifact, and SendInput primitives cross this boundary.
  */
 export class WindowsNativeHostProtocolClient {
   private closed=false;
