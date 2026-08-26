@@ -11,7 +11,7 @@ function ref(runtimeId:number[],controlType:string,generation:number){
 
 test('cached observation preserves bounded recursive Control View tree with exact metrics', () => {
   const value={
-    window:windowRef,itemCount:3,textBytes:11,truncated:false,invalidationEpoch:4,capturedAtMs:10,
+    window:windowRef,itemCount:3,textBytes:13,truncated:false,invalidationEpoch:4,capturedAtMs:10,
     root:{
       ref:ref([1],'Window',1),name:'Root',patterns:['window'],children:[
         {ref:ref([1,1],'Button',1),name:'Save',patterns:['invoke']},
@@ -24,7 +24,7 @@ test('cached observation preserves bounded recursive Control View tree with exac
   assert.equal(captured?.root?.children?.length,2);
   assert.equal(captured?.root?.children?.[1]?.value,'abc');
   assert.equal(captured?.itemCount,3);
-  assert.equal(captured?.textBytes,11);
+  assert.equal(captured?.textBytes,13);
 });
 
 test('tree metrics cannot under-report or over-report represented content', () => {
