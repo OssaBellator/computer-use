@@ -102,9 +102,14 @@ internal static class NativeMethods
 
     internal static void ThrowLastWin32(string operation)
     {
-        if (string.IsNullOrWhiteSpace(operation) || operation.Length > 64 || operation.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_')))
+        if (string.IsNullOrWhiteSpace(operation) || operation.Length > 64)
             throw new ProtocolException("win32.operation-invalid");
-        throw new ProtocolException($"win32.{operation}.{Marshal.GetLastWin32Error()}");
+        var normalized = new string(operation.ToLowerInvariant()
+            .Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')
+            .ToArray()).Trim('-');
+        if (normalized.Length == 0 || normalized.Length > 64)
+            throw new ProtocolException("win32.operation-invalid");
+        throw new ProtocolException($"win32.{normalized}.{Marshal.GetLastWin32Error()}");
     }
 
     [StructLayout(LayoutKind.Sequential)]
