@@ -115,18 +115,185 @@ const MAX_DEPTH = 128;
 const MAX_RUNTIME_ID_PARTS = 64;
 const MAX_ID_BYTES = 256;
 const MAX_VALUE_BYTES = 16_384;
+const MAX_EVIDENCE = 16;
+const MAX_EVIDENCE_BYTES = 128;
+const MAX_RECT_MAGNITUDE = 1_000_000;
 const TOKEN_PATTERN = /^[a-z0-9][a-z0-9._:-]{0,127}$/i;
+const EXPAND_STATES = new Set(['expanded','collapsed']);
+const SCROLL_AMOUNTS = new Set(['large-decrement','small-decrement','no-amount','large-increment','small-increment']);
+const WINDOW_OPERATIONS = new Set(['minimize','maximize','restore','close']);
+const REVALIDATION_STATUSES = new Set(['current','stale','missing','ambiguous','inaccessible']);
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-function boundedString(value: unknown, maxBytes = MAX_ID_BYTES): value is string {
-  return typeof value === 'string' && value.length > 0 && !value.includes('\0') && utf8Bytes(value) <= maxBytes;
+function boundedString(value: unknown, maxBytes = MAX_ID_BYTES, allowEmpty = false): value is string {
+  return typeof value === 'string' && (allowEmpty || value.length > 0) && !value.includes('\0') && utf8Bytes(value) <= maxBytes;
 }
 
 function validGeneration(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function boundedFinite(value:unknown,maxMagnitude=MAX_RECT_MAGNITUDE):value is number {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= maxMagnitude;
+}
+
+function captureOwnDataObject(value: unknown, allowed: readonly string[]): Readonly<Record<string, unknown>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+    const captured:Record<string,unknown> = Object.create(null);
+    for (const key of allowed) {
+      const descriptor = Object.getOwnPropertyDescriptor(value,key);
+      if (descriptor === undefined) continue;
+      if (!('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
+      captured[key] = descriptor.value;
+    }
+    return Object.freeze(captured);
+  } catch {
+    return undefined;
+  }
+}
+
+function capturePlainArray(value:unknown,maxLength:number):readonly unknown[]|undefined {
+  if (!Array.isArray(value)) return undefined;
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return undefined;
+    const length = Object.getOwnPropertyDescriptor(value,'length');
+    if (!length || !('value' in length) || !Number.isSafeInteger(length.value) || length.value < 0 || length.value > maxLength) return undefined;
+    const captured:unknown[] = [];
+    for (let index=0; index<length.value; index+=1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value,String(index));
+      if (!descriptor || !('value' in descriptor) || descriptor.get !== undefined || descriptor.set !== undefined || !descriptor.enumerable) return undefined;
+      captured.push(descriptor.value);
+    }
+    return Object.freeze(captured);
+  } catch {
+    return undefined;
+  }
+}
+
+function captureEvidence(value:unknown):readonly string[]|undefined {
+  if (value === undefined) return undefined;
+  const raw = capturePlainArray(value,MAX_EVIDENCE);
+  if (!raw || raw.some((entry)=>!boundedString(entry,MAX_EVIDENCE_BYTES))) return undefined;
+  return Object.freeze(raw as readonly string[]);
+}
+
+function captureProcess(value:unknown):WindowsProcessGeneration|undefined {
+  const raw = captureOwnDataObject(value,['processId','startIdentity']);
+  if (!raw || !Number.isSafeInteger(raw.processId) || (raw.processId as number) <= 0 || !boundedString(raw.startIdentity)) return undefined;
+  return Object.freeze({processId:raw.processId as number,startIdentity:raw.startIdentity});
+}
+
+export function captureWindowsUiaWindowRef(value:unknown):WindowsUiaWindowRef|undefined {
+  const raw = captureOwnDataObject(value,['hwnd','desktopSessionId','process','generation']);
+  if (!raw || !boundedString(raw.hwnd) || !boundedString(raw.desktopSessionId) || !validGeneration(raw.generation)) return undefined;
+  const process = captureProcess(raw.process);
+  if (!process) return undefined;
+  return Object.freeze({hwnd:raw.hwnd,desktopSessionId:raw.desktopSessionId,process,generation:raw.generation});
+}
+
+export function captureWindowsUiaControlRef(value:unknown):WindowsUiaControlRef|undefined {
+  const raw = captureOwnDataObject(value,['window','runtimeId','automationId','controlType','structuralPathHash','generation']);
+  if (!raw || !boundedString(raw.controlType) || !validGeneration(raw.generation)) return undefined;
+  const window = captureWindowsUiaWindowRef(raw.window);
+  const runtimeIdRaw = capturePlainArray(raw.runtimeId,MAX_RUNTIME_ID_PARTS);
+  if (!window || !runtimeIdRaw || runtimeIdRaw.length === 0 || runtimeIdRaw.some((part)=>!Number.isSafeInteger(part))) return undefined;
+  if (raw.automationId !== undefined && !boundedString(raw.automationId)) return undefined;
+  if (raw.structuralPathHash !== undefined && (typeof raw.structuralPathHash !== 'string' || !TOKEN_PATTERN.test(raw.structuralPathHash))) return undefined;
+  return Object.freeze({
+    window,
+    runtimeId:Object.freeze(runtimeIdRaw as readonly number[]),
+    ...(raw.automationId !== undefined ? {automationId:raw.automationId as string} : {}),
+    controlType:raw.controlType,
+    ...(raw.structuralPathHash !== undefined ? {structuralPathHash:raw.structuralPathHash as string} : {}),
+    generation:raw.generation,
+  });
+}
+
+export function captureWindowsUiaSemanticAction(value:unknown):WindowsUiaSemanticAction|undefined {
+  const raw = captureOwnDataObject(value,['kind','value','state','horizontal','vertical','operation']);
+  if (!raw || typeof raw.kind !== 'string') return undefined;
+  switch (raw.kind) {
+    case 'invoke': return Object.freeze({kind:'invoke'});
+    case 'toggle': return Object.freeze({kind:'toggle'});
+    case 'select': return Object.freeze({kind:'select'});
+    case 'set-value':
+      return boundedString(raw.value,MAX_VALUE_BYTES) ? Object.freeze({kind:'set-value',value:raw.value}) : undefined;
+    case 'set-range-value':
+      return typeof raw.value === 'number' && Number.isFinite(raw.value) ? Object.freeze({kind:'set-range-value',value:raw.value}) : undefined;
+    case 'expand-collapse':
+      return typeof raw.state === 'string' && EXPAND_STATES.has(raw.state) ? Object.freeze({kind:'expand-collapse',state:raw.state as 'expanded'|'collapsed'}) : undefined;
+    case 'scroll':
+      return typeof raw.horizontal === 'string' && SCROLL_AMOUNTS.has(raw.horizontal) && typeof raw.vertical === 'string' && SCROLL_AMOUNTS.has(raw.vertical)
+        ? Object.freeze({kind:'scroll',horizontal:raw.horizontal as WindowsUiaSemanticAction & never,vertical:raw.vertical as never}) as WindowsUiaSemanticAction
+        : undefined;
+    case 'window':
+      return typeof raw.operation === 'string' && WINDOW_OPERATIONS.has(raw.operation)
+        ? Object.freeze({kind:'window',operation:raw.operation as 'minimize'|'maximize'|'restore'|'close'})
+        : undefined;
+    default:return undefined;
+  }
+}
+
+function captureBounds(value:unknown):DesktopRect|undefined {
+  if (value === undefined) return undefined;
+  const raw = captureOwnDataObject(value,['x','y','width','height']);
+  if (!raw || !boundedFinite(raw.x) || !boundedFinite(raw.y) || !boundedFinite(raw.width) || !boundedFinite(raw.height) || raw.width < 0 || raw.height < 0) return undefined;
+  return Object.freeze({x:raw.x,y:raw.y,width:raw.width,height:raw.height});
+}
+
+function captureControlSnapshot(value:unknown):WindowsUiaControlSnapshot|undefined {
+  const raw = captureOwnDataObject(value,['ref','name','value','enabled','offscreen','bounds','patterns']);
+  if (!raw) return undefined;
+  const ref = captureWindowsUiaControlRef(raw.ref);
+  const patternsRaw = capturePlainArray(raw.patterns,WINDOWS_UIA_PATTERNS.length);
+  if (!ref || !patternsRaw || patternsRaw.some((pattern)=>typeof pattern !== 'string' || !WINDOWS_UIA_PATTERNS.includes(pattern as WindowsUiaPattern))) return undefined;
+  if (raw.name !== undefined && !boundedString(raw.name,MAX_VALUE_BYTES,true)) return undefined;
+  if (raw.value !== undefined && !boundedString(raw.value,MAX_VALUE_BYTES,true)) return undefined;
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') return undefined;
+  if (raw.offscreen !== undefined && typeof raw.offscreen !== 'boolean') return undefined;
+  const bounds = captureBounds(raw.bounds);
+  if (raw.bounds !== undefined && !bounds) return undefined;
+  return Object.freeze({
+    ref,
+    ...(raw.name !== undefined ? {name:raw.name as string} : {}),
+    ...(raw.value !== undefined ? {value:raw.value as string} : {}),
+    ...(raw.enabled !== undefined ? {enabled:raw.enabled as boolean} : {}),
+    ...(raw.offscreen !== undefined ? {offscreen:raw.offscreen as boolean} : {}),
+    ...(bounds ? {bounds} : {}),
+    patterns:Object.freeze(patternsRaw as readonly WindowsUiaPattern[]),
+  });
+}
+
+function captureRevalidation(value:unknown):WindowsUiaRevalidation|undefined {
+  const raw = captureOwnDataObject(value,['status','control','evidence']);
+  if (!raw || typeof raw.status !== 'string' || !REVALIDATION_STATUSES.has(raw.status)) return undefined;
+  if (raw.status === 'current') {
+    const control = captureControlSnapshot(raw.control);
+    return control ? Object.freeze({status:'current',control}) : undefined;
+  }
+  const evidence = captureEvidence(raw.evidence);
+  if (raw.evidence !== undefined && evidence === undefined) return undefined;
+  return Object.freeze({status:raw.status as 'stale'|'missing'|'ambiguous'|'inaccessible',...(evidence ? {evidence} : {})});
+}
+
+function captureBackendResult(value:unknown):DesktopBackendActionResult|undefined {
+  const raw = captureOwnDataObject(value,['status','dispatched','verified','evidence']);
+  if (!raw || !['completed','rejected','unsupported','failed'].includes(raw.status as string) || typeof raw.dispatched !== 'boolean') return undefined;
+  if (raw.verified !== undefined && typeof raw.verified !== 'boolean') return undefined;
+  const evidence = captureEvidence(raw.evidence);
+  if (raw.evidence !== undefined && evidence === undefined) return undefined;
+  return Object.freeze({
+    status:raw.status as DesktopBackendActionResult['status'],
+    dispatched:raw.dispatched,
+    ...(raw.verified !== undefined ? {verified:raw.verified as boolean} : {}),
+    ...(evidence ? {evidence} : {}),
+  });
 }
 
 function validProcess(value: WindowsProcessGeneration): boolean {
@@ -134,23 +301,11 @@ function validProcess(value: WindowsProcessGeneration): boolean {
 }
 
 export function validateWindowsUiaWindowRef(ref: WindowsUiaWindowRef): boolean {
-  return boundedString(ref.hwnd) &&
-    boundedString(ref.desktopSessionId) &&
-    validProcess(ref.process) &&
-    validGeneration(ref.generation);
+  return captureWindowsUiaWindowRef(ref) !== undefined;
 }
 
 export function validateWindowsUiaControlRef(ref: WindowsUiaControlRef): boolean {
-  if (!validateWindowsUiaWindowRef(ref.window) ||
-      !Array.isArray(ref.runtimeId) ||
-      ref.runtimeId.length === 0 ||
-      ref.runtimeId.length > MAX_RUNTIME_ID_PARTS ||
-      ref.runtimeId.some((part) => !Number.isSafeInteger(part)) ||
-      !boundedString(ref.controlType) ||
-      !validGeneration(ref.generation)) return false;
-  if (ref.automationId !== undefined && !boundedString(ref.automationId)) return false;
-  if (ref.structuralPathHash !== undefined && !TOKEN_PATTERN.test(ref.structuralPathHash)) return false;
-  return true;
+  return captureWindowsUiaControlRef(ref) !== undefined;
 }
 
 export function sameWindowsUiaWindow(a: WindowsUiaWindowRef, b: WindowsUiaWindowRef): boolean {
@@ -183,19 +338,7 @@ export function requiredWindowsUiaPattern(action: WindowsUiaSemanticAction): Win
 }
 
 export function validateWindowsUiaSemanticAction(action: WindowsUiaSemanticAction): boolean {
-  switch (action.kind) {
-    case 'set-value':
-      return boundedString(action.value, MAX_VALUE_BYTES);
-    case 'set-range-value':
-      return Number.isFinite(action.value);
-    case 'invoke':
-    case 'toggle':
-    case 'select':
-    case 'expand-collapse':
-    case 'scroll':
-    case 'window':
-      return true;
-  }
+  return captureWindowsUiaSemanticAction(action) !== undefined;
 }
 
 function limits(input?: ComputerObservationLimits): Required<ComputerObservationLimits> {
@@ -226,9 +369,10 @@ function mapBackendResult(result: DesktopBackendActionResult): ComputerActionRes
 export class WindowsUiaSemanticRuntime {
   constructor(readonly provider: WindowsUiaProvider) {}
 
-  observe(window: WindowsUiaWindowRef, inputLimits?: ComputerObservationLimits): Promise<WindowsUiaCachedObservation> {
-    if (!validateWindowsUiaWindowRef(window)) return Promise.reject(new Error('invalid-windows-uia-window-ref'));
-    return this.provider.observeCached(window, limits(inputLimits));
+  async observe(window: WindowsUiaWindowRef, inputLimits?: ComputerObservationLimits): Promise<WindowsUiaCachedObservation> {
+    const authority = captureWindowsUiaWindowRef(window);
+    if (!authority) throw new Error('invalid-windows-uia-window-ref');
+    return this.provider.observeCached(authority, limits(inputLimits));
   }
 
   async act(
@@ -236,18 +380,24 @@ export class WindowsUiaSemanticRuntime {
     action: WindowsUiaSemanticAction,
     effect: ComputerEffectClass,
   ): Promise<ComputerActionResult> {
-    if (!validateWindowsUiaControlRef(ref) || !validateWindowsUiaSemanticAction(action)) {
+    const authorityRef = captureWindowsUiaControlRef(ref);
+    const authorityAction = captureWindowsUiaSemanticAction(action);
+    if (!authorityRef || !authorityAction) {
       return { status:'rejected', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-request-invalid'] };
     }
     if (effect === 'observe-only') {
       return { status:'rejected', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-effect-invalid'] };
     }
 
-    let current: WindowsUiaRevalidation;
+    let currentRaw: WindowsUiaRevalidation;
     try {
-      current = await this.provider.revalidateControl(ref);
+      currentRaw = await this.provider.revalidateControl(authorityRef);
     } catch {
       return { status:'failed', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-revalidation-failed'] };
+    }
+    const current = captureRevalidation(currentRaw);
+    if (!current) {
+      return { status:'failed', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-revalidation-invalid'] };
     }
     if (current.status !== 'current') {
       return {
@@ -257,19 +407,24 @@ export class WindowsUiaSemanticRuntime {
         evidence: Object.freeze([`windows-uia-${current.status}`, ...(current.evidence ?? [])]),
       };
     }
-    if (!sameWindowsUiaControl(ref, current.control.ref)) {
+    if (!sameWindowsUiaControl(authorityRef, current.control.ref)) {
       return { status:'rejected', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-control-replaced'] };
     }
     if (current.control.enabled === false) {
       return { status:'rejected', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-control-disabled'] };
     }
-    const required = requiredWindowsUiaPattern(action);
+    const required = requiredWindowsUiaPattern(authorityAction);
     if (!current.control.patterns.includes(required)) {
       return { status:'unsupported', dispatch:'not-dispatched', verification:'unverified', evidence:['windows-uia-pattern-unsupported'] };
     }
 
     try {
-      return mapBackendResult(await this.provider.performSemanticAction(ref, action, effect));
+      const rawResult = await this.provider.performSemanticAction(authorityRef, authorityAction, effect);
+      const capturedResult = captureBackendResult(rawResult);
+      if (!capturedResult) {
+        return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['windows-uia-dispatch-result-invalid']};
+      }
+      return mapBackendResult(capturedResult);
     } catch {
       return { status:'unknown', dispatch:'unknown', verification:'unverified', evidence:['windows-uia-dispatch-uncertain'] };
     }
