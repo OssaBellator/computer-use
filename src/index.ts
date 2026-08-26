@@ -87,6 +87,8 @@ export * from './computer/windowsInteractionCoordinator.js';
 export * from './computer/windowsProviderCapabilities.js';
 export * from './computer/windowsNativeHostProtocol.js';
 export * from './computer/windowsNativeHostAdapters.js';
+export * from './computer/windowsNativeHostComApartment.js';
+export * from './computer/windowsNativeHostStdioTransport.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
 export * from './input/browserInput.js';
