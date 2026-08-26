@@ -9,14 +9,19 @@ internal sealed class MtaExecutor : IDisposable
     private readonly BlockingCollection<WorkItem> _queue = new(new ConcurrentQueue<WorkItem>());
     private readonly Thread _thread;
     private readonly TaskCompletionSource<string> _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly string _purpose;
     private int _disposed;
 
-    internal MtaExecutor()
+    internal MtaExecutor(string purpose = "uia")
     {
+        if (string.IsNullOrWhiteSpace(purpose) || purpose.Length > 32 ||
+            purpose.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_')))
+            throw new ArgumentException("native-mta-purpose-invalid", nameof(purpose));
+        _purpose = purpose.ToLowerInvariant();
         _thread = new Thread(Run)
         {
             IsBackground = true,
-            Name = "ossa-computer-use-uia-mta",
+            Name = $"ossa-computer-use-{_purpose}-mta",
         };
         _thread.SetApartmentState(ApartmentState.MTA);
         _thread.Start();
@@ -61,7 +66,7 @@ internal sealed class MtaExecutor : IDisposable
 
         try
         {
-            _started.TrySetResult($"uia-mta-{Environment.ProcessId}-{Environment.CurrentManagedThreadId}");
+            _started.TrySetResult($"{_purpose}-mta-{Environment.ProcessId}-{Environment.CurrentManagedThreadId}");
             foreach (var item in _queue.GetConsumingEnumerable())
             {
                 try
