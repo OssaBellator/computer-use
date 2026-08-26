@@ -9,7 +9,7 @@ interface ActiveRegistration {
   active:boolean;
   readonly registration:WindowsUiaEventRegistration;
   readonly onEvent:(event:WindowsUiaInvalidationEvent)=>void;
-  readonly loop:Promise<void>;
+  loop:Promise<void>;
 }
 
 function captureOwnDataObject(value:unknown,allowed:readonly string[]):Readonly<Record<string,unknown>>|undefined {
@@ -63,7 +63,7 @@ export class WindowsNativeHostUiaEventBridge implements WindowsUiaEventBridge {
   }
 
   async register(registration:WindowsUiaEventRegistration,onEvent:(event:WindowsUiaInvalidationEvent)=>void):Promise<void>{
-    if(!REGISTRATION_ID.test(registration.registrationId)||this.active.has(registration.registrationId)){
+    if(!REGISTRATION_ID.test(registration.registrationId)||this.active.has(registration.registrationId)||registration.events.length===0){
       throw new Error('windows-native-host-uia-event-registration-invalid');
     }
     const raw=captureOwnDataObject(await this.protocol.call('uia.events.register',Object.freeze({
@@ -74,15 +74,9 @@ export class WindowsNativeHostUiaEventBridge implements WindowsUiaEventBridge {
     })),['registered']);
     if(!raw||raw.registered!==true)throw new Error('windows-native-host-uia-event-register-response-invalid');
 
-    const state={
-      active:true,
-      registration,
-      onEvent,
-      loop:Promise.resolve(),
-    } as ActiveRegistration;
+    const state:ActiveRegistration={active:true,registration,onEvent,loop:Promise.resolve()};
     this.active.set(registration.registrationId,state);
-    const loop=this.pollLoop(state);
-    Object.defineProperty(state,'loop',{value:loop,enumerable:true,writable:false,configurable:false});
+    state.loop=this.pollLoop(state);
   }
 
   async unregister(registrationId:string):Promise<void>{
@@ -119,9 +113,10 @@ export class WindowsNativeHostUiaEventBridge implements WindowsUiaEventBridge {
       }catch{
         if(!state.active)break;
         if(!failureInvalidated){
-          // A broken freshness channel invalidates current semantic caches. The
-          // caller must re-observe; this callback is never treated as success.
-          state.onEvent('structure-changed');
+          // Use an invalidation event already authorized by this registration so
+          // WindowsUiaEventRouter cannot filter out the conservative freshness loss.
+          const fallback=state.registration.events[0];
+          if(fallback)state.onEvent(fallback);
           failureInvalidated=true;
         }
       }
