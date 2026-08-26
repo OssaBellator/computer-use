@@ -82,6 +82,7 @@ export * from './computer/windowsSendInputPlan.js';
 export * from './computer/windowsVisualFrame.js';
 export * from './computer/windowsGraphicsCaptureRuntime.js';
 export * from './computer/windowsVisualArtifactRetention.js';
+export * from './computer/windowsVisualGroundingProvider.js';
 export * from './computer/windowsWindowAuthority.js';
 export * from './computer/windowsInteractionCoordinator.js';
 export * from './computer/windowsProviderCapabilities.js';
