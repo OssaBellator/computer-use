@@ -3,8 +3,9 @@ import type { DesktopVisualAcquisitionLimits, DesktopBackendActionResult } from 
 import type { WindowsComApartmentContext } from './windowsComApartment.js';
 import type { WindowsGraphicsCaptureNativeBridge, WindowsGraphicsCaptureNativeFrame } from './windowsGraphicsCaptureRuntime.js';
 import { WindowsNativeHostProtocolClient } from './windowsNativeHostProtocol.js';
+import type { WindowsNativeInputDispatchAuthority } from './windowsNativeInputGate.js';
 import type { WindowsProcessTokenIntegrityReader } from './windowsProcessIntegrity.js';
-import type { WindowsSendInputEvent, WindowsSendInputNativeBridge } from './windowsSendInputPlan.js';
+import type { WindowsSendInputEvent, WindowsSendInputNativeBridge, WindowsSendInputNativeResult } from './windowsSendInputPlan.js';
 import type { WindowsUiaCacheRequestPlan } from './windowsUiaCacheRequestPlan.js';
 import {
   captureDesktopBackendActionResult,
@@ -23,6 +24,7 @@ import type { WindowsUiaNativeElementHandle } from './windowsUiaProviderRuntime.
 
 const TOKEN_PATTERN=/^[a-z0-9][a-z0-9._:-]{0,191}$/i;
 const MEDIA_PATTERN=/^[a-z0-9][a-z0-9.+-]{0,63}\/[a-z0-9][a-z0-9.+-]{0,63}$/i;
+const EVIDENCE_PATTERN=/^[a-z0-9][a-z0-9._:-]{0,191}$/i;
 const MAX_DIMENSION=32_768;
 
 function captureOwnDataObject(value:unknown,allowed:readonly string[]):Readonly<Record<string,unknown>>|undefined {
@@ -100,10 +102,15 @@ function rid(value:unknown):number {
   if(!raw||!boundedInt(raw.rid,0,0xffff)) throw new Error('windows-native-host-integrity-response-invalid');
   return raw.rid;
 }
-function insertedCount(value:unknown):number {
-  const raw=captureOwnDataObject(value,['insertedEventCount']);
-  if(!raw||!boundedInt(raw.insertedEventCount,0,4_096)) throw new Error('windows-native-host-input-response-invalid');
-  return raw.insertedEventCount;
+function captureInputResult(value:unknown):WindowsSendInputNativeResult|undefined {
+  const raw=captureOwnDataObject(value,['insertedEventCount','preDispatchFailure']);
+  if(!raw||!boundedInt(raw.insertedEventCount,0,4_096))return undefined;
+  if(raw.preDispatchFailure!==undefined&&(typeof raw.preDispatchFailure!=='string'||!EVIDENCE_PATTERN.test(raw.preDispatchFailure)))return undefined;
+  if(raw.preDispatchFailure!==undefined&&raw.insertedEventCount!==0)return undefined;
+  return Object.freeze({
+    insertedEventCount:raw.insertedEventCount,
+    ...(raw.preDispatchFailure!==undefined?{preDispatchFailure:raw.preDispatchFailure}:{}),
+  });
 }
 
 /** UIA operations scoped to the same serialized MTA executor as their handles. */
@@ -168,8 +175,16 @@ export class WindowsNativeHostIntegrityReader implements WindowsProcessTokenInte
 
 export class WindowsNativeHostSendInputBridge implements WindowsSendInputNativeBridge {
   constructor(readonly protocol:WindowsNativeHostProtocolClient) {}
-  async sendInput(events:readonly WindowsSendInputEvent[]):Promise<number> {
+  async sendInput(events:readonly WindowsSendInputEvent[],authority:WindowsNativeInputDispatchAuthority):Promise<WindowsSendInputNativeResult> {
     if(!Array.isArray(events)||events.length<1||events.length>4_096) throw new Error('windows-native-host-input-events-invalid');
-    return insertedCount(await this.protocol.call('input.send',Object.freeze({events:Object.freeze([...events])})));
+    const targetWindow=captureWindowsUiaWindowRef(authority.targetWindow);
+    if(!targetWindow||!boundedInt(authority.humanInputSequence))throw new Error('windows-native-host-input-authority-invalid');
+    const result=captureInputResult(await this.protocol.call('input.send',Object.freeze({
+      events:Object.freeze([...events]),
+      targetWindow,
+      expectedHumanInputSequence:authority.humanInputSequence,
+    })));
+    if(!result)throw new Error('windows-native-host-input-response-invalid');
+    return result;
   }
 }
