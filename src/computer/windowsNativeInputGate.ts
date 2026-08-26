@@ -10,8 +10,21 @@ export interface WindowsNativeInputRequest {
   readonly effect: ComputerEffectClass;
 }
 
+export interface WindowsNativeInputDispatchResult {
+  /** Number of INPUT records submitted to the native dispatch call. */
+  readonly requestedEventCount: number;
+  /** Number of INPUT records the native call reports as inserted. */
+  readonly insertedEventCount: number;
+  readonly verified?: boolean;
+  readonly evidence?: readonly string[];
+}
+
 export interface WindowsNativeInputDispatcher {
-  dispatch(): Promise<{ readonly dispatched:boolean; readonly verified?:boolean; readonly evidence?:readonly string[] }>;
+  dispatch(): Promise<WindowsNativeInputDispatchResult>;
+}
+
+function validDispatchCount(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 4_096;
 }
 
 /**
@@ -45,8 +58,22 @@ export class WindowsNativeInputGate {
 
     try {
       const result = await dispatcher.dispatch();
-      if (!result.dispatched) {
+      if (!validDispatchCount(result.requestedEventCount) ||
+          !validDispatchCount(result.insertedEventCount) ||
+          result.requestedEventCount < 1 ||
+          result.insertedEventCount > result.requestedEventCount) {
+        return {status:'unknown',dispatch:'unknown',verification:'unverified',evidence:['windows-input-dispatch-result-invalid']};
+      }
+      if (result.insertedEventCount === 0) {
         return {status:'failed',dispatch:'not-dispatched',verification:'unverified',...(result.evidence ? {evidence:result.evidence} : {})};
+      }
+      if (result.insertedEventCount !== result.requestedEventCount) {
+        return {
+          status:'unknown',
+          dispatch:'unknown',
+          verification:'unverified',
+          evidence:Object.freeze(['windows-input-partial-dispatch',...(result.evidence ?? [])]),
+        };
       }
       return {
         status:'completed',
