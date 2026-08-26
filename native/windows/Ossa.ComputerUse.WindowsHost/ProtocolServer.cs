@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Windows.Graphics.Capture;
 
 namespace Ossa.ComputerUse.WindowsHost;
 
@@ -33,11 +34,13 @@ internal sealed class ProtocolServer : IDisposable
     };
 
     private readonly MtaExecutor _mta;
+    private readonly MtaExecutor _captureMta;
     private readonly NativeHostServices _services = new();
     private readonly UiaService _uia;
     private readonly UiaEventService _events;
     private readonly WindowEnumerationService _windows = new();
-    private readonly GraphicsCaptureService _capture;
+    private readonly GraphicsCaptureService _capture = new();
+    private readonly bool _captureAvailable;
     private readonly HumanInputMonitor? _humanInput;
     private readonly TextReader _input;
     private readonly TextWriter _output;
@@ -48,7 +51,15 @@ internal sealed class ProtocolServer : IDisposable
         _mta = mta;
         _uia = new UiaService(mta.ThreadToken);
         _events = new UiaEventService(mta.ThreadToken);
-        _capture = new GraphicsCaptureService(_windows);
+        _captureMta = new MtaExecutor("capture");
+        try
+        {
+            _captureAvailable = _captureMta.InvokeAsync(GraphicsCaptureSession.IsSupported).GetAwaiter().GetResult();
+        }
+        catch
+        {
+            _captureAvailable = false;
+        }
         try
         {
             _humanInput = new HumanInputMonitor();
@@ -120,7 +131,7 @@ internal sealed class ProtocolServer : IDisposable
         {
             if (operation is "capture.next-frame" or "artifact.release")
             {
-                if (_capture.IsAvailable) result.Add(operation);
+                if (_captureAvailable) result.Add(operation);
                 continue;
             }
             if (operation == "input.human-sequence")
@@ -164,14 +175,45 @@ internal sealed class ProtocolServer : IDisposable
             "uia.events.register" => _mta.InvokeAsync(() => _events.Register(ProtocolJson.DeserializeBody<UiaEventRegisterRequest>(request.Body))),
             "uia.events.unregister" => _mta.InvokeAsync(() => _events.Unregister(ProtocolJson.DeserializeBody<UiaEventUnregisterRequest>(request.Body))),
             "uia.events.poll" => _mta.InvokeAsync(() => _events.Poll(ProtocolJson.DeserializeBody<UiaEventPollRequest>(request.Body))),
-            "capture.next-frame" => _capture.IsAvailable
-                ? _capture.CaptureAsync(ProtocolJson.DeserializeBody<CaptureNextFrameRequest>(request.Body))
-                : throw new ProtocolException("capture.unsupported"),
-            "artifact.release" => _capture.IsAvailable
-                ? Task.FromResult(_capture.Release(ProtocolJson.DeserializeBody<ArtifactReleaseRequest>(request.Body)))
-                : throw new ProtocolException("capture.unsupported"),
+            "capture.next-frame" => CaptureFrameAsync(ProtocolJson.DeserializeBody<CaptureNextFrameRequest>(request.Body)),
+            "artifact.release" => ReleaseArtifactAsync(ProtocolJson.DeserializeBody<ArtifactReleaseRequest>(request.Body)),
             _ => throw new ProtocolException("protocol.operation-unsupported"),
         };
+    }
+
+    private async Task<object> CaptureFrameAsync(CaptureNextFrameRequest request)
+    {
+        if (!_captureAvailable) throw new ProtocolException("capture.unsupported");
+
+        // Window identity is owned by the UIA MTA. Validate immediately before
+        // crossing into the capture apartment, then again before returning the
+        // retained artifact to the caller.
+        var hwnd = await _mta.InvokeAsync(() => _windows.ValidateObserved(request.Window)).ConfigureAwait(false);
+        var response = await _captureMta.InvokeAsync(() => _capture.Capture(request, hwnd)).ConfigureAwait(false);
+        try
+        {
+            await _mta.InvokeAsync(() =>
+            {
+                _windows.ValidateObserved(request.Window);
+                return true;
+            }).ConfigureAwait(false);
+            return response;
+        }
+        catch
+        {
+            await _captureMta.InvokeAsync(() =>
+            {
+                _capture.Revoke(response);
+                return true;
+            }).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private Task<object> ReleaseArtifactAsync(ArtifactReleaseRequest request)
+    {
+        if (!_captureAvailable) throw new ProtocolException("capture.unsupported");
+        return _captureMta.InvokeAsync(() => _capture.Release(request));
     }
 
     private async Task WriteOkAsync(string id, object body)
@@ -195,7 +237,18 @@ internal sealed class ProtocolServer : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _humanInput?.Dispose();
-        _capture.Dispose();
+        try
+        {
+            _captureMta.InvokeAsync(() =>
+            {
+                _capture.Dispose();
+                return true;
+            }).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            _captureMta.Dispose();
+        }
         try
         {
             _mta.InvokeAsync(() =>
@@ -206,7 +259,7 @@ internal sealed class ProtocolServer : IDisposable
         }
         catch (ObjectDisposedException)
         {
-            // MTA is already unavailable; process teardown will release remaining OS state.
+            // UIA MTA is already unavailable; process teardown will release OS state.
         }
     }
 
