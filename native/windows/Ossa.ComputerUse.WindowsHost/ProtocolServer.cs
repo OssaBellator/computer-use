@@ -26,6 +26,7 @@ internal sealed class ProtocolServer
     };
 
     private readonly MtaExecutor _mta;
+    private readonly NativeHostServices _services = new();
     private readonly TextReader _input;
     private readonly TextWriter _output;
 
@@ -115,7 +116,18 @@ internal sealed class ProtocolServer
                 threadToken = _mta.ThreadToken,
                 operations = Operations.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
             }),
-            _ => throw new ProtocolException("feature.not-implemented"),
+            "system.windows" => Task.FromResult(_services.ListWindows(ProtocolJson.DeserializeBody<WindowListRequest>(request.Body))),
+            "integrity.current" => Task.FromResult(_services.ReadCurrentIntegrity()),
+            "integrity.process" => Task.FromResult(_services.ReadProcessIntegrity(ProtocolJson.DeserializeBody<IntegrityProcessRequest>(request.Body))),
+            "input.send" => Task.FromResult(_services.SendInput(ProtocolJson.DeserializeBody<SendInputRequest>(request.Body))),
+            "uia.resolve-window" or
+            "uia.build-cache" or
+            "uia.resolve-control" or
+            "uia.compare-elements" or
+            "uia.snapshot-control" or
+            "uia.perform-pattern" => throw new ProtocolException("uia.not-implemented"),
+            "capture.next-frame" or "artifact.release" => throw new ProtocolException("capture.not-implemented"),
+            _ => throw new ProtocolException("protocol.operation-unsupported"),
         };
     }
 
