@@ -90,6 +90,7 @@ export class WindowsInteractionCoordinator {
       lease:request.lease,
       targetDesktop:request.targetDesktop,
       targetSurface:request.targetSurface,
+      targetWindow:requestedWindow,
       integrity,
       effect:request.effect,
     },request.dispatcher);
