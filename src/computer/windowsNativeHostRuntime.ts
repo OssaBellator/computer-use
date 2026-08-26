@@ -8,6 +8,7 @@ import { WINDOWS_NATIVE_HOST_OPERATIONS, WindowsNativeHostProtocolClient, type W
 import { WindowsNativeHostStdioTransport } from './windowsNativeHostStdioTransport.js';
 import { WindowsNativeHostSystemObserver } from './windowsNativeHostSystem.js';
 import { WindowsNativeHostUiaEventBridge } from './windowsNativeHostUiaEventBridge.js';
+import { WindowsNativeHostWindowAuthority } from './windowsNativeHostWindowAuthority.js';
 import type { WindowsProviderCapabilityProfile, WindowsProviderCapabilityState, WindowsProviderCapabilitySupport } from './windowsProviderCapabilities.js';
 import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
@@ -50,6 +51,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
   const implemented=new Set(captureOperations(operations));
   const uiaObserve=has(implemented,'uia.resolve-window','uia.build-cache','uia.resolve-control','uia.compare-elements','uia.snapshot-control');
   const uiaAct=has(implemented,'uia.perform-pattern');
+  const modal=has(implemented,'uia.window-states');
   const input=has(implemented,'input.send');
   const integrity=has(implemented,'integrity.current','integrity.process');
   const capture=has(implemented,'capture.next-frame','artifact.release');
@@ -66,7 +68,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'uia-scroll':capability(uiaAct?'supported':'unsupported'),
       'uia-range-value':capability(uiaAct?'supported':'unsupported'),
       'uia-window':capability(uiaAct?'supported':'unsupported'),
-      'window-modal-authority':capability(uiaObserve?'partial':'unsupported','authority model exists; native modal snapshot composition remains incomplete'),
+      'window-modal-authority':capability(uiaObserve&&modal?'supported':uiaObserve?'partial':'unsupported',uiaObserve&&modal?undefined:'native modal/window-state observation unavailable'),
       'wgc-hwnd-capture':capability(capture?'supported':'unsupported','native Windows.Graphics.Capture unavailable in this host/session'),
       'visual-frame-binding':capability(capture?'supported':'partial','frame/generation validation exists without a live native capture producer'),
       'visual-grounding':capability(capture?'partial':'unsupported','capture is available but a production grounding provider remains separate'),
@@ -87,6 +89,7 @@ export interface WindowsNativeHostRuntime {
   readonly uia:WindowsUiaProviderRuntime;
   readonly events:WindowsUiaEventRouter;
   readonly system:WindowsNativeHostSystemObserver;
+  readonly windowAuthority?:WindowsNativeHostWindowAuthority;
   readonly integrity:WindowsNativeHostIntegrityReader;
   readonly input:WindowsNativeHostSendInputBridge;
   readonly humanInput?:WindowsNativeHostHumanInputObserver;
@@ -126,6 +129,7 @@ export async function openWindowsNativeHostRuntime(
     const eventBridge=new WindowsNativeHostUiaEventBridge(protocol,host.threadToken,options?.eventPollIntervalMs??50);
     const events=new WindowsUiaEventRouter(eventBridge,uia);
     const system=new WindowsNativeHostSystemObserver(protocol);
+    const windowAuthority=implementedSet.has('uia.window-states')?new WindowsNativeHostWindowAuthority(protocol):undefined;
     const integrity=new WindowsNativeHostIntegrityReader(protocol);
     const input=new WindowsNativeHostSendInputBridge(protocol);
 
@@ -144,7 +148,9 @@ export async function openWindowsNativeHostRuntime(
 
     let closed=false;
     return Object.freeze({
-      protocol,apartment,uia,events,system,integrity,input,
+      protocol,apartment,uia,events,system,
+      ...(windowAuthority?{windowAuthority}:{}),
+      integrity,input,
       ...(humanInput?{humanInput}:{}),
       ...(leases?{leases}:{}),
       ...(capture?{capture}:{}),
