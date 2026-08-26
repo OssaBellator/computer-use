@@ -63,6 +63,13 @@ internal sealed record PerformPatternRequest(
     ControlRefDto Ref,
     SemanticActionDto Action,
     string Effect);
+internal sealed record UiaEventRegisterRequest(
+    string ThreadToken,
+    string RegistrationId,
+    WindowRefDto Window,
+    string[] Events);
+internal sealed record UiaEventUnregisterRequest(string ThreadToken, string RegistrationId);
+internal sealed record UiaEventPollRequest(string ThreadToken, string RegistrationId, int MaxEvents = 64);
 internal sealed record WindowListRequest(int MaxItems = 256, int MaxTextBytes = 16_384);
 internal sealed record IntegrityProcessRequest(ProcessGenerationDto Process);
 internal sealed record ArtifactReleaseRequest(string Token);
