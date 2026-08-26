@@ -39,6 +39,10 @@ export class WindowsUiaCacheState {
     return `${window.desktopSessionId}:${window.hwnd}:${window.process.processId}:${window.process.startIdentity}:${window.generation}`;
   }
 
+  currentEpoch(window: WindowsUiaWindowRef): number {
+    return this.epochs.get(this.key(window))?.epoch ?? 0;
+  }
+
   register(observation: WindowsUiaCachedObservation): WindowsUiaCacheLease {
     if (!Number.isSafeInteger(observation.invalidationEpoch) || observation.invalidationEpoch < 0) {
       throw new Error('windows-uia-cache-epoch-invalid');
