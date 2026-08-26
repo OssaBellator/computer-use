@@ -131,7 +131,7 @@ internal sealed class UiaService
             return ActionResult("rejected", false, "windows-uia-control-generation-mismatch");
         if (snapshot.Enabled is false) return ActionResult("rejected", false, "windows-uia-control-disabled");
 
-        return InvokePattern(current, request.Action);
+        return DispatchPattern(current, request.Action);
     }
 
     private ControlSnapshotDto BuildNode(AutomationElement element, WindowRefDto window, CachePlanDto plan, TreeBuildState state, int depth)
@@ -203,7 +203,7 @@ internal sealed class UiaService
         request.Add(ValuePattern.ValueProperty);
         request.Add(WindowPattern.IsModalProperty);
         request.Add(WindowPattern.WindowInteractionStateProperty);
-        request.Add(InvokePattern.Pattern);
+        request.Add(System.Windows.Automation.InvokePattern.Pattern);
         request.Add(ValuePattern.Pattern);
         request.Add(TogglePattern.Pattern);
         request.Add(SelectionItemPattern.Pattern);
@@ -284,13 +284,13 @@ internal sealed class UiaService
         return null;
     }
 
-    private static object InvokePattern(AutomationElement element, SemanticActionDto action)
+    private static object DispatchPattern(AutomationElement element, SemanticActionDto action)
     {
         switch (action.Kind)
         {
             case "invoke":
-                if (!element.TryGetCurrentPattern(InvokePattern.Pattern, out var invoke)) return ActionResult("unsupported", false, "windows-uia-pattern-unsupported");
-                ((InvokePattern)invoke).Invoke();
+                if (!element.TryGetCurrentPattern(System.Windows.Automation.InvokePattern.Pattern, out var invoke)) return ActionResult("unsupported", false, "windows-uia-pattern-unsupported");
+                ((System.Windows.Automation.InvokePattern)invoke).Invoke();
                 return ActionResult("completed", true, null);
             case "set-value":
                 var text = StringActionValue(action.Value);
@@ -466,7 +466,7 @@ internal sealed class UiaService
     private static string[] SupportedPatterns(AutomationElement element)
     {
         var result = new List<string>(8);
-        if (element.TryGetCurrentPattern(InvokePattern.Pattern, out _)) result.Add("invoke");
+        if (element.TryGetCurrentPattern(System.Windows.Automation.InvokePattern.Pattern, out _)) result.Add("invoke");
         if (element.TryGetCurrentPattern(ValuePattern.Pattern, out _)) result.Add("value");
         if (element.TryGetCurrentPattern(TogglePattern.Pattern, out _)) result.Add("toggle");
         if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out _)) result.Add("selection-item");
