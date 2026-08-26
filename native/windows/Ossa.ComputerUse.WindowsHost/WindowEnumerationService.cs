@@ -20,7 +20,7 @@ internal sealed class WindowEnumerationService
         var textBytes = 0;
         var truncated = false;
 
-        if (!NativeMethods.EnumWindows((hwnd, _) =>
+        var completed = NativeMethods.EnumWindows((hwnd, _) =>
         {
             if (!NativeMethods.IsWindowVisible(hwnd)) return true;
             if (windows.Count >= request.MaxItems) { truncated = true; return false; }
@@ -68,10 +68,10 @@ internal sealed class WindowEnumerationService
                 },
             });
             return true;
-        }, 0))
-        {
+        }, 0);
+
+        if (!completed && !truncated)
             throw new ProtocolException("windows.enumeration-failed");
-        }
 
         return new { windows, truncated, itemCount = windows.Count, textBytes };
     }
