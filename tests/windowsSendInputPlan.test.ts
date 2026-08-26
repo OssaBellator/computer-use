@@ -7,8 +7,15 @@ import {
   normalizeWindowsVirtualDesktopPoint,
   WindowsSendInputDispatcher,
 } from '../src/computer/windowsSendInputPlan.js';
+import type { WindowsNativeInputDispatchAuthority } from '../src/computer/windowsNativeInputGate.js';
 
 const virtualDesktop = Object.freeze({left:-1920,top:0,width:3840,height:1080});
+const authority:WindowsNativeInputDispatchAuthority=Object.freeze({
+  targetWindow:Object.freeze({
+    hwnd:'0x77',desktopSessionId:'session:1',process:Object.freeze({processId:77,startIdentity:'p77'}),generation:3,
+  }),
+  humanInputSequence:9,
+});
 
 test('absolute pointer maps virtual desktop endpoints to Win32 normalized range', () => {
   assert.deepEqual(normalizeWindowsVirtualDesktopPoint(-1920,0,virtualDesktop),{x:0,y:0});
@@ -52,10 +59,27 @@ test('relative pointer rejects excessive deltas', () => {
   assert.throws(()=>compileWindowsRelativePointerInput({dx:100_001,dy:0}),/relative-delta-invalid/);
 });
 
-test('SendInput dispatcher is exactly-once and reports native inserted count', async () => {
+test('SendInput dispatcher is exactly-once, forwards authority, and reports native inserted count', async () => {
   let calls = 0;
-  const dispatcher = new WindowsSendInputDispatcher({sendInput:async(events)=>{calls+=1;return events.length;}},compileWindowsKeyboardInput({kind:'text',text:'x'}));
-  assert.deepEqual(await dispatcher.dispatch(),{requestedEventCount:2,insertedEventCount:2});
-  await assert.rejects(()=>dispatcher.dispatch(),/dispatcher-reused/);
+  let seenAuthority:WindowsNativeInputDispatchAuthority|undefined;
+  const dispatcher = new WindowsSendInputDispatcher({
+    sendInput:async(events,nativeAuthority)=>{
+      calls+=1;
+      seenAuthority=nativeAuthority;
+      return {insertedEventCount:events.length};
+    },
+  },compileWindowsKeyboardInput({kind:'text',text:'x'}));
+  assert.deepEqual(await dispatcher.dispatch(authority),{requestedEventCount:2,insertedEventCount:2});
+  assert.equal(seenAuthority,authority);
+  await assert.rejects(()=>dispatcher.dispatch(authority),/dispatcher-reused/);
   assert.equal(calls,1);
+});
+
+test('SendInput dispatcher preserves a native definite pre-dispatch failure',async()=>{
+  const dispatcher=new WindowsSendInputDispatcher({
+    sendInput:async()=>({insertedEventCount:0,preDispatchFailure:'windows-input-target-not-foreground'}),
+  },compileWindowsRelativePointerInput({dx:0,dy:0}));
+  assert.deepEqual(await dispatcher.dispatch(authority),{
+    requestedEventCount:1,insertedEventCount:0,preDispatchFailure:'windows-input-target-not-foreground',
+  });
 });
