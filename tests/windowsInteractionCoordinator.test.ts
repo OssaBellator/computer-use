@@ -23,13 +23,13 @@ const binding = Object.freeze({frame,x:100,y:200});
 
 function semanticProvider(onDispatch:()=>void = ()=>undefined):WindowsUiaProvider {
   return {
-    observeCached:async(window)=>({window,itemCount:1,textBytes:0,truncated:false,invalidationEpoch:0,capturedAtMs:1}),
+    observeCached:async(window)=>({window,itemCount:0,textBytes:0,truncated:false,invalidationEpoch:0,capturedAtMs:1}),
     revalidateControl:async(captured)=>({status:'current',control:{ref:captured,enabled:true,patterns:['invoke']}}),
     performSemanticAction:async()=>{onDispatch();return {status:'completed',dispatched:true};},
   };
 }
 
-async function coordinator(inputSequence=1, targetRid=WINDOWS_MANDATORY_INTEGRITY_RIDS.low) {
+async function coordinator(inputSequence=1, targetRid:number=WINDOWS_MANDATORY_INTEGRITY_RIDS.low) {
   const leases = new DesktopInteractionLeaseManager({snapshot:async()=>({sequence:inputSequence})},()=>100);
   const gate = new WindowsNativeInputGate(leases);
   const runtime = new WindowsUiaSemanticRuntime(semanticProvider());
