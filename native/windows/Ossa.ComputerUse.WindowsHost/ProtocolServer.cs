@@ -28,6 +28,10 @@ internal sealed class ProtocolServer : IDisposable
         "integrity.process",
         "input.send",
     };
+    private static readonly string[] ImplementedOperations = Operations
+        .Where(value => value is not "capture.next-frame" and not "artifact.release")
+        .OrderBy(value => value, StringComparer.Ordinal)
+        .ToArray();
 
     private readonly MtaExecutor _mta;
     private readonly NativeHostServices _services = new();
@@ -103,6 +107,7 @@ internal sealed class ProtocolServer : IDisposable
                 apartment = "mta",
                 threadToken = _mta.ThreadToken,
                 operations = Operations.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+                implementedOperations = ImplementedOperations,
             }),
             "system.windows" => _mta.InvokeAsync(() => _windows.List(ProtocolJson.DeserializeBody<WindowListRequest>(request.Body))),
             "system.virtual-desktop" => Task.FromResult(VirtualDesktopService.Read()),
