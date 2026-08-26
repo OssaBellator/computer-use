@@ -13,8 +13,9 @@ const controlRef:WindowsUiaControlRef = Object.freeze({
 });
 const element = Object.freeze({token:'native-element-1'});
 
-test('MTA bridge keeps every native call on one apartment token', async () => {
+test('MTA bridge keeps every native call on one apartment token and carries validated ref into dispatch', async () => {
   const seen:string[] = [];
+  let dispatchedRef:WindowsUiaControlRef|undefined;
   const host = {
     apartment:'mta' as const,
     threadToken:'uia-mta-1',
@@ -28,7 +29,7 @@ test('MTA bridge keeps every native call on one apartment token', async () => {
     resolveControl:async(ctx)=>{seen.push(ctx.threadToken);return {status:'candidate',element};},
     compareElements:async(ctx)=>{seen.push(ctx.threadToken);return true;},
     snapshotControl:async(ctx)=>{seen.push(ctx.threadToken);return {status:'current',control:{ref:controlRef,patterns:['invoke']}};},
-    performPattern:async(ctx)=>{seen.push(ctx.threadToken);return {status:'completed',dispatched:true};},
+    performPattern:async(ctx,_element,ref)=>{seen.push(ctx.threadToken);dispatchedRef=ref;return {status:'completed',dispatched:true};},
   };
   const bridge = new WindowsUiaMtaBridge(apartment,client);
   await bridge.resolveWindow(windowRef);
@@ -36,8 +37,9 @@ test('MTA bridge keeps every native call on one apartment token', async () => {
   await bridge.resolveControl(controlRef);
   await bridge.compareElements(element,element);
   await bridge.snapshotControl(element,controlRef);
-  await bridge.performPattern(element,{kind:'invoke'},'local-reversible');
+  await bridge.performPattern(element,controlRef,{kind:'invoke'},'local-reversible');
   assert.deepEqual(seen,['uia-mta-1','uia-mta-1','uia-mta-1','uia-mta-1','uia-mta-1','uia-mta-1']);
+  assert.equal(dispatchedRef,controlRef);
   await apartment.dispose();
 });
 
