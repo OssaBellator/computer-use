@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -22,6 +23,7 @@ internal sealed class ProtocolServer : IDisposable
         "uia.compare-elements",
         "uia.snapshot-control",
         "uia.perform-pattern",
+        "uia.window-states",
         "uia.events.register",
         "uia.events.unregister",
         "uia.events.poll",
@@ -39,6 +41,7 @@ internal sealed class ProtocolServer : IDisposable
     private readonly UiaService _uia;
     private readonly UiaEventService _events;
     private readonly WindowEnumerationService _windows = new();
+    private readonly WindowAuthorityService _windowAuthority;
     private readonly GraphicsCaptureService _capture = new();
     private readonly bool _captureAvailable;
     private readonly HumanInputMonitor? _humanInput;
@@ -51,6 +54,7 @@ internal sealed class ProtocolServer : IDisposable
         _mta = mta;
         _uia = new UiaService(mta.ThreadToken);
         _events = new UiaEventService(mta.ThreadToken);
+        _windowAuthority = new WindowAuthorityService(_windows);
         _captureMta = new MtaExecutor("capture");
         try
         {
@@ -109,6 +113,16 @@ internal sealed class ProtocolServer : IDisposable
         catch (JsonException)
         {
             await WriteErrorAsync(ValidId(request?.Id) ? request!.Id : "invalid", "protocol.request-invalid").ConfigureAwait(false);
+        }
+        catch (COMException error)
+        {
+            await WriteErrorAsync(
+                ValidId(request?.Id) ? request!.Id : "invalid",
+                $"host.com.{unchecked((uint)error.HResult):x8}").ConfigureAwait(false);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            await WriteErrorAsync(ValidId(request?.Id) ? request!.Id : "invalid", "host.access-denied").ConfigureAwait(false);
         }
         catch
         {
@@ -172,6 +186,7 @@ internal sealed class ProtocolServer : IDisposable
             "uia.compare-elements" => _mta.InvokeAsync(() => _uia.CompareElements(ProtocolJson.DeserializeBody<CompareElementsRequest>(request.Body))),
             "uia.snapshot-control" => _mta.InvokeAsync(() => _uia.SnapshotControl(ProtocolJson.DeserializeBody<SnapshotControlRequest>(request.Body))),
             "uia.perform-pattern" => _mta.InvokeAsync(() => _uia.PerformPattern(ProtocolJson.DeserializeBody<PerformPatternRequest>(request.Body))),
+            "uia.window-states" => _mta.InvokeAsync(() => _windowAuthority.Observe(ProtocolJson.DeserializeBody<WindowStatesRequest>(request.Body))),
             "uia.events.register" => _mta.InvokeAsync(() => _events.Register(ProtocolJson.DeserializeBody<UiaEventRegisterRequest>(request.Body))),
             "uia.events.unregister" => _mta.InvokeAsync(() => _events.Unregister(ProtocolJson.DeserializeBody<UiaEventUnregisterRequest>(request.Body))),
             "uia.events.poll" => _mta.InvokeAsync(() => _events.Poll(ProtocolJson.DeserializeBody<UiaEventPollRequest>(request.Body))),
