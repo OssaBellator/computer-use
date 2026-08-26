@@ -18,6 +18,7 @@ export const WINDOWS_NATIVE_HOST_OPERATIONS = [
   'integrity.current',
   'integrity.process',
   'input.send',
+  'input.human-sequence',
 ] as const;
 export type WindowsNativeHostOperation = typeof WINDOWS_NATIVE_HOST_OPERATIONS[number];
 
@@ -66,7 +67,8 @@ export class WindowsNativeHostError extends Error {
 /**
  * Correlates each request to exactly one bounded native-host response. The host
  * protocol intentionally contains no shell/command operation; only typed system,
- * UIA, capture, integrity, artifact, and SendInput primitives cross this boundary.
+ * UIA, capture, integrity, artifact, human-input freshness, and SendInput
+ * primitives cross this boundary.
  */
 export class WindowsNativeHostProtocolClient {
   private closed=false;
