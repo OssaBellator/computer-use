@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -7,7 +8,7 @@ namespace Ossa.ComputerUse.WindowsHost;
 internal sealed class ProtocolServer : IDisposable
 {
     private const int ProtocolVersion = 1;
-    private const int MaxMessageChars = 1_048_576;
+    private const int MaxMessageBytes = 1_048_576;
     private static readonly Regex IdPattern = new("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly HashSet<string> Operations = new(StringComparer.Ordinal)
     {
@@ -30,7 +31,6 @@ internal sealed class ProtocolServer : IDisposable
         "input.send",
     };
     private static readonly string[] ImplementedOperations = Operations
-        .Where(value => value is not "capture.next-frame" and not "artifact.release")
         .OrderBy(value => value, StringComparer.Ordinal)
         .ToArray();
 
@@ -39,6 +39,7 @@ internal sealed class ProtocolServer : IDisposable
     private readonly UiaService _uia;
     private readonly UiaEventService _events;
     private readonly WindowEnumerationService _windows = new();
+    private readonly GraphicsCaptureService _capture;
     private readonly TextReader _input;
     private readonly TextWriter _output;
     private int _disposed;
@@ -48,6 +49,7 @@ internal sealed class ProtocolServer : IDisposable
         _mta = mta;
         _uia = new UiaService(mta.ThreadToken);
         _events = new UiaEventService(mta.ThreadToken);
+        _capture = new GraphicsCaptureService(_windows);
         _input = input;
         _output = output;
     }
@@ -59,7 +61,7 @@ internal sealed class ProtocolServer : IDisposable
             var line = await _input.ReadLineAsync().ConfigureAwait(false);
             if (line is null) return 0;
             if (line.Length == 0) continue;
-            if (line.Length > MaxMessageChars)
+            if (Encoding.UTF8.GetByteCount(line) > MaxMessageBytes)
             {
                 await WriteErrorAsync("invalid", "protocol.message-too-large").ConfigureAwait(false);
                 continue;
@@ -82,6 +84,10 @@ internal sealed class ProtocolServer : IDisposable
         catch (ProtocolException error)
         {
             await WriteErrorAsync(ValidId(request?.Id) ? request!.Id : "invalid", error.Code).ConfigureAwait(false);
+        }
+        catch (JsonException)
+        {
+            await WriteErrorAsync(ValidId(request?.Id) ? request!.Id : "invalid", "protocol.request-invalid").ConfigureAwait(false);
         }
         catch
         {
@@ -124,7 +130,8 @@ internal sealed class ProtocolServer : IDisposable
             "uia.events.register" => _mta.InvokeAsync(() => _events.Register(ProtocolJson.DeserializeBody<UiaEventRegisterRequest>(request.Body))),
             "uia.events.unregister" => _mta.InvokeAsync(() => _events.Unregister(ProtocolJson.DeserializeBody<UiaEventUnregisterRequest>(request.Body))),
             "uia.events.poll" => _mta.InvokeAsync(() => _events.Poll(ProtocolJson.DeserializeBody<UiaEventPollRequest>(request.Body))),
-            "capture.next-frame" or "artifact.release" => throw new ProtocolException("capture.not-implemented"),
+            "capture.next-frame" => _capture.CaptureAsync(ProtocolJson.DeserializeBody<CaptureNextFrameRequest>(request.Body)),
+            "artifact.release" => Task.FromResult(_capture.Release(ProtocolJson.DeserializeBody<ArtifactReleaseRequest>(request.Body))),
             _ => throw new ProtocolException("protocol.operation-unsupported"),
         };
     }
@@ -149,6 +156,7 @@ internal sealed class ProtocolServer : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _capture.Dispose();
         try
         {
             _mta.InvokeAsync(() =>
