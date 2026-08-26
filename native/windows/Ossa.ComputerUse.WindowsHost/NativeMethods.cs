@@ -32,6 +32,7 @@ internal static class NativeMethods
     internal const uint LLMHF_INJECTED = 0x01;
     internal const uint WM_QUIT = 0x0012;
     internal const uint PM_NOREMOVE = 0x0000;
+    internal const uint GW_OWNER = 4;
 
     internal const uint D3D11_CREATE_DEVICE_BGRA_SUPPORT = 0x20;
     internal const uint D3D11_SDK_VERSION = 7;
@@ -71,6 +72,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    internal static extern nint GetWindow(nint hwnd, uint command);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
