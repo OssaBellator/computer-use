@@ -1,5 +1,6 @@
 import { TextEncoder } from 'node:util';
 import type { WindowsNativeHostProtocolClient } from './windowsNativeHostProtocol.js';
+import type { WindowsVirtualDesktopBounds } from './windowsSendInputPlan.js';
 import { captureWindowsUiaWindowRef, type WindowsUiaWindowRef } from './windowsUiaContract.js';
 
 const MAX_WINDOWS=10_000;
@@ -95,5 +96,14 @@ export class WindowsNativeHostSystemObserver {
       throw new Error('windows-native-host-window-response-invalid');
     }
     return Object.freeze({windows:Object.freeze(windows),truncated:raw.truncated,itemCount:raw.itemCount,textBytes:raw.textBytes});
+  }
+
+  async observeVirtualDesktop():Promise<WindowsVirtualDesktopBounds>{
+    const raw=captureOwnDataObject(await this.protocol.call('system.virtual-desktop',Object.freeze({})),['left','top','width','height']);
+    if(!raw||!finite(raw.left)||!finite(raw.top)||!Number.isSafeInteger(raw.width)||!Number.isSafeInteger(raw.height)||
+       (raw.width as number)<1||(raw.height as number)<1||(raw.width as number)>MAX_COORDINATE||(raw.height as number)>MAX_COORDINATE){
+      throw new Error('windows-native-host-virtual-desktop-response-invalid');
+    }
+    return Object.freeze({left:raw.left,top:raw.top,width:raw.width,height:raw.height});
   }
 }
