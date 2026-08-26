@@ -25,6 +25,13 @@ internal static class NativeMethods
     internal const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
     internal const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
 
+    internal const int WH_KEYBOARD_LL = 13;
+    internal const int WH_MOUSE_LL = 14;
+    internal const int HC_ACTION = 0;
+    internal const uint LLKHF_INJECTED = 0x10;
+    internal const uint LLMHF_INJECTED = 0x01;
+    internal const uint WM_QUIT = 0x0012;
+
     internal const uint D3D11_CREATE_DEVICE_BGRA_SUPPORT = 0x20;
     internal const uint D3D11_SDK_VERSION = 7;
     internal const int D3D_DRIVER_TYPE_HARDWARE = 1;
@@ -36,6 +43,7 @@ internal static class NativeMethods
     internal const int SM_CYVIRTUALSCREEN = 79;
 
     internal delegate bool EnumWindowsProc(nint hwnd, nint lParam);
+    internal delegate nint HookProc(int nCode, nint wParam, nint lParam);
 
     [DllImport("ole32.dll")]
     internal static extern int CoInitializeEx(nint pvReserved, uint dwCoInit);
@@ -73,8 +81,31 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int nIndex);
 
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    internal static extern nint SetWindowsHookExW(int idHook, HookProc callback, nint module, uint threadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool UnhookWindowsHookEx(nint hook);
+
+    [DllImport("user32.dll")]
+    internal static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern int GetMessageW(out MSG message, nint hwnd, uint minFilter, uint maxFilter);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PostThreadMessageW(uint threadId, uint message, nint wParam, nint lParam);
+
     [DllImport("kernel32.dll")]
     internal static extern nint GetCurrentProcess();
+
+    [DllImport("kernel32.dll")]
+    internal static extern uint GetCurrentThreadId();
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    internal static extern nint GetModuleHandleW(string? moduleName);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern SafeProcessHandle OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
@@ -145,6 +176,45 @@ internal static class NativeMethods
         internal readonly int Top;
         internal readonly int Right;
         internal readonly int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct POINT
+    {
+        internal int X;
+        internal int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MSG
+    {
+        internal nint Hwnd;
+        internal uint Message;
+        internal nuint WParam;
+        internal nint LParam;
+        internal uint Time;
+        internal POINT Point;
+        internal uint Private;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KBDLLHOOKSTRUCT
+    {
+        internal uint VkCode;
+        internal uint ScanCode;
+        internal uint Flags;
+        internal uint Time;
+        internal nuint ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MSLLHOOKSTRUCT
+    {
+        internal POINT Point;
+        internal uint MouseData;
+        internal uint Flags;
+        internal uint Time;
+        internal nuint ExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
