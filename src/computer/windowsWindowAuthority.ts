@@ -33,27 +33,48 @@ function sameWindow(a: WindowsUiaWindowRef, b: WindowsUiaWindowRef): boolean {
     a.generation === b.generation;
 }
 
+function windowKey(window:WindowsUiaWindowRef):string {
+  return `${window.desktopSessionId}:${window.hwnd}:${window.process.processId}:${window.process.startIdentity}:${window.generation}`;
+}
+
 /**
- * Resolves whether the requested top-level window currently has interaction
- * authority. A live HWND is not sufficient when UIA reports modal blocking,
- * closing state, non-responsiveness, or multiple plausible modal descendants.
+ * Resolves the interaction-authoritative top-level/modal window.
+ *
+ * A requested owner that UIA reports as BlockedByModalWindow may still route to
+ * exactly one owned modal. Nested modal chains are followed until the deepest
+ * unique modal is reached. Ambiguous/cyclic chains, closing/nonresponsive
+ * windows, or a blocked window with no represented modal fail closed.
  */
 export function decideWindowsWindowAuthority(
   requested: WindowsUiaWindowRef,
   snapshots: readonly WindowsWindowAuthoritySnapshot[],
 ): WindowsWindowAuthorityDecision {
-  const target = snapshots.find((snapshot) => sameWindow(snapshot.window,requested));
-  if (!target) return Object.freeze({allowed:false,reason:'target-not-found'});
+  let current = snapshots.find((snapshot) => sameWindow(snapshot.window,requested));
+  if (!current) return Object.freeze({allowed:false,reason:'target-not-found'});
 
-  if (target.interactionState === 'closing') return Object.freeze({allowed:false,reason:'window-closing'});
-  if (target.interactionState === 'not-responding') return Object.freeze({allowed:false,reason:'window-not-responding'});
-  if (target.interactionState === 'blocked-by-modal-window') return Object.freeze({allowed:false,reason:'window-blocked-by-modal'});
+  const visited = new Set<string>();
+  for (let depth=0; depth<16; depth+=1) {
+    const key = windowKey(current.window);
+    if (visited.has(key)) return Object.freeze({allowed:false,reason:'modal-ambiguity'});
+    visited.add(key);
 
-  const ownedModals = snapshots.filter((snapshot) =>
-    snapshot.isModal && snapshot.owner !== undefined && sameWindow(snapshot.owner,requested),
-  );
-  if (ownedModals.length > 1) return Object.freeze({allowed:false,reason:'modal-ambiguity'});
-  if (ownedModals.length === 1) return Object.freeze({allowed:true,target:ownedModals[0]!.window});
+    if (current.interactionState === 'closing') return Object.freeze({allowed:false,reason:'window-closing'});
+    if (current.interactionState === 'not-responding') return Object.freeze({allowed:false,reason:'window-not-responding'});
 
-  return Object.freeze({allowed:true,target:requested});
+    const ownedModals = snapshots.filter((snapshot) =>
+      snapshot.isModal && snapshot.owner !== undefined && sameWindow(snapshot.owner,current!.window),
+    );
+    if (ownedModals.length > 1) return Object.freeze({allowed:false,reason:'modal-ambiguity'});
+    if (ownedModals.length === 1) {
+      current = ownedModals[0]!;
+      continue;
+    }
+
+    if (current.interactionState === 'blocked-by-modal-window') {
+      return Object.freeze({allowed:false,reason:'window-blocked-by-modal'});
+    }
+    return Object.freeze({allowed:true,target:current.window});
+  }
+
+  return Object.freeze({allowed:false,reason:'modal-ambiguity'});
 }
