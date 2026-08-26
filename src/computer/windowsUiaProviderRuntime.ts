@@ -8,7 +8,7 @@ import type {
   WindowsUiaWindowRef,
 } from './windowsUiaContract.js';
 import type { DesktopBackendActionResult } from './desktopUiBackend.js';
-import { WindowsUiaCacheState } from './windowsUiaCacheState.js';
+import { WindowsUiaCacheState, type WindowsUiaInvalidationReason } from './windowsUiaCacheState.js';
 
 export interface WindowsUiaNativeElementHandle {
   readonly token: string;
@@ -59,7 +59,7 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
 
   constructor(readonly bridge: WindowsUiaProviderBridge) {}
 
-  invalidate(window:WindowsUiaWindowRef, epoch:number, reason:string): void {
+  invalidate(window:WindowsUiaWindowRef, epoch:number, reason:WindowsUiaInvalidationReason): void {
     this.cache.invalidate(window, epoch, reason);
   }
 
@@ -77,8 +77,6 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
     const candidate = await this.bridge.resolveControl(ref);
     if (candidate.status !== 'candidate') return {status:candidate.status};
 
-    // Snapshotting obtains a fresh exact reference from the provider. Comparison
-    // must be against the provider's re-resolved element rather than RuntimeId alone.
     const fresh = await this.bridge.snapshotControl(candidate.element, ref);
     if (fresh.status !== 'current') return fresh;
     const currentCandidate = await this.bridge.resolveControl(fresh.control.ref);
@@ -93,7 +91,6 @@ export class WindowsUiaProviderRuntime implements WindowsUiaProvider {
     if (candidate.status !== 'candidate') {
       return {status:candidate.status === 'inaccessible' ? 'unsupported' : 'rejected',dispatched:false,verified:false,evidence:[`windows-uia-${candidate.status}`]};
     }
-    // No pointer/keyboard fallback is permitted here.
     return this.bridge.performPattern(candidate.element, action, effect);
   }
 }
