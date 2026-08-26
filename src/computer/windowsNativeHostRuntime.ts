@@ -12,7 +12,7 @@ import type { WindowsProviderCapabilityProfile, WindowsProviderCapabilityState, 
 import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
-import { WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
+import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
 
 const VALID_OPERATIONS=new Set<WindowsNativeHostOperation>(WINDOWS_NATIVE_HOST_OPERATIONS);
 
@@ -93,6 +93,7 @@ export interface WindowsNativeHostRuntime {
   readonly leases?:DesktopInteractionLeaseManager;
   readonly capture?:WindowsGraphicsCaptureRuntime;
   readonly retention?:WindowsVisualArtifactRetentionManager;
+  readonly retainedCapture?:WindowsRetainedGraphicsCaptureRuntime;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
@@ -133,10 +134,12 @@ export async function openWindowsNativeHostRuntime(
 
     let capture:WindowsGraphicsCaptureRuntime|undefined;
     let retention:WindowsVisualArtifactRetentionManager|undefined;
+    let retainedCapture:WindowsRetainedGraphicsCaptureRuntime|undefined;
     if(implementedSet.has('capture.next-frame')&&implementedSet.has('artifact.release')){
       const captureBridge=new WindowsNativeHostCaptureBridge(protocol);
       capture=new WindowsGraphicsCaptureRuntime(captureBridge);
       retention=new WindowsVisualArtifactRetentionManager(captureBridge);
+      retainedCapture=new WindowsRetainedGraphicsCaptureRuntime(capture,retention);
     }
 
     let closed=false;
@@ -146,14 +149,12 @@ export async function openWindowsNativeHostRuntime(
       ...(leases?{leases}:{}),
       ...(capture?{capture}:{}),
       ...(retention?{retention}:{}),
+      ...(retainedCapture?{retainedCapture}:{}),
       capabilities:deriveWindowsNativeHostCapabilityProfile(implemented),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;
         closed=true;
-        // Artifact leases remain authority-invalid even if a native destroy call
-        // becomes uncertain during shutdown. The sidecar itself zeroes all retained
-        // bytes when its process/session is disposed.
         if(retention)await retention.releaseExpired().catch(()=>undefined);
         await apartment.dispose();
       },
