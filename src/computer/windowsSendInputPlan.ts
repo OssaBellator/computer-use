@@ -3,7 +3,11 @@ import type {
   DesktopKeyboardInput,
   DesktopRelativePointerInput,
 } from './desktopUiBackend.js';
-import type { WindowsNativeInputDispatcher, WindowsNativeInputDispatchResult } from './windowsNativeInputGate.js';
+import type {
+  WindowsNativeInputDispatcher,
+  WindowsNativeInputDispatchAuthority,
+  WindowsNativeInputDispatchResult,
+} from './windowsNativeInputGate.js';
 
 export interface WindowsVirtualDesktopBounds {
   readonly left:number;
@@ -19,9 +23,17 @@ export type WindowsSendInputEvent =
   | {readonly kind:'mouse-relative-move';readonly dx:number;readonly dy:number}
   | {readonly kind:'mouse-button';readonly button:'left'|'middle'|'right';readonly keyUp:boolean};
 
+export interface WindowsSendInputNativeResult {
+  readonly insertedEventCount:number;
+  readonly preDispatchFailure?:string;
+}
+
 export interface WindowsSendInputNativeBridge {
   /** Native implementation converts each typed event to one Win32 INPUT record. */
-  sendInput(events:readonly WindowsSendInputEvent[]):Promise<number>;
+  sendInput(
+    events:readonly WindowsSendInputEvent[],
+    authority:WindowsNativeInputDispatchAuthority,
+  ):Promise<WindowsSendInputNativeResult>;
 }
 
 const MAX_INPUT_EVENTS = 4_096;
@@ -137,10 +149,14 @@ export class WindowsSendInputDispatcher implements WindowsNativeInputDispatcher 
   constructor(readonly bridge:WindowsSendInputNativeBridge,readonly events:readonly WindowsSendInputEvent[]) {
     if (!Array.isArray(events) || events.length < 1 || events.length > MAX_INPUT_EVENTS) throw new Error('windows-sendinput-event-count-invalid');
   }
-  async dispatch():Promise<WindowsNativeInputDispatchResult> {
+  async dispatch(authority:WindowsNativeInputDispatchAuthority):Promise<WindowsNativeInputDispatchResult> {
     if (this.used) throw new Error('windows-sendinput-dispatcher-reused');
     this.used = true;
-    const insertedEventCount = await this.bridge.sendInput(Object.freeze([...this.events]));
-    return Object.freeze({requestedEventCount:this.events.length,insertedEventCount});
+    const native = await this.bridge.sendInput(Object.freeze([...this.events]),authority);
+    return Object.freeze({
+      requestedEventCount:this.events.length,
+      insertedEventCount:native.insertedEventCount,
+      ...(native.preDispatchFailure!==undefined?{preDispatchFailure:native.preDispatchFailure}:{}),
+    });
   }
 }
