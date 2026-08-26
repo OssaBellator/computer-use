@@ -107,4 +107,7 @@ internal sealed record SendInputEventDto(
     int? Dx,
     int? Dy,
     string? Button);
-internal sealed record SendInputRequest(SendInputEventDto[] Events);
+internal sealed record SendInputRequest(
+    SendInputEventDto[] Events,
+    WindowRefDto TargetWindow,
+    long ExpectedHumanInputSequence);
