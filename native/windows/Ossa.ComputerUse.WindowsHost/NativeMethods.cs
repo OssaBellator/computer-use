@@ -31,6 +31,7 @@ internal static class NativeMethods
     internal const uint LLKHF_INJECTED = 0x10;
     internal const uint LLMHF_INJECTED = 0x01;
     internal const uint WM_QUIT = 0x0012;
+    internal const uint PM_NOREMOVE = 0x0000;
 
     internal const uint D3D11_CREATE_DEVICE_BGRA_SUPPORT = 0x20;
     internal const uint D3D11_SDK_VERSION = 7;
@@ -93,6 +94,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern int GetMessageW(out MSG message, nint hwnd, uint minFilter, uint maxFilter);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool PeekMessageW(out MSG message, nint hwnd, uint minFilter, uint maxFilter, uint removeMessage);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
