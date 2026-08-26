@@ -52,17 +52,9 @@ export function deriveObservationTrust(
   sources: readonly ObservationTrust[],
   provenance: readonly string[] = [],
 ): ObservationTrust {
-  if (sources.length === 0) {
-    return Object.freeze({
-      classification: 'agent-derived',
-      instructionAuthority: false,
-      provenance: boundedProvenance(provenance),
-      containsExternalUntrustedContent: false,
-    });
-  }
-
-  const containsExternalUntrustedContent = sources.some((source) => source.containsExternalUntrustedContent || source.classification === 'external-untrusted-content');
-  const allAuthoritative = sources.every((source) => source.instructionAuthority);
+  const containsExternalUntrustedContent = sources.some(
+    (source) => source.containsExternalUntrustedContent || source.classification === 'external-untrusted-content',
+  );
   const inherited = sources.flatMap((source) => source.provenance);
 
   return Object.freeze({
@@ -72,7 +64,6 @@ export function deriveObservationTrust(
     instructionAuthority: false,
     provenance: boundedProvenance([...inherited, ...provenance]),
     containsExternalUntrustedContent,
-    ...(allAuthoritative ? {} : {}),
   });
 }
 
