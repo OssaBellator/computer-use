@@ -28,6 +28,7 @@ internal sealed class ProtocolServer
     private readonly MtaExecutor _mta;
     private readonly NativeHostServices _services = new();
     private readonly UiaService _uia;
+    private readonly WindowEnumerationService _windows = new();
     private readonly TextReader _input;
     private readonly TextWriter _output;
 
@@ -96,7 +97,7 @@ internal sealed class ProtocolServer
                 threadToken = _mta.ThreadToken,
                 operations = Operations.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
             }),
-            "system.windows" => Task.FromResult(_services.ListWindows(ProtocolJson.DeserializeBody<WindowListRequest>(request.Body))),
+            "system.windows" => _mta.InvokeAsync(() => _windows.List(ProtocolJson.DeserializeBody<WindowListRequest>(request.Body))),
             "integrity.current" => Task.FromResult(_services.ReadCurrentIntegrity()),
             "integrity.process" => Task.FromResult(_services.ReadProcessIntegrity(ProtocolJson.DeserializeBody<IntegrityProcessRequest>(request.Body))),
             "input.send" => Task.FromResult(_services.SendInput(ProtocolJson.DeserializeBody<SendInputRequest>(request.Body))),
