@@ -43,11 +43,15 @@ export interface WindowsUiaControlSnapshot {
   readonly offscreen?:boolean;
   readonly bounds?:DesktopRect;
   readonly patterns:readonly WindowsUiaPattern[];
+  /** Bounded Control View children. Omitted is normalized as an empty child set. */
+  readonly children?:readonly WindowsUiaControlSnapshot[];
 }
 export interface WindowsUiaCachedObservation {
   readonly window:WindowsUiaWindowRef;
   readonly root?:WindowsUiaControlSnapshot;
+  /** Exact number of nodes represented by `root`, including the root itself. */
   readonly itemCount:number;
+  /** Exact UTF-8 byte count of represented node name/value strings. */
   readonly textBytes:number;
   readonly truncated:boolean;
   readonly invalidationEpoch:number;
@@ -188,12 +192,32 @@ function captureBounds(value:unknown):DesktopRect|undefined {
   if(!raw||!boundedFinite(raw.x)||!boundedFinite(raw.y)||!boundedFinite(raw.width)||!boundedFinite(raw.height)||raw.width<0||raw.height<0) return undefined;
   return Object.freeze({x:raw.x,y:raw.y,width:raw.width,height:raw.height});
 }
-export function captureWindowsUiaControlSnapshot(value:unknown):WindowsUiaControlSnapshot|undefined {
-  const raw=captureOwnDataObject(value,['ref','name','value','enabled','offscreen','bounds','patterns']);
+
+interface TreeCaptureState {
+  items:number;
+  textBytes:number;
+  readonly maxItems:number;
+  readonly maxTextBytes:number;
+  readonly maxDepth:number;
+  readonly seen:WeakSet<object>;
+}
+
+function captureControlSnapshotTree(
+  value:unknown,
+  depth:number,
+  state:TreeCaptureState,
+  expectedWindow?:WindowsUiaWindowRef,
+):WindowsUiaControlSnapshot|undefined {
+  if(depth>state.maxDepth||state.items>=state.maxItems||!value||typeof value!=='object') return undefined;
+  if(state.seen.has(value)) return undefined;
+  state.seen.add(value);
+
+  const raw=captureOwnDataObject(value,['ref','name','value','enabled','offscreen','bounds','patterns','children']);
   if(!raw) return undefined;
   const ref=captureWindowsUiaControlRef(raw.ref);
   const patternsRaw=capturePlainArray(raw.patterns,WINDOWS_UIA_PATTERNS.length);
-  if(!ref||!patternsRaw||patternsRaw.some((pattern)=>typeof pattern!=='string'||!WINDOWS_UIA_PATTERNS.includes(pattern as WindowsUiaPattern))) return undefined;
+  if(!ref||expectedWindow!==undefined&&!sameWindowsUiaWindow(ref.window,expectedWindow)||
+      !patternsRaw||patternsRaw.some((pattern)=>typeof pattern!=='string'||!WINDOWS_UIA_PATTERNS.includes(pattern as WindowsUiaPattern))) return undefined;
   if(new Set(patternsRaw).size!==patternsRaw.length) return undefined;
   if(raw.name!==undefined&&!boundedString(raw.name,MAX_VALUE_BYTES,true)) return undefined;
   if(raw.value!==undefined&&!boundedString(raw.value,MAX_VALUE_BYTES,true)) return undefined;
@@ -201,13 +225,39 @@ export function captureWindowsUiaControlSnapshot(value:unknown):WindowsUiaContro
   if(raw.offscreen!==undefined&&typeof raw.offscreen!=='boolean') return undefined;
   const bounds=captureBounds(raw.bounds);
   if(raw.bounds!==undefined&&!bounds) return undefined;
+
+  state.items+=1;
+  state.textBytes+=(typeof raw.name==='string'?utf8Bytes(raw.name):0)+(typeof raw.value==='string'?utf8Bytes(raw.value):0);
+  if(state.items>state.maxItems||state.textBytes>state.maxTextBytes) return undefined;
+
+  let children:readonly WindowsUiaControlSnapshot[]|undefined;
+  if(raw.children!==undefined){
+    const childValues=capturePlainArray(raw.children,state.maxItems-state.items);
+    if(!childValues) return undefined;
+    const captured:WindowsUiaControlSnapshot[]=[];
+    for(const child of childValues){
+      const node=captureControlSnapshotTree(child,depth+1,state,expectedWindow??ref.window);
+      if(!node) return undefined;
+      captured.push(node);
+    }
+    children=Object.freeze(captured);
+  }
+
   return Object.freeze({
     ref,
     ...(raw.name!==undefined?{name:raw.name as string}:{}),
     ...(raw.value!==undefined?{value:raw.value as string}:{}),
     ...(raw.enabled!==undefined?{enabled:raw.enabled as boolean}:{}),
     ...(raw.offscreen!==undefined?{offscreen:raw.offscreen as boolean}:{}),
-    ...(bounds?{bounds}:{}),patterns:Object.freeze(patternsRaw as readonly WindowsUiaPattern[]),
+    ...(bounds?{bounds}:{}),
+    patterns:Object.freeze(patternsRaw as readonly WindowsUiaPattern[]),
+    ...(children!==undefined?{children}:{}),
+  });
+}
+
+export function captureWindowsUiaControlSnapshot(value:unknown):WindowsUiaControlSnapshot|undefined {
+  return captureControlSnapshotTree(value,0,{
+    items:0,textBytes:0,maxItems:MAX_ITEMS,maxTextBytes:MAX_TEXT_BYTES,maxDepth:MAX_DEPTH,seen:new WeakSet<object>(),
   });
 }
 export function captureWindowsUiaRevalidation(value:unknown):WindowsUiaRevalidation|undefined {
@@ -232,10 +282,16 @@ export function captureWindowsUiaCachedObservation(
   if(!window||expectedWindow!==undefined&&!sameWindowsUiaWindow(window,expectedWindow)) return undefined;
   if(!validNonNegativeInteger(raw.itemCount,MAX_ITEMS)||!validNonNegativeInteger(raw.textBytes,MAX_TEXT_BYTES)||
       typeof raw.truncated!=='boolean'||!validNonNegativeInteger(raw.invalidationEpoch)||!validNonNegativeInteger(raw.capturedAtMs)) return undefined;
-  if(expectedLimits&&(raw.itemCount>expectedLimits.maxItems||raw.textBytes>expectedLimits.maxTextBytes)) return undefined;
-  const root=raw.root===undefined?undefined:captureWindowsUiaControlSnapshot(raw.root);
+  const maxItems=expectedLimits?.maxItems??MAX_ITEMS;
+  const maxTextBytes=expectedLimits?.maxTextBytes??MAX_TEXT_BYTES;
+  const maxDepth=expectedLimits?.maxDepth??MAX_DEPTH;
+  if(raw.itemCount>maxItems||raw.textBytes>maxTextBytes) return undefined;
+
+  const state:TreeCaptureState={items:0,textBytes:0,maxItems,maxTextBytes,maxDepth,seen:new WeakSet<object>()};
+  const root=raw.root===undefined?undefined:captureControlSnapshotTree(raw.root,0,state,window);
   if(raw.root!==undefined&&!root) return undefined;
-  if(root&&!sameWindowsUiaWindow(root.ref.window,window)) return undefined;
+  if(raw.itemCount!==state.items||raw.textBytes!==state.textBytes) return undefined;
+
   return Object.freeze({
     window,...(root?{root}:{}),itemCount:raw.itemCount,textBytes:raw.textBytes,truncated:raw.truncated,
     invalidationEpoch:raw.invalidationEpoch,capturedAtMs:raw.capturedAtMs,
