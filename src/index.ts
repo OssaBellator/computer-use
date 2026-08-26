@@ -68,6 +68,7 @@ export * from './computer/desktopInteractionLease.js';
 export * from './computer/groundingResolver.js';
 export * from './computer/windowsUiaContract.js';
 export * from './computer/windowsInputIntegrity.js';
+export * from './computer/windowsVisualFrame.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
 export * from './input/browserInput.js';
