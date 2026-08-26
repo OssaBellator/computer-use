@@ -27,6 +27,7 @@ internal sealed class UiaEventService : IDisposable
         internal AutomationPropertyChangedEventHandler? PropertyHandler { get; set; }
         internal AutomationEventHandler? WindowHandler { get; set; }
         internal int Active = 1;
+        internal int Queued;
     }
 
     private readonly string _threadToken;
@@ -140,8 +141,12 @@ internal sealed class UiaEventService : IDisposable
             throw new ProtocolException("uia.events.registration-missing");
 
         var result = new List<string>(Math.Min(request.MaxEvents, 64));
-        while (result.Count < request.MaxEvents && registration.Queue.TryDequeue(out var value)) result.Add(value);
-        return new { events = result.ToArray(), more = !registration.Queue.IsEmpty };
+        while (result.Count < request.MaxEvents && registration.Queue.TryDequeue(out var value))
+        {
+            Interlocked.Decrement(ref registration.Queued);
+            result.Add(value);
+        }
+        return new { events = result.ToArray(), more = Volatile.Read(ref registration.Queued) > 0 };
     }
 
     public void Dispose()
@@ -219,7 +224,17 @@ internal sealed class UiaEventService : IDisposable
     private static void Enqueue(Registration registration, string value)
     {
         if (Volatile.Read(ref registration.Active) == 0) return;
-        if (registration.Queue.Count >= MaxQueuedEventsPerRegistration) return;
+        var reserved = Interlocked.Increment(ref registration.Queued);
+        if (reserved > MaxQueuedEventsPerRegistration)
+        {
+            Interlocked.Decrement(ref registration.Queued);
+            return;
+        }
+        if (Volatile.Read(ref registration.Active) == 0)
+        {
+            Interlocked.Decrement(ref registration.Queued);
+            return;
+        }
         registration.Queue.Enqueue(value);
     }
 
