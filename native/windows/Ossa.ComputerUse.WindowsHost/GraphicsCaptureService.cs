@@ -30,7 +30,19 @@ internal sealed class GraphicsCaptureService : IDisposable
         nint CreateForMonitor([In] nint monitor, [In] ref Guid iid);
     }
 
-    private readonly WindowEnumerationService _windows;
+    internal sealed record CaptureGeometry(double Left, double Top, int Width, int Height, double Dpi);
+    internal sealed record CaptureArtifact(string Token, string MediaType, int ByteLength);
+    internal sealed record CaptureResponse(
+        WindowRefDto Window,
+        long CaptureGeneration,
+        long FrameSequence,
+        long CapturedAtMs,
+        long SystemRelativeTime100ns,
+        int ContentWidth,
+        int ContentHeight,
+        CaptureGeometry Geometry,
+        CaptureArtifact Artifact);
+
     private readonly object _artifactLock = new();
     private readonly Dictionary<string, byte[]> _artifacts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _captureGenerations = new(StringComparer.Ordinal);
@@ -38,26 +50,14 @@ internal sealed class GraphicsCaptureService : IDisposable
     private long _retainedBytes;
     private bool _disposed;
 
-    internal GraphicsCaptureService(WindowEnumerationService windows) => _windows = windows;
-
-    internal bool IsAvailable
-    {
-        get
-        {
-            try { return GraphicsCaptureSession.IsSupported(); }
-            catch { return false; }
-        }
-    }
-
-    internal async Task<object> CaptureAsync(CaptureNextFrameRequest request)
+    /** Must be called only by the dedicated capture MTA executor. */
+    internal CaptureResponse Capture(CaptureNextFrameRequest request, nint hwnd)
     {
         ThrowIfDisposed();
         ValidateLimits(request.Limits);
-
-        // Capture authority must originate from the generation-bearing system
-        // observation, not from a caller-provided HWND alone.
-        var hwnd = _windows.ValidateObserved(request.Window);
-        if (!IsAvailable) throw new ProtocolException("capture.unsupported");
+        if (hwnd == 0) throw new ProtocolException("capture.hwnd-invalid");
+        if (!GraphicsCaptureSession.IsSupported())
+            throw new ProtocolException("capture.unsupported");
 
         var item = CreateItemForWindow(hwnd);
         var initialSize = item.Size;
@@ -94,25 +94,17 @@ internal sealed class GraphicsCaptureService : IDisposable
             pool.FrameArrived += handler;
             session.StartCapture();
 
-            var winner = await Task.WhenAny(completion.Task, Task.Delay(FrameTimeoutMs)).ConfigureAwait(false);
+            var winner = Task.WhenAny(completion.Task, Task.Delay(FrameTimeoutMs)).GetAwaiter().GetResult();
             if (!ReferenceEquals(winner, completion.Task))
             {
                 completion.TrySetCanceled();
                 throw new ProtocolException("capture.frame-timeout");
             }
-            frame = await completion.Task.ConfigureAwait(false);
-            // This timestamp belongs to frame acquisition, before potentially slow PNG encoding.
-            var capturedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            frame = completion.Task.GetAwaiter().GetResult();
 
             var contentSize = frame.ContentSize;
             ValidateDimensions(contentSize.Width, contentSize.Height, request.Limits.MaxPixels);
-
-            // Revalidate window generation after asynchronous capture; the frame
-            // cannot be attached to authority for a window that was replaced while
-            // the capture session was producing it.
-            _windows.ValidateObserved(request.Window);
-
-            var bytes = await EncodePngAsync(frame, request.Limits.MaxBytes).ConfigureAwait(false);
+            var bytes = EncodePng(frame, request.Limits.MaxBytes);
             string token;
             try
             {
@@ -124,46 +116,34 @@ internal sealed class GraphicsCaptureService : IDisposable
                 throw;
             }
 
-            if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+            try
             {
-                ReleaseToken(token);
-                NativeMethods.ThrowLastWin32("GetWindowRect(capture)");
-            }
-            var dpi = NativeMethods.GetDpiForWindow(hwnd);
-            if (dpi == 0)
-            {
-                ReleaseToken(token);
-                throw new ProtocolException("capture.window-dpi-invalid");
-            }
+                if (!NativeMethods.GetWindowRect(hwnd, out var rect))
+                    NativeMethods.ThrowLastWin32("GetWindowRect(capture)");
+                var dpi = NativeMethods.GetDpiForWindow(hwnd);
+                if (dpi == 0) throw new ProtocolException("capture.window-dpi-invalid");
 
-            // Geometry is sampled only after the post-frame generation check. If
-            // a caller moves/resizes the same-generation window after this return,
-            // the TypeScript frame binding will reject coordinates on revalidation.
-            var captureGeneration = NextCaptureGeneration(request.Window);
-            return new
+                return new CaptureResponse(
+                    request.Window,
+                    NextCaptureGeneration(request.Window),
+                    0,
+                    DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    frame.SystemRelativeTime.Ticks,
+                    contentSize.Width,
+                    contentSize.Height,
+                    new CaptureGeometry(
+                        rect.Left,
+                        rect.Top,
+                        Math.Max(1, rect.Right - rect.Left),
+                        Math.Max(1, rect.Bottom - rect.Top),
+                        dpi),
+                    new CaptureArtifact(token, "image/png", bytes.Length));
+            }
+            catch
             {
-                window = request.Window,
-                captureGeneration,
-                frameSequence = 0,
-                capturedAtMs,
-                systemRelativeTime100ns = frame.SystemRelativeTime.Ticks,
-                contentWidth = contentSize.Width,
-                contentHeight = contentSize.Height,
-                geometry = new
-                {
-                    left = rect.Left,
-                    top = rect.Top,
-                    width = Math.Max(1, rect.Right - rect.Left),
-                    height = Math.Max(1, rect.Bottom - rect.Top),
-                    dpi = (double)dpi,
-                },
-                artifact = new
-                {
-                    token,
-                    mediaType = "image/png",
-                    byteLength = bytes.Length,
-                },
-            };
+                ReleaseToken(token);
+                throw;
+            }
         }
         finally
         {
@@ -182,6 +162,11 @@ internal sealed class GraphicsCaptureService : IDisposable
         return new { released = ReleaseToken(request.Token) };
     }
 
+    internal void Revoke(CaptureResponse response)
+    {
+        if (!_disposed) ReleaseToken(response.Artifact.Token);
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -196,8 +181,6 @@ internal sealed class GraphicsCaptureService : IDisposable
 
     private static GraphicsCaptureItem CreateItemForWindow(nint hwnd)
     {
-        // C#/WinRT's ComImport projection maps the HRESULT/out-result ABI to the
-        // pointer-returning managed signature used here.
         var interop = GraphicsCaptureItem.As<IGraphicsCaptureItemInterop>();
         var iid = GraphicsCaptureItemGuid;
         var pointer = interop.CreateForWindow(hwnd, ref iid);
@@ -270,13 +253,13 @@ internal sealed class GraphicsCaptureService : IDisposable
         }
     }
 
-    private static async Task<byte[]> EncodePngAsync(Direct3D11CaptureFrame frame, int requestedMaxBytes)
+    private static byte[] EncodePng(Direct3D11CaptureFrame frame, int requestedMaxBytes)
     {
-        using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().ConfigureAwait(false);
+        using var bitmap = SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().GetAwaiter().GetResult();
         using var stream = new InMemoryRandomAccessStream();
-        var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream).AsTask().ConfigureAwait(false);
+        var encoder = BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream).AsTask().GetAwaiter().GetResult();
         encoder.SetSoftwareBitmap(bitmap);
-        await encoder.FlushAsync().AsTask().ConfigureAwait(false);
+        encoder.FlushAsync().AsTask().GetAwaiter().GetResult();
 
         var size = stream.Size;
         var maxBytes = Math.Min(requestedMaxBytes, MaxCaptureBytes);
@@ -286,7 +269,7 @@ internal sealed class GraphicsCaptureService : IDisposable
         stream.Seek(0);
         using var input = stream.GetInputStreamAt(0);
         using var reader = new DataReader(input);
-        var loaded = await reader.LoadAsync((uint)bytes.Length).AsTask().ConfigureAwait(false);
+        var loaded = reader.LoadAsync((uint)bytes.Length).AsTask().GetAwaiter().GetResult();
         if (loaded != bytes.Length) throw new ProtocolException("capture.encode-read-incomplete");
         reader.ReadBytes(bytes);
         return bytes;
