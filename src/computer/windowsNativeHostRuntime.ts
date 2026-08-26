@@ -14,6 +14,7 @@ import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
 import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
+import { WindowsVisualGroundingProvider, type WindowsVisualGroundingBackend } from './windowsVisualGroundingProvider.js';
 
 const VALID_OPERATIONS=new Set<WindowsNativeHostOperation>(WINDOWS_NATIVE_HOST_OPERATIONS);
 
@@ -83,6 +84,18 @@ export function deriveWindowsNativeHostCapabilityProfile(
   });
 }
 
+function composeCapabilityProfile(
+  operations:readonly WindowsNativeHostOperation[],
+  visualGrounding:boolean,
+):WindowsProviderCapabilityProfile {
+  const base=deriveWindowsNativeHostCapabilityProfile(operations);
+  if(!visualGrounding)return base;
+  return Object.freeze({
+    id:base.id,
+    capabilities:Object.freeze({...base.capabilities,'visual-grounding':'supported' as const}),
+  });
+}
+
 export interface WindowsNativeHostRuntime {
   readonly protocol:WindowsNativeHostProtocolClient;
   readonly apartment:WindowsComApartmentExecutor;
@@ -97,10 +110,18 @@ export interface WindowsNativeHostRuntime {
   readonly capture?:WindowsGraphicsCaptureRuntime;
   readonly retention?:WindowsVisualArtifactRetentionManager;
   readonly retainedCapture?:WindowsRetainedGraphicsCaptureRuntime;
+  readonly visualGrounding?:WindowsVisualGroundingProvider;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
   close():Promise<void>;
+}
+
+export interface WindowsNativeHostRuntimeOptions {
+  readonly maxMessageBytes?:number;
+  readonly cwd?:string;
+  readonly eventPollIntervalMs?:number;
+  readonly visualGroundingBackend?:WindowsVisualGroundingBackend;
 }
 
 /**
@@ -110,7 +131,7 @@ export interface WindowsNativeHostRuntime {
  */
 export async function openWindowsNativeHostRuntime(
   executablePath:string,
-  options?:{readonly maxMessageBytes?:number;readonly cwd?:string;readonly eventPollIntervalMs?:number},
+  options?:WindowsNativeHostRuntimeOptions,
 ):Promise<WindowsNativeHostRuntime>{
   const spawnOptions={
     ...(options?.maxMessageBytes!==undefined?{maxMessageBytes:options.maxMessageBytes}:{}),
@@ -145,6 +166,9 @@ export async function openWindowsNativeHostRuntime(
       retention=new WindowsVisualArtifactRetentionManager(captureBridge);
       retainedCapture=new WindowsRetainedGraphicsCaptureRuntime(capture,retention);
     }
+    const visualGrounding=capture&&options?.visualGroundingBackend
+      ?new WindowsVisualGroundingProvider(options.visualGroundingBackend)
+      :undefined;
 
     let closed=false;
     return Object.freeze({
@@ -156,7 +180,8 @@ export async function openWindowsNativeHostRuntime(
       ...(capture?{capture}:{}),
       ...(retention?{retention}:{}),
       ...(retainedCapture?{retainedCapture}:{}),
-      capabilities:deriveWindowsNativeHostCapabilityProfile(implemented),
+      ...(visualGrounding?{visualGrounding}:{}),
+      capabilities:composeCapabilityProfile(implemented,visualGrounding!==undefined),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;
