@@ -15,8 +15,25 @@ internal static class ProtocolJson
 
     internal static T DeserializeBody<T>(JsonElement body)
         where T : class
-        => JsonSerializer.Deserialize<T>(body.GetRawText(), Options)
-           ?? throw new ProtocolException("protocol.body-invalid");
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(body.GetRawText(), Options)
+                   ?? throw new ProtocolException("protocol.body-invalid");
+        }
+        catch (ProtocolException)
+        {
+            throw;
+        }
+        catch (JsonException)
+        {
+            throw new ProtocolException("protocol.body-invalid");
+        }
+        catch (NotSupportedException)
+        {
+            throw new ProtocolException("protocol.body-invalid");
+        }
+    }
 }
 
 internal sealed class ProtocolException(string code) : Exception(code)
