@@ -27,7 +27,11 @@ function protocol(handler:(operation:string,body:unknown)=>unknown) {
 test('UIA native host adapter validates handles, snapshots and dispatch results', async () => {
   const client=new WindowsNativeHostUiaClient(protocol((operation)=>{
     if(operation==='uia.resolve-window')return {status:'current',root:{token:'root-1'}};
-    if(operation==='uia.build-cache')return {window:windowRef,itemCount:1,textBytes:0,truncated:false,invalidationEpoch:0,capturedAtMs:1};
+    if(operation==='uia.build-cache')return {
+      window:windowRef,
+      root:{ref:{window:windowRef,runtimeId:[9],controlType:'Window',generation:1},patterns:['window']},
+      itemCount:1,textBytes:0,truncated:false,invalidationEpoch:0,capturedAtMs:1,
+    };
     if(operation==='uia.resolve-control')return {status:'candidate',element:{token:'element-1'}};
     if(operation==='uia.compare-elements')return {same:true};
     if(operation==='uia.snapshot-control')return {status:'current',control:{ref,enabled:true,patterns:['invoke']}};
@@ -38,6 +42,7 @@ test('UIA native host adapter validates handles, snapshots and dispatch results'
   assert.equal(root.status,'current');
   const cache=await client.buildCache(context,{token:'root-1'},{treeScope:'element-and-children',controlViewOnly:true,elementMode:'full',properties:[],patterns:[],maxItems:1,maxDepth:1,maxTextBytes:1},0);
   assert.equal(cache.window.hwnd,'0xabc');
+  assert.equal(cache.root?.ref.controlType,'Window');
   const candidate=await client.resolveControl(context,ref);
   assert.equal(candidate.status,'candidate');
   assert.equal(await client.compareElements(context,{token:'element-1'},{token:'element-1'}),true);
