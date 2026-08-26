@@ -1,4 +1,6 @@
-import type { WindowsGraphicsCaptureObservation, WindowsGraphicsCaptureNativeBridge } from './windowsGraphicsCaptureRuntime.js';
+import type { DesktopVisualAcquisitionLimits } from './desktopUiBackend.js';
+import { WindowsGraphicsCaptureRuntime, type WindowsGraphicsCaptureObservation, type WindowsGraphicsCaptureNativeBridge } from './windowsGraphicsCaptureRuntime.js';
+import type { WindowsUiaWindowRef } from './windowsUiaContract.js';
 
 export type WindowsVisualArtifactSensitivity = 'normal' | 'sensitive-field' | 'credential-adjacent';
 
@@ -15,6 +17,11 @@ export interface WindowsVisualArtifactLease {
 export type WindowsVisualArtifactLeaseValidation =
   | {readonly status:'current'}
   | {readonly status:'expired'|'released'|'frame-mismatch'};
+
+export interface WindowsRetainedGraphicsCapture {
+  readonly observation:WindowsGraphicsCaptureObservation;
+  readonly lease:WindowsVisualArtifactLease;
+}
 
 const MAX_NORMAL_TTL_MS = 60_000;
 const MAX_SENSITIVE_TTL_MS = 5_000;
@@ -108,4 +115,34 @@ export class WindowsVisualArtifactRetentionManager {
 
   activeCount():number { return this.active.size; }
   activeBytes():number { return this.totalBytes; }
+}
+
+/**
+ * Capture plus retention is one authority transaction: a successful native
+ * screenshot is never exposed to callers unless a bounded lease was acquired.
+ * If lease acquisition fails, backend ownership is revoked before the original
+ * acquisition error is rethrown.
+ */
+export class WindowsRetainedGraphicsCaptureRuntime {
+  constructor(
+    readonly capture:WindowsGraphicsCaptureRuntime,
+    readonly retention:WindowsVisualArtifactRetentionManager,
+  ) {}
+
+  async captureRetained(
+    window:WindowsUiaWindowRef,
+    limits:DesktopVisualAcquisitionLimits,
+    retention:{sensitivity:WindowsVisualArtifactSensitivity;ttlMs:number},
+  ):Promise<WindowsRetainedGraphicsCapture>{
+    const observation=await this.capture.capture(window,limits);
+    try{
+      const lease=this.retention.acquire(observation,retention);
+      return Object.freeze({observation,lease});
+    }catch(error){
+      try{await this.capture.release(observation);}catch{
+        throw new Error('windows-visual-retention-acquire-cleanup-uncertain',{cause:error});
+      }
+      throw error;
+    }
+  }
 }
