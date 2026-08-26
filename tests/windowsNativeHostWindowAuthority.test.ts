@@ -42,6 +42,20 @@ test('native window authority rejects a state row for a window outside the reque
   await assert.rejects(()=>authority.observe([owner]),/response-invalid/);
 });
 
+test('native window authority rejects an owner outside the same requested batch',async()=>{
+  const outsideOwner:WindowsUiaWindowRef=Object.freeze({...owner,hwnd:'0x888'});
+  const authority=new WindowsNativeHostWindowAuthority(protocol({
+    states:[{window:modal,isModal:true,isTopmost:true,interactionState:'ready-for-user-interaction',owner:outsideOwner}],
+    itemCount:1,
+  }));
+  await assert.rejects(()=>authority.observe([modal]),/response-invalid/);
+});
+
+test('native window authority requires the requested decision target to be in the observed batch',async()=>{
+  const authority=new WindowsNativeHostWindowAuthority(protocol({states:[],itemCount:0}));
+  await assert.rejects(()=>authority.decide(owner,[modal]),/requested-not-in-batch/);
+});
+
 test('native window authority rejects duplicate rows and incorrect accounting',async()=>{
   const duplicate=new WindowsNativeHostWindowAuthority(protocol({
     states:[
