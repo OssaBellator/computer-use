@@ -45,7 +45,7 @@ internal sealed record CachePlanDto(
     int MaxTextBytes);
 internal sealed record SemanticActionDto(
     string Kind,
-    string? Value,
+    JsonElement? Value,
     string? State,
     string? Horizontal,
     string? Vertical,
