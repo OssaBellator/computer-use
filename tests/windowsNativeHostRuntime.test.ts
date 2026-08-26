@@ -24,7 +24,13 @@ test('native runtime capability profile follows implemented operations rather th
   assert.equal(support(profile,'wgc-hwnd-capture'),'unsupported');
   assert.equal(support(profile,'transient-capture-retention'),'unsupported');
   assert.equal(support(profile,'window-modal-authority'),'partial');
-  assert.equal(support(profile,'human-interference-detection'),'partial');
+  assert.equal(support(profile,'human-interference-detection'),'unsupported');
+});
+
+test('native human input monitor upgrades interference detection without overstating foreground lease ownership',()=>{
+  const profile=deriveWindowsNativeHostCapabilityProfile(['hello','input.send','input.human-sequence']);
+  assert.equal(support(profile,'human-interference-detection'),'supported');
+  assert.equal(support(profile,'foreground-interaction-lease'),'partial');
 });
 
 test('capture is supported only when both frame production and artifact release are implemented',()=>{
