@@ -1,5 +1,6 @@
 import { WindowsComApartmentExecutor } from './windowsComApartment.js';
-import { WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
+import { WindowsGraphicsCaptureRuntime } from './windowsGraphicsCaptureRuntime.js';
+import { WindowsNativeHostCaptureBridge, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
 import { WindowsNativeHostComApartmentHost } from './windowsNativeHostComApartment.js';
 import { WINDOWS_NATIVE_HOST_OPERATIONS, WindowsNativeHostProtocolClient, type WindowsNativeHostOperation, type WindowsNativeHostRequestIdSource } from './windowsNativeHostProtocol.js';
 import { WindowsNativeHostStdioTransport } from './windowsNativeHostStdioTransport.js';
@@ -9,6 +10,7 @@ import type { WindowsProviderCapabilityProfile, WindowsProviderCapabilityState, 
 import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
+import { WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
 
 const VALID_OPERATIONS=new Set<WindowsNativeHostOperation>(WINDOWS_NATIVE_HOST_OPERATIONS);
 
@@ -62,15 +64,15 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'uia-range-value':capability(uiaAct?'supported':'unsupported'),
       'uia-window':capability(uiaAct?'supported':'unsupported'),
       'window-modal-authority':capability(uiaObserve?'partial':'unsupported','authority model exists; native modal snapshot composition remains incomplete'),
-      'wgc-hwnd-capture':capability(capture?'supported':'unsupported','native Windows.Graphics.Capture is not implemented by this host build'),
+      'wgc-hwnd-capture':capability(capture?'supported':'unsupported','native Windows.Graphics.Capture operations unavailable'),
       'visual-frame-binding':capability(capture?'supported':'partial','frame/generation validation exists without a native capture producer'),
-      'visual-grounding':capability(capture?'partial':'unsupported','grounding runtime exists but requires native frame production'),
+      'visual-grounding':capability(capture?'partial':'unsupported','native capture exists but grounding-provider inference remains separately composed'),
       'keyboard-input':capability(input?'supported':'unsupported'),
       'pointer-input':capability(input?'supported':'unsupported'),
       'input-integrity-gating':capability(integrity&&input?'supported':'unsupported'),
       'foreground-interaction-lease':capability(input?'partial':'unsupported','lease model exists; production foreground ownership acquisition is not yet composed here'),
       'human-interference-detection':capability(input?'partial':'unsupported','lease model exists; native human-input sequence observer is not yet exposed by the host'),
-      'transient-capture-retention':capability(capture?'supported':'unsupported','no native artifact producer exists yet'),
+      'transient-capture-retention':capability(capture?'supported':'unsupported','native capture artifact ownership unavailable'),
       'side-effect-verification':capability('partial','verification remains a separate post-action observation/reconciliation layer'),
     }),
   });
@@ -84,6 +86,8 @@ export interface WindowsNativeHostRuntime {
   readonly system:WindowsNativeHostSystemObserver;
   readonly integrity:WindowsNativeHostIntegrityReader;
   readonly input:WindowsNativeHostSendInputBridge;
+  readonly capture:WindowsGraphicsCaptureRuntime;
+  readonly retention:WindowsVisualArtifactRetentionManager;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
@@ -91,9 +95,9 @@ export interface WindowsNativeHostRuntime {
 }
 
 /**
- * Opens the production Windows native sidecar and composes its validated semantic
- * services into one runtime. Capability support is derived from the host's hello
- * handshake rather than assumed from protocol verbs that may only be reserved.
+ * Opens the production Windows native sidecar and composes its validated semantic,
+ * visual, and native-input services into one runtime. Capability support is
+ * derived from the host's hello handshake rather than assumed from reserved verbs.
  */
 export async function openWindowsNativeHostRuntime(
   executablePath:string,
@@ -117,9 +121,12 @@ export async function openWindowsNativeHostRuntime(
     const system=new WindowsNativeHostSystemObserver(protocol);
     const integrity=new WindowsNativeHostIntegrityReader(protocol);
     const input=new WindowsNativeHostSendInputBridge(protocol);
+    const captureBridge=new WindowsNativeHostCaptureBridge(protocol);
+    const capture=new WindowsGraphicsCaptureRuntime(captureBridge);
+    const retention=new WindowsVisualArtifactRetentionManager(captureBridge);
     let closed=false;
     return Object.freeze({
-      protocol,apartment,uia,events,system,integrity,input,
+      protocol,apartment,uia,events,system,integrity,input,capture,retention,
       capabilities:deriveWindowsNativeHostCapabilityProfile(implemented),
       implementedOperations:implemented,
       close:async()=>{
