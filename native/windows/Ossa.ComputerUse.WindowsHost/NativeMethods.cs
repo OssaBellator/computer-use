@@ -25,6 +25,11 @@ internal static class NativeMethods
     internal const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
     internal const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
 
+    internal const uint D3D11_CREATE_DEVICE_BGRA_SUPPORT = 0x20;
+    internal const uint D3D11_SDK_VERSION = 7;
+    internal const int D3D_DRIVER_TYPE_HARDWARE = 1;
+    internal const int D3D_DRIVER_TYPE_WARP = 5;
+
     internal const int SM_XVIRTUALSCREEN = 76;
     internal const int SM_YVIRTUALSCREEN = 77;
     internal const int SM_CXVIRTUALSCREEN = 78;
@@ -63,6 +68,9 @@ internal static class NativeMethods
     internal static extern bool GetWindowRect(nint hwnd, out RECT rect);
 
     [DllImport("user32.dll")]
+    internal static extern uint GetDpiForWindow(nint hwnd);
+
+    [DllImport("user32.dll")]
     internal static extern int GetSystemMetrics(int nIndex);
 
     [DllImport("kernel32.dll")]
@@ -99,6 +107,24 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("d3d11.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern int D3D11CreateDevice(
+        nint adapter,
+        int driverType,
+        nint software,
+        uint flags,
+        nint featureLevels,
+        uint featureLevelCount,
+        uint sdkVersion,
+        out nint device,
+        out int featureLevel,
+        out nint immediateContext);
+
+    [DllImport("d3d11.dll", CallingConvention = CallingConvention.StdCall)]
+    internal static extern int CreateDirect3D11DeviceFromDXGIDevice(
+        nint dxgiDevice,
+        out nint graphicsDevice);
 
     internal static void ThrowLastWin32(string operation)
     {
