@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -59,7 +58,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetWindowRect(nint hwnd, out RECT rect);
 
@@ -102,7 +101,11 @@ internal static class NativeMethods
     internal static extern short GetAsyncKeyState(int virtualKey);
 
     internal static void ThrowLastWin32(string operation)
-        => throw new Win32Exception(Marshal.GetLastWin32Error(), operation);
+    {
+        if (string.IsNullOrWhiteSpace(operation) || operation.Length > 64 || operation.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '-' or '_')))
+            throw new ProtocolException("win32.operation-invalid");
+        throw new ProtocolException($"win32.{operation}.{Marshal.GetLastWin32Error()}");
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     internal readonly struct RECT
