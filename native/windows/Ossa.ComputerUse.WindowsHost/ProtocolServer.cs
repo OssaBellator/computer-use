@@ -12,6 +12,7 @@ internal sealed class ProtocolServer : IDisposable
     {
         "hello",
         "system.windows",
+        "system.virtual-desktop",
         "uia.resolve-window",
         "uia.build-cache",
         "uia.resolve-control",
@@ -104,6 +105,7 @@ internal sealed class ProtocolServer : IDisposable
                 operations = Operations.OrderBy(value => value, StringComparer.Ordinal).ToArray(),
             }),
             "system.windows" => _mta.InvokeAsync(() => _windows.List(ProtocolJson.DeserializeBody<WindowListRequest>(request.Body))),
+            "system.virtual-desktop" => Task.FromResult(VirtualDesktopService.Read()),
             "integrity.current" => Task.FromResult(_services.ReadCurrentIntegrity()),
             "integrity.process" => Task.FromResult(_services.ReadProcessIntegrity(ProtocolJson.DeserializeBody<IntegrityProcessRequest>(request.Body))),
             "input.send" => Task.FromResult(_services.SendInput(ProtocolJson.DeserializeBody<SendInputRequest>(request.Body))),
