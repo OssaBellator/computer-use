@@ -40,6 +40,10 @@ internal sealed class HumanInputMonitor : IDisposable
         try
         {
             _threadId = NativeMethods.GetCurrentThreadId();
+            // Force creation of this thread's Win32 message queue before exposing
+            // startup success, so Dispose can always deliver WM_QUIT safely.
+            NativeMethods.PeekMessageW(out _, 0, 0, 0, NativeMethods.PM_NOREMOVE);
+
             var module = NativeMethods.GetModuleHandleW(null);
             _keyboardHook = NativeMethods.SetWindowsHookExW(NativeMethods.WH_KEYBOARD_LL, _keyboardProc, module, 0);
             if (_keyboardHook == 0) NativeMethods.ThrowLastWin32("set-windows-hook-keyboard");
@@ -49,7 +53,7 @@ internal sealed class HumanInputMonitor : IDisposable
 
             while (true)
             {
-                var result = NativeMethods.GetMessageW(out var message, 0, 0, 0);
+                var result = NativeMethods.GetMessageW(out _, 0, 0, 0);
                 if (result == 0) break;
                 if (result < 0) NativeMethods.ThrowLastWin32("get-message-human-input");
             }
@@ -99,8 +103,8 @@ internal sealed class HumanInputMonitor : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         var threadId = Volatile.Read(ref _threadId);
-        if (threadId != 0)
-            NativeMethods.PostThreadMessageW(threadId, NativeMethods.WM_QUIT, 0, 0);
+        if (threadId != 0 && !NativeMethods.PostThreadMessageW(threadId, NativeMethods.WM_QUIT, 0, 0))
+            NativeMethods.ThrowLastWin32("post-thread-message-human-input");
         _thread.Join();
     }
 }
