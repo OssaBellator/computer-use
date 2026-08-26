@@ -50,16 +50,16 @@ function key(window:WindowsUiaWindowRef):string {
   return `${window.desktopSessionId}:${window.hwnd}:${window.process.processId}:${window.process.startIdentity}:${window.generation}`;
 }
 
-function captureSnapshot(value:unknown):WindowsWindowAuthoritySnapshot|undefined {
+function captureSnapshot(value:unknown,requested:ReadonlySet<string>):WindowsWindowAuthoritySnapshot|undefined {
   const raw=captureOwnDataObject(value,['window','isModal','isTopmost','interactionState','owner']);
   if(!raw||typeof raw.isModal!=='boolean'||typeof raw.isTopmost!=='boolean'||
      typeof raw.interactionState!=='string'||!INTERACTION_STATES.includes(raw.interactionState as WindowsWindowInteractionState))return undefined;
   const window=captureWindowsUiaWindowRef(raw.window);
-  if(!window)return undefined;
+  if(!window||!requested.has(key(window)))return undefined;
   let owner:WindowsUiaWindowRef|undefined;
   if(raw.owner!==undefined){
     owner=captureWindowsUiaWindowRef(raw.owner);
-    if(!owner)return undefined;
+    if(!owner||!requested.has(key(owner)))return undefined;
   }
   return Object.freeze({
     window,
@@ -96,10 +96,10 @@ export class WindowsNativeHostWindowAuthority {
     const states:WindowsWindowAuthoritySnapshot[]=[];
     const seen=new Set<string>();
     for(const value of values){
-      const state=captureSnapshot(value);
+      const state=captureSnapshot(value,requested);
       if(!state)throw new Error('windows-native-window-authority-response-invalid');
       const id=key(state.window);
-      if(!requested.has(id)||seen.has(id))throw new Error('windows-native-window-authority-response-invalid');
+      if(seen.has(id))throw new Error('windows-native-window-authority-response-invalid');
       seen.add(id);
       states.push(state);
     }
@@ -109,6 +109,7 @@ export class WindowsNativeHostWindowAuthority {
   async decide(requested:WindowsUiaWindowRef,windows:readonly WindowsUiaWindowRef[]):Promise<WindowsWindowAuthorityDecision> {
     const requestedSnapshot=captureWindowsUiaWindowRef(requested);
     if(!requestedSnapshot)throw new Error('windows-native-window-authority-requested-invalid');
+    if(!windows.some(window=>sameWindowsUiaWindow(window,requestedSnapshot)))throw new Error('windows-native-window-authority-requested-not-in-batch');
     const states=await this.observe(windows);
     return decideWindowsWindowAuthority(requestedSnapshot,states);
   }
