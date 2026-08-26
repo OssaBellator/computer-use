@@ -27,19 +27,23 @@ function capability(support:WindowsProviderCapabilitySupport,reason?:string):Win
 function has(implemented:ReadonlySet<WindowsNativeHostOperation>,...operations:WindowsNativeHostOperation[]):boolean {
   return operations.every(operation=>implemented.has(operation));
 }
-function captureOperations(values:readonly string[]):ReadonlySet<WindowsNativeHostOperation>{
-  const result=new Set<WindowsNativeHostOperation>();
+function captureOperations(values:readonly string[]):readonly WindowsNativeHostOperation[]{
+  const seen=new Set<WindowsNativeHostOperation>();
+  const result:WindowsNativeHostOperation[]=[];
   for(const value of values){
     if(!VALID_OPERATIONS.has(value as WindowsNativeHostOperation))continue;
-    result.add(value as WindowsNativeHostOperation);
+    const operation=value as WindowsNativeHostOperation;
+    if(seen.has(operation))continue;
+    seen.add(operation);
+    result.push(operation);
   }
-  return result;
+  return Object.freeze(result);
 }
 
 export function deriveWindowsNativeHostCapabilityProfile(
   operations:readonly WindowsNativeHostOperation[],
 ):WindowsProviderCapabilityProfile {
-  const implemented=captureOperations(operations);
+  const implemented=new Set(captureOperations(operations));
   const uiaObserve=has(implemented,'uia.resolve-window','uia.build-cache','uia.resolve-control','uia.compare-elements','uia.snapshot-control');
   const uiaAct=has(implemented,'uia.perform-pattern');
   const input=has(implemented,'input.send');
@@ -81,7 +85,8 @@ export interface WindowsNativeHostRuntime {
   readonly integrity:WindowsNativeHostIntegrityReader;
   readonly input:WindowsNativeHostSendInputBridge;
   readonly capabilities:WindowsProviderCapabilityProfile;
-  readonly implementedOperations:ReadonlySet<WindowsNativeHostOperation>;
+  /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
+  readonly implementedOperations:readonly WindowsNativeHostOperation[];
   close():Promise<void>;
 }
 
@@ -115,7 +120,7 @@ export async function openWindowsNativeHostRuntime(
     let closed=false;
     return Object.freeze({
       protocol,apartment,uia,events,system,integrity,input,
-      capabilities:deriveWindowsNativeHostCapabilityProfile(host.implementedOperations),
+      capabilities:deriveWindowsNativeHostCapabilityProfile(implemented),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;
