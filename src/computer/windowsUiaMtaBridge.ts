@@ -44,9 +44,14 @@ export interface WindowsUiaMtaNativeClient {
     ref: WindowsUiaControlRef,
   ): Promise<WindowsUiaRevalidation>;
 
+  /**
+   * The native host must do its final identity/generation check for `ref` in this
+   * same MTA operation immediately before invoking the requested pattern.
+   */
   performPattern(
     context: WindowsComApartmentContext,
     element: WindowsUiaNativeElementHandle,
+    ref: WindowsUiaControlRef,
     action: WindowsUiaSemanticAction,
     effect:ComputerEffectClass,
   ): Promise<DesktopBackendActionResult>;
@@ -86,7 +91,7 @@ export class WindowsUiaMtaBridge implements WindowsUiaProviderBridge {
     return this.apartment.run((context) => this.client.snapshotControl(context,element,ref));
   }
 
-  performPattern(element: WindowsUiaNativeElementHandle, action: WindowsUiaSemanticAction, effect:ComputerEffectClass) {
-    return this.apartment.run((context) => this.client.performPattern(context,element,action,effect));
+  performPattern(element: WindowsUiaNativeElementHandle, ref:WindowsUiaControlRef, action: WindowsUiaSemanticAction, effect:ComputerEffectClass) {
+    return this.apartment.run((context) => this.client.performPattern(context,element,ref,action,effect));
   }
 }
