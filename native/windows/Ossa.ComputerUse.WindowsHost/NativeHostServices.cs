@@ -6,90 +6,6 @@ namespace Ossa.ComputerUse.WindowsHost;
 
 internal sealed class NativeHostServices
 {
-    internal object Hello(MtaExecutor mta) => new
-    {
-        protocol = 1,
-        host = "ossa-computer-use-windows-host",
-        apartment = "mta",
-        threadToken = mta.ThreadToken,
-    };
-
-    internal object ListWindows(WindowListRequest request)
-    {
-        if (request.MaxItems < 1 || request.MaxItems > 10_000 || request.MaxTextBytes < 1 || request.MaxTextBytes > 1_000_000)
-        {
-            throw new ProtocolException("windows.enumeration-limits-invalid");
-        }
-
-        var foreground = NativeMethods.GetForegroundWindow();
-        var windows = new List<object>();
-        var textBytes = 0;
-        var truncated = false;
-
-        NativeMethods.EnumWindows((hwnd, _) =>
-        {
-            if (!NativeMethods.IsWindowVisible(hwnd))
-            {
-                return true;
-            }
-            if (windows.Count >= request.MaxItems)
-            {
-                truncated = true;
-                return false;
-            }
-
-            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
-            if (pid == 0)
-            {
-                return true;
-            }
-
-            string startIdentity;
-            try
-            {
-                using var process = Process.GetProcessById(checked((int)pid));
-                startIdentity = process.StartTime.ToUniversalTime().ToString("O");
-            }
-            catch
-            {
-                return true;
-            }
-
-            var title = ReadWindowText(hwnd);
-            var titleBytes = System.Text.Encoding.UTF8.GetByteCount(title);
-            if (textBytes + titleBytes > request.MaxTextBytes)
-            {
-                truncated = true;
-                return false;
-            }
-            textBytes += titleBytes;
-
-            NativeMethods.GetWindowRect(hwnd, out var rect);
-            windows.Add(new
-            {
-                window = new
-                {
-                    hwnd = $"0x{hwnd.ToInt64():x}",
-                    desktopSessionId = $"session:{Process.GetCurrentProcess().SessionId}",
-                    process = new { processId = checked((int)pid), startIdentity },
-                    generation = 0,
-                },
-                title,
-                foreground = hwnd == foreground,
-                bounds = new
-                {
-                    x = rect.Left,
-                    y = rect.Top,
-                    width = Math.Max(0, rect.Right - rect.Left),
-                    height = Math.Max(0, rect.Bottom - rect.Top),
-                },
-            });
-            return true;
-        }, 0);
-
-        return new { windows, truncated, itemCount = windows.Count, textBytes };
-    }
-
     internal object ReadCurrentIntegrity()
     {
         if (!NativeMethods.OpenProcessToken(NativeMethods.GetCurrentProcess(), NativeMethods.TOKEN_QUERY, out var token))
@@ -129,7 +45,7 @@ internal sealed class NativeHostServices
 
     internal object SendInput(SendInputRequest request)
     {
-        if (request.Events is null || request.Events.Length < 1 || request.Events.Length > 4_096)
+        if (request.Events is null || request.Events.Length is < 1 or > 4_096)
         {
             throw new ProtocolException("input.event-count-invalid");
         }
@@ -147,27 +63,25 @@ internal sealed class NativeHostServices
         return new { insertedEventCount = inserted };
     }
 
-    private static NativeMethods.INPUT CompileInput(SendInputEventDto value)
+    private static NativeMethods.INPUT CompileInput(SendInputEventDto value) => value.Kind switch
     {
-        return value.Kind switch
-        {
-            "keyboard-vk" => KeyboardVirtualKey(value),
-            "keyboard-unicode" => KeyboardUnicode(value),
-            "mouse-absolute-move" => MouseAbsolute(value),
-            "mouse-relative-move" => MouseRelative(value),
-            "mouse-button" => MouseButton(value),
-            _ => throw new ProtocolException("input.event-kind-invalid"),
-        };
-    }
+        "keyboard-vk" => KeyboardVirtualKey(value),
+        "keyboard-unicode" => KeyboardUnicode(value),
+        "mouse-absolute-move" => MouseAbsolute(value),
+        "mouse-relative-move" => MouseRelative(value),
+        "mouse-button" => MouseButton(value),
+        _ => throw new ProtocolException("input.event-kind-invalid"),
+    };
 
     private static NativeMethods.INPUT KeyboardVirtualKey(SendInputEventDto value)
     {
-        if (value.VirtualKey is < 1 or > 255 || value.KeyUp is null || value.Extended is null)
-        {
-            throw new ProtocolException("input.keyboard-vk-invalid");
-        }
-        var flags = (value.KeyUp.Value ? NativeMethods.KEYEVENTF_KEYUP : 0u)
-                    | (value.Extended.Value ? NativeMethods.KEYEVENTF_EXTENDEDKEY : 0u);
+        var virtualKey = value.VirtualKey ?? throw new ProtocolException("input.keyboard-vk-invalid");
+        var keyUp = value.KeyUp ?? throw new ProtocolException("input.keyboard-vk-invalid");
+        var extended = value.Extended ?? throw new ProtocolException("input.keyboard-vk-invalid");
+        if (virtualKey is < 1 or > 255) throw new ProtocolException("input.keyboard-vk-invalid");
+
+        var flags = (keyUp ? NativeMethods.KEYEVENTF_KEYUP : 0u)
+                    | (extended ? NativeMethods.KEYEVENTF_EXTENDEDKEY : 0u);
         return new NativeMethods.INPUT
         {
             type = NativeMethods.INPUT_KEYBOARD,
@@ -175,7 +89,7 @@ internal sealed class NativeHostServices
             {
                 keyboard = new NativeMethods.KEYBDINPUT
                 {
-                    wVk = checked((ushort)value.VirtualKey.Value),
+                    wVk = checked((ushort)virtualKey),
                     wScan = 0,
                     dwFlags = flags,
                 },
@@ -185,11 +99,11 @@ internal sealed class NativeHostServices
 
     private static NativeMethods.INPUT KeyboardUnicode(SendInputEventDto value)
     {
-        if (value.CodeUnit is < 1 or > 0xffff || value.KeyUp is null)
-        {
-            throw new ProtocolException("input.keyboard-unicode-invalid");
-        }
-        var flags = NativeMethods.KEYEVENTF_UNICODE | (value.KeyUp.Value ? NativeMethods.KEYEVENTF_KEYUP : 0u);
+        var codeUnit = value.CodeUnit ?? throw new ProtocolException("input.keyboard-unicode-invalid");
+        var keyUp = value.KeyUp ?? throw new ProtocolException("input.keyboard-unicode-invalid");
+        if (codeUnit is < 1 or > 0xffff) throw new ProtocolException("input.keyboard-unicode-invalid");
+
+        var flags = NativeMethods.KEYEVENTF_UNICODE | (keyUp ? NativeMethods.KEYEVENTF_KEYUP : 0u);
         return new NativeMethods.INPUT
         {
             type = NativeMethods.INPUT_KEYBOARD,
@@ -198,7 +112,7 @@ internal sealed class NativeHostServices
                 keyboard = new NativeMethods.KEYBDINPUT
                 {
                     wVk = 0,
-                    wScan = checked((ushort)value.CodeUnit.Value),
+                    wScan = checked((ushort)codeUnit),
                     dwFlags = flags,
                 },
             },
@@ -207,7 +121,9 @@ internal sealed class NativeHostServices
 
     private static NativeMethods.INPUT MouseAbsolute(SendInputEventDto value)
     {
-        if (value.NormalizedX is < 0 or > 65_535 || value.NormalizedY is < 0 or > 65_535 || value.VirtualDesktop is not true)
+        var x = value.NormalizedX ?? throw new ProtocolException("input.mouse-absolute-invalid");
+        var y = value.NormalizedY ?? throw new ProtocolException("input.mouse-absolute-invalid");
+        if (x is < 0 or > 65_535 || y is < 0 or > 65_535 || value.VirtualDesktop is not true)
         {
             throw new ProtocolException("input.mouse-absolute-invalid");
         }
@@ -218,8 +134,8 @@ internal sealed class NativeHostServices
             {
                 mouse = new NativeMethods.MOUSEINPUT
                 {
-                    dx = value.NormalizedX.Value,
-                    dy = value.NormalizedY.Value,
+                    dx = x,
+                    dy = y,
                     dwFlags = NativeMethods.MOUSEEVENTF_MOVE | NativeMethods.MOUSEEVENTF_ABSOLUTE | NativeMethods.MOUSEEVENTF_VIRTUALDESK,
                 },
             },
@@ -228,7 +144,9 @@ internal sealed class NativeHostServices
 
     private static NativeMethods.INPUT MouseRelative(SendInputEventDto value)
     {
-        if (value.Dx is null || value.Dy is null || Math.Abs((long)value.Dx.Value) > 100_000 || Math.Abs((long)value.Dy.Value) > 100_000)
+        var dx = value.Dx ?? throw new ProtocolException("input.mouse-relative-invalid");
+        var dy = value.Dy ?? throw new ProtocolException("input.mouse-relative-invalid");
+        if (Math.Abs((long)dx) > 100_000 || Math.Abs((long)dy) > 100_000)
         {
             throw new ProtocolException("input.mouse-relative-invalid");
         }
@@ -239,8 +157,8 @@ internal sealed class NativeHostServices
             {
                 mouse = new NativeMethods.MOUSEINPUT
                 {
-                    dx = value.Dx.Value,
-                    dy = value.Dy.Value,
+                    dx = dx,
+                    dy = dy,
                     dwFlags = NativeMethods.MOUSEEVENTF_MOVE,
                 },
             },
@@ -249,11 +167,12 @@ internal sealed class NativeHostServices
 
     private static NativeMethods.INPUT MouseButton(SendInputEventDto value)
     {
-        if (value.Button is not ("left" or "middle" or "right") || value.KeyUp is null)
+        var keyUp = value.KeyUp ?? throw new ProtocolException("input.mouse-button-invalid");
+        if (value.Button is not ("left" or "middle" or "right"))
         {
             throw new ProtocolException("input.mouse-button-invalid");
         }
-        var flags = (value.Button, value.KeyUp.Value) switch
+        var flags = (value.Button, keyUp) switch
         {
             ("left", false) => NativeMethods.MOUSEEVENTF_LEFTDOWN,
             ("left", true) => NativeMethods.MOUSEEVENTF_LEFTUP,
@@ -288,25 +207,13 @@ internal sealed class NativeHostServices
                 NativeMethods.ThrowLastWin32("GetTokenInformation(TokenIntegrityLevel)");
             }
             var label = Marshal.PtrToStructure<NativeMethods.TOKEN_MANDATORY_LABEL>(buffer);
-            if (label.Label.Sid == 0)
-            {
-                throw new ProtocolException("integrity.sid-invalid");
-            }
+            if (label.Label.Sid == 0) throw new ProtocolException("integrity.sid-invalid");
             var countPointer = NativeMethods.GetSidSubAuthorityCount(label.Label.Sid);
-            if (countPointer == 0)
-            {
-                throw new ProtocolException("integrity.sid-invalid");
-            }
+            if (countPointer == 0) throw new ProtocolException("integrity.sid-invalid");
             var count = Marshal.ReadByte(countPointer);
-            if (count == 0)
-            {
-                throw new ProtocolException("integrity.sid-invalid");
-            }
+            if (count == 0) throw new ProtocolException("integrity.sid-invalid");
             var ridPointer = NativeMethods.GetSidSubAuthority(label.Label.Sid, checked((uint)(count - 1)));
-            if (ridPointer == 0)
-            {
-                throw new ProtocolException("integrity.sid-invalid");
-            }
+            if (ridPointer == 0) throw new ProtocolException("integrity.sid-invalid");
             return unchecked((uint)Marshal.ReadInt32(ridPointer));
         }
         finally
@@ -338,17 +245,5 @@ internal sealed class NativeHostServices
         {
             throw new ProtocolException("process.generation-missing");
         }
-    }
-
-    private static string ReadWindowText(nint hwnd)
-    {
-        var length = Math.Clamp(NativeMethods.GetWindowTextLengthW(hwnd), 0, 4_096);
-        if (length == 0)
-        {
-            return string.Empty;
-        }
-        var buffer = new char[length + 1];
-        var copied = NativeMethods.GetWindowTextW(hwnd, buffer, buffer.Length);
-        return copied > 0 ? new string(buffer, 0, copied) : string.Empty;
     }
 }
