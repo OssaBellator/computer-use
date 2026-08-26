@@ -13,17 +13,34 @@ const modal2: WindowsUiaWindowRef = Object.freeze({
   hwnd:'0x12',desktopSessionId:'interactive:1',process:Object.freeze({processId:5,startIdentity:'p5'}),generation:1,
 });
 
-test('blocked target fails closed even when HWND identity is still current', () => {
+test('blocked target with no represented modal fails closed even when HWND is current', () => {
   const result = decideWindowsWindowAuthority(main,[{window:main,isModal:false,interactionState:'blocked-by-modal-window'}]);
   assert.deepEqual(result,{allowed:false,reason:'window-blocked-by-modal'});
 });
 
-test('single owned modal becomes the exact interaction target', () => {
+test('blocked owner routes to its single owned modal', () => {
+  const result = decideWindowsWindowAuthority(main,[
+    {window:main,isModal:false,interactionState:'blocked-by-modal-window'},
+    {window:modal,isModal:true,interactionState:'ready-for-user-interaction',owner:main},
+  ]);
+  assert.deepEqual(result,{allowed:true,target:modal});
+});
+
+test('single owned modal becomes the exact interaction target even before owner reports blocked', () => {
   const result = decideWindowsWindowAuthority(main,[
     {window:main,isModal:false,interactionState:'running'},
     {window:modal,isModal:true,interactionState:'ready-for-user-interaction',owner:main},
   ]);
   assert.deepEqual(result,{allowed:true,target:modal});
+});
+
+test('nested modal chain resolves to deepest unique modal', () => {
+  const result = decideWindowsWindowAuthority(main,[
+    {window:main,isModal:false,interactionState:'blocked-by-modal-window'},
+    {window:modal,isModal:true,interactionState:'blocked-by-modal-window',owner:main},
+    {window:modal2,isModal:true,interactionState:'ready-for-user-interaction',owner:modal},
+  ]);
+  assert.deepEqual(result,{allowed:true,target:modal2});
 });
 
 test('multiple plausible owned modals are ambiguous and cannot dispatch', () => {
@@ -35,7 +52,11 @@ test('multiple plausible owned modals are ambiguous and cannot dispatch', () => 
   assert.deepEqual(result,{allowed:false,reason:'modal-ambiguity'});
 });
 
-test('closing and non-responsive windows are not interaction-authoritative', () => {
+test('closing and non-responsive resolved windows are not interaction-authoritative', () => {
   assert.deepEqual(decideWindowsWindowAuthority(main,[{window:main,isModal:false,interactionState:'closing'}]),{allowed:false,reason:'window-closing'});
   assert.deepEqual(decideWindowsWindowAuthority(main,[{window:main,isModal:false,interactionState:'not-responding'}]),{allowed:false,reason:'window-not-responding'});
+  assert.deepEqual(decideWindowsWindowAuthority(main,[
+    {window:main,isModal:false,interactionState:'blocked-by-modal-window'},
+    {window:modal,isModal:true,interactionState:'closing',owner:main},
+  ]),{allowed:false,reason:'window-closing'});
 });
