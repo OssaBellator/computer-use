@@ -72,6 +72,8 @@ export * from './computer/windowsUiaCacheRequestPlan.js';
 export * from './computer/windowsUiaCacheState.js';
 export * from './computer/windowsUiaProviderRuntime.js';
 export * from './computer/windowsUiaEventRouter.js';
+export * from './computer/windowsUiaMtaBridge.js';
+export * from './computer/windowsUiaPatternDispatcher.js';
 export * from './computer/windowsInputIntegrity.js';
 export * from './computer/windowsNativeInputGate.js';
 export * from './computer/windowsVisualFrame.js';
