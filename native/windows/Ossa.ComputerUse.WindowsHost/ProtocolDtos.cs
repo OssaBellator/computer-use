@@ -80,6 +80,7 @@ internal sealed record PerformPatternRequest(
     ControlRefDto Ref,
     SemanticActionDto Action,
     string Effect);
+internal sealed record WindowStatesRequest(WindowRefDto[] Windows);
 internal sealed record UiaEventRegisterRequest(
     string ThreadToken,
     string RegistrationId,
