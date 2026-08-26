@@ -1,16 +1,16 @@
 import { WindowsComApartmentExecutor } from './windowsComApartment.js';
 import { WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
 import { WindowsNativeHostComApartmentHost } from './windowsNativeHostComApartment.js';
-import { WindowsNativeHostProtocolClient, type WindowsNativeHostOperation, type WindowsNativeHostRequestIdSource } from './windowsNativeHostProtocol.js';
+import { WINDOWS_NATIVE_HOST_OPERATIONS, WindowsNativeHostProtocolClient, type WindowsNativeHostOperation, type WindowsNativeHostRequestIdSource } from './windowsNativeHostProtocol.js';
 import { WindowsNativeHostStdioTransport } from './windowsNativeHostStdioTransport.js';
 import { WindowsNativeHostSystemObserver } from './windowsNativeHostSystem.js';
 import { WindowsNativeHostUiaEventBridge } from './windowsNativeHostUiaEventBridge.js';
-import type { WindowsProviderCapabilityProfile, WindowsProviderCapabilitySupport } from './windowsProviderCapabilities.js';
+import type { WindowsProviderCapabilityProfile, WindowsProviderCapabilityState, WindowsProviderCapabilitySupport } from './windowsProviderCapabilities.js';
 import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
 
-const IMPLEMENTED_OPERATION_SET = new Set<WindowsNativeHostOperation>();
+const VALID_OPERATIONS=new Set<WindowsNativeHostOperation>(WINDOWS_NATIVE_HOST_OPERATIONS);
 
 class SequentialWindowsNativeHostRequestIds implements WindowsNativeHostRequestIdSource {
   private sequence=0;
@@ -21,15 +21,25 @@ class SequentialWindowsNativeHostRequestIds implements WindowsNativeHostRequestI
   }
 }
 
-function capability(support:WindowsProviderCapabilitySupport,reason?:string){
+function capability(support:WindowsProviderCapabilitySupport,reason?:string):WindowsProviderCapabilitySupport|WindowsProviderCapabilityState {
   return reason===undefined?support:Object.freeze({support,reason});
 }
-
 function has(implemented:ReadonlySet<WindowsNativeHostOperation>,...operations:WindowsNativeHostOperation[]):boolean {
   return operations.every(operation=>implemented.has(operation));
 }
+function captureOperations(values:readonly string[]):ReadonlySet<WindowsNativeHostOperation>{
+  const result=new Set<WindowsNativeHostOperation>();
+  for(const value of values){
+    if(!VALID_OPERATIONS.has(value as WindowsNativeHostOperation))continue;
+    result.add(value as WindowsNativeHostOperation);
+  }
+  return result;
+}
 
-function profile(implemented:ReadonlySet<WindowsNativeHostOperation>):WindowsProviderCapabilityProfile {
+export function deriveWindowsNativeHostCapabilityProfile(
+  operations:readonly WindowsNativeHostOperation[],
+):WindowsProviderCapabilityProfile {
+  const implemented=captureOperations(operations);
   const uiaObserve=has(implemented,'uia.resolve-window','uia.build-cache','uia.resolve-control','uia.compare-elements','uia.snapshot-control');
   const uiaAct=has(implemented,'uia.perform-pattern');
   const input=has(implemented,'input.send');
@@ -75,15 +85,6 @@ export interface WindowsNativeHostRuntime {
   close():Promise<void>;
 }
 
-function captureOperations(values:readonly string[]):ReadonlySet<WindowsNativeHostOperation>{
-  const result=new Set<WindowsNativeHostOperation>();
-  for(const value of values){
-    if(!IMPLEMENTED_OPERATION_SET.has(value as WindowsNativeHostOperation))continue;
-    result.add(value as WindowsNativeHostOperation);
-  }
-  return result;
-}
-
 /**
  * Opens the production Windows native sidecar and composes its validated semantic
  * services into one runtime. Capability support is derived from the host's hello
@@ -93,7 +94,11 @@ export async function openWindowsNativeHostRuntime(
   executablePath:string,
   options?:{readonly maxMessageBytes?:number;readonly cwd?:string;readonly eventPollIntervalMs?:number},
 ):Promise<WindowsNativeHostRuntime>{
-  const transport=WindowsNativeHostStdioTransport.spawn(executablePath,{maxMessageBytes:options?.maxMessageBytes,cwd:options?.cwd});
+  const spawnOptions={
+    ...(options?.maxMessageBytes!==undefined?{maxMessageBytes:options.maxMessageBytes}:{}),
+    ...(options?.cwd!==undefined?{cwd:options.cwd}:{}),
+  };
+  const transport=WindowsNativeHostStdioTransport.spawn(executablePath,spawnOptions);
   const protocol=new WindowsNativeHostProtocolClient(transport,new SequentialWindowsNativeHostRequestIds());
   try{
     const host=await WindowsNativeHostComApartmentHost.create(protocol);
@@ -110,7 +115,7 @@ export async function openWindowsNativeHostRuntime(
     let closed=false;
     return Object.freeze({
       protocol,apartment,uia,events,system,integrity,input,
-      capabilities:profile(implemented),
+      capabilities:deriveWindowsNativeHostCapabilityProfile(host.implementedOperations),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;
@@ -122,13 +127,4 @@ export async function openWindowsNativeHostRuntime(
     await protocol.close().catch(()=>undefined);
     throw error;
   }
-}
-
-// Filled after module initialization so the set stays tied to the protocol type.
-for(const operation of [
-  'hello','system.windows','system.virtual-desktop','uia.resolve-window','uia.build-cache','uia.resolve-control',
-  'uia.compare-elements','uia.snapshot-control','uia.perform-pattern','uia.events.register','uia.events.unregister',
-  'uia.events.poll','capture.next-frame','artifact.release','integrity.current','integrity.process','input.send',
-] as const satisfies readonly WindowsNativeHostOperation[]){
-  IMPLEMENTED_OPERATION_SET.add(operation);
 }
