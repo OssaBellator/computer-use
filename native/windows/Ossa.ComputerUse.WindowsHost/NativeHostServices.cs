@@ -315,7 +315,7 @@ internal sealed class NativeHostServices
         }
     }
 
-    private static void ValidateProcessGeneration(ProcessGenerationDto expected)
+    internal static void ValidateProcessGeneration(ProcessGenerationDto expected)
     {
         if (expected.ProcessId <= 0 || string.IsNullOrWhiteSpace(expected.StartIdentity) || expected.StartIdentity.Length > 256)
         {
