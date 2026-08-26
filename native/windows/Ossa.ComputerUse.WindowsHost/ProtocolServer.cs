@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace Ossa.ComputerUse.WindowsHost;
 
-internal sealed class ProtocolServer
+internal sealed class ProtocolServer : IDisposable
 {
     private const int ProtocolVersion = 1;
     private const int MaxMessageChars = 1_048_576;
@@ -18,6 +18,9 @@ internal sealed class ProtocolServer
         "uia.compare-elements",
         "uia.snapshot-control",
         "uia.perform-pattern",
+        "uia.events.register",
+        "uia.events.unregister",
+        "uia.events.poll",
         "capture.next-frame",
         "artifact.release",
         "integrity.current",
@@ -28,14 +31,17 @@ internal sealed class ProtocolServer
     private readonly MtaExecutor _mta;
     private readonly NativeHostServices _services = new();
     private readonly UiaService _uia;
+    private readonly UiaEventService _events;
     private readonly WindowEnumerationService _windows = new();
     private readonly TextReader _input;
     private readonly TextWriter _output;
+    private int _disposed;
 
     internal ProtocolServer(MtaExecutor mta, TextReader input, TextWriter output)
     {
         _mta = mta;
         _uia = new UiaService(mta.ThreadToken);
+        _events = new UiaEventService(mta.ThreadToken);
         _input = input;
         _output = output;
     }
@@ -107,6 +113,9 @@ internal sealed class ProtocolServer
             "uia.compare-elements" => _mta.InvokeAsync(() => _uia.CompareElements(ProtocolJson.DeserializeBody<CompareElementsRequest>(request.Body))),
             "uia.snapshot-control" => _mta.InvokeAsync(() => _uia.SnapshotControl(ProtocolJson.DeserializeBody<SnapshotControlRequest>(request.Body))),
             "uia.perform-pattern" => _mta.InvokeAsync(() => _uia.PerformPattern(ProtocolJson.DeserializeBody<PerformPatternRequest>(request.Body))),
+            "uia.events.register" => _mta.InvokeAsync(() => _events.Register(ProtocolJson.DeserializeBody<UiaEventRegisterRequest>(request.Body))),
+            "uia.events.unregister" => _mta.InvokeAsync(() => _events.Unregister(ProtocolJson.DeserializeBody<UiaEventUnregisterRequest>(request.Body))),
+            "uia.events.poll" => _mta.InvokeAsync(() => _events.Poll(ProtocolJson.DeserializeBody<UiaEventPollRequest>(request.Body))),
             "capture.next-frame" or "artifact.release" => throw new ProtocolException("capture.not-implemented"),
             _ => throw new ProtocolException("protocol.operation-unsupported"),
         };
@@ -127,6 +136,23 @@ internal sealed class ProtocolServer
         var json = JsonSerializer.Serialize(new { protocol = ProtocolVersion, id, status = "error", error = safeError }, ProtocolJson.Options);
         await _output.WriteLineAsync(json).ConfigureAwait(false);
         await _output.FlushAsync().ConfigureAwait(false);
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try
+        {
+            _mta.InvokeAsync(() =>
+            {
+                _events.Dispose();
+                return true;
+            }).GetAwaiter().GetResult();
+        }
+        catch (ObjectDisposedException)
+        {
+            // MTA is already unavailable; process teardown will release remaining OS state.
+        }
     }
 
     private static bool ValidId(string? id) => id is not null && IdPattern.IsMatch(id);
