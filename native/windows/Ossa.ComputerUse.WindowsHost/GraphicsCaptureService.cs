@@ -17,6 +17,7 @@ internal sealed class GraphicsCaptureService : IDisposable
     private const int MaxCaptureBytes = 64 * 1024 * 1024;
     private const int MaxCapturePixels = 33_177_600;
     private const int FrameTimeoutMs = 2_000;
+    private const long MaxArtifactLifetimeMs = 60_000;
 
     private static readonly Guid GraphicsCaptureItemGuid = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
     private static readonly Guid IdxgiDeviceGuid = new("54EC77FA-1377-44E6-8C32-88FD5F44C84C");
@@ -43,8 +44,10 @@ internal sealed class GraphicsCaptureService : IDisposable
         CaptureGeometry Geometry,
         CaptureArtifact Artifact);
 
+    private sealed record ArtifactEntry(byte[] Bytes, long ExpiresAtMs);
+
     private readonly object _artifactLock = new();
-    private readonly Dictionary<string, byte[]> _artifacts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ArtifactEntry> _artifacts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _captureGenerations = new(StringComparer.Ordinal);
     private long _artifactSequence;
     private long _retainedBytes;
@@ -173,7 +176,7 @@ internal sealed class GraphicsCaptureService : IDisposable
         _disposed = true;
         lock (_artifactLock)
         {
-            foreach (var bytes in _artifacts.Values) CryptographicOperations.ZeroMemory(bytes);
+            foreach (var entry in _artifacts.Values) CryptographicOperations.ZeroMemory(entry.Bytes);
             _artifacts.Clear();
             _retainedBytes = 0;
         }
@@ -279,10 +282,12 @@ internal sealed class GraphicsCaptureService : IDisposable
     {
         lock (_artifactLock)
         {
+            PurgeExpiredLocked(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             if (_artifacts.Count >= MaxArtifacts || _retainedBytes + bytes.LongLength > MaxRetainedBytes)
                 throw new ProtocolException("capture.artifact-budget-exceeded");
             var token = $"capture-{checked(++_artifactSequence):x}";
-            _artifacts.Add(token, bytes);
+            var expiresAtMs = checked(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + MaxArtifactLifetimeMs);
+            _artifacts.Add(token, new ArtifactEntry(bytes, expiresAtMs));
             _retainedBytes += bytes.LongLength;
             return token;
         }
@@ -292,10 +297,26 @@ internal sealed class GraphicsCaptureService : IDisposable
     {
         lock (_artifactLock)
         {
-            if (!_artifacts.Remove(token, out var bytes)) return false;
-            _retainedBytes -= bytes.LongLength;
-            CryptographicOperations.ZeroMemory(bytes);
+            PurgeExpiredLocked(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            if (!_artifacts.Remove(token, out var entry)) return false;
+            _retainedBytes -= entry.Bytes.LongLength;
+            CryptographicOperations.ZeroMemory(entry.Bytes);
             return true;
+        }
+    }
+
+    private void PurgeExpiredLocked(long nowMs)
+    {
+        if (_artifacts.Count == 0) return;
+        var expired = _artifacts
+            .Where(pair => nowMs >= pair.Value.ExpiresAtMs)
+            .Select(pair => pair.Key)
+            .ToArray();
+        foreach (var token in expired)
+        {
+            if (!_artifacts.Remove(token, out var entry)) continue;
+            _retainedBytes -= entry.Bytes.LongLength;
+            CryptographicOperations.ZeroMemory(entry.Bytes);
         }
     }
 
