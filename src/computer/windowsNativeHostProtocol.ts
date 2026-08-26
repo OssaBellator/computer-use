@@ -10,6 +10,7 @@ export const WINDOWS_NATIVE_HOST_OPERATIONS = [
   'uia.compare-elements',
   'uia.snapshot-control',
   'uia.perform-pattern',
+  'uia.window-states',
   'uia.events.register',
   'uia.events.unregister',
   'uia.events.poll',
