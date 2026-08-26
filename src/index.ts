@@ -91,6 +91,7 @@ export * from './computer/windowsNativeHostComApartment.js';
 export * from './computer/windowsNativeHostStdioTransport.js';
 export * from './computer/windowsNativeHostUiaEventBridge.js';
 export * from './computer/windowsNativeHostSystem.js';
+export * from './computer/windowsNativeHostHumanInput.js';
 export * from './computer/windowsNativeHostRuntime.js';
 export * from './verification/actionVerifier.js';
 export * from './verification/observationSettler.js';
