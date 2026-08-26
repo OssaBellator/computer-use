@@ -104,6 +104,8 @@ export class WindowsNativeHostSystemObserver {
        (raw.width as number)<1||(raw.height as number)<1||(raw.width as number)>MAX_COORDINATE||(raw.height as number)>MAX_COORDINATE){
       throw new Error('windows-native-host-virtual-desktop-response-invalid');
     }
-    return Object.freeze({left:raw.left,top:raw.top,width:raw.width,height:raw.height});
+    const width=raw.width as number;
+    const height=raw.height as number;
+    return Object.freeze({left:raw.left,top:raw.top,width,height});
   }
 }
