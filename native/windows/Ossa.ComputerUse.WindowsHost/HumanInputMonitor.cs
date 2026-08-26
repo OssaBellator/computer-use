@@ -41,7 +41,7 @@ internal sealed class HumanInputMonitor : IDisposable
         {
             _threadId = NativeMethods.GetCurrentThreadId();
             // Force creation of this thread's Win32 message queue before exposing
-            // startup success, so Dispose can always deliver WM_QUIT safely.
+            // startup success, so Dispose can deliver WM_QUIT safely.
             NativeMethods.PeekMessageW(out _, 0, 0, 0, NativeMethods.PM_NOREMOVE);
 
             var module = NativeMethods.GetModuleHandleW(null);
@@ -103,8 +103,11 @@ internal sealed class HumanInputMonitor : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         var threadId = Volatile.Read(ref _threadId);
-        if (threadId != 0 && !NativeMethods.PostThreadMessageW(threadId, NativeMethods.WM_QUIT, 0, 0))
-            NativeMethods.ThrowLastWin32("post-thread-message-human-input");
+        if (threadId == 0) return;
+        // This is cleanup, not an authority decision. If the message queue is
+        // already gone, do not block process teardown or prevent capture/UIA
+        // disposal; this background thread cannot keep the process alive.
+        if (!NativeMethods.PostThreadMessageW(threadId, NativeMethods.WM_QUIT, 0, 0)) return;
         _thread.Join();
     }
 }
