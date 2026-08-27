@@ -9,6 +9,7 @@ export interface WindowsUiaSemanticPromotionCandidateRequest {
   readonly recipeId:string;
   readonly baseDigest:string;
   readonly proposedDigest:string;
+  readonly corpusDigest:string;
   readonly evaluation:WindowsUiaSemanticOfflineEvaluation;
   /** Replay/review provenance only; never execution grants. */
   readonly evidenceIds:readonly string[];
@@ -19,6 +20,7 @@ export type WindowsUiaSemanticPromotionCandidate = Readonly<{
   recipeId:string;
   baseDigest:string;
   proposedDigest:string;
+  corpusDigest:string;
   reasons:readonly string[];
   evidenceIds:readonly string[];
   /** Candidate creation cannot approve or activate a recipe. */
@@ -43,9 +45,11 @@ export function assessWindowsUiaSemanticPromotionCandidate(
     typeof request.recipeId!=='string'||!TOKEN.test(request.recipeId)||
     typeof request.baseDigest!=='string'||!DIGEST.test(request.baseDigest)||
     typeof request.proposedDigest!=='string'||!DIGEST.test(request.proposedDigest)||
+    typeof request.corpusDigest!=='string'||!DIGEST.test(request.corpusDigest)||
     request.baseDigest===request.proposedDigest||!validEvidence(request.evidenceIds))
     throw new Error('windows-uia-semantic-promotion-candidate-invalid');
-  if(!request.evaluation||typeof request.evaluation!=='object'||request.evaluation.authorityGranted!==false||request.evaluation.promotionEligible!==false)
+  if(!request.evaluation||typeof request.evaluation!=='object'||request.evaluation.authorityGranted!==false||request.evaluation.promotionEligible!==false||
+    typeof request.evaluation.corpusDigest!=='string'||!DIGEST.test(request.evaluation.corpusDigest))
     throw new Error('windows-uia-semantic-promotion-evaluation-invalid');
 
   const reasons:string[]=[];
@@ -54,12 +58,13 @@ export function assessWindowsUiaSemanticPromotionCandidate(
   if(!base)reasons.push('base-manifest-not-registered');
   if(!proposed)reasons.push('proposed-manifest-not-registered');
   if(base&&proposed&& (proposed.parentDigest!==base.digest||proposed.revision!==base.revision+1))reasons.push('proposed-not-direct-child');
+  if(request.corpusDigest!==request.evaluation.corpusDigest)reasons.push('offline-replay-corpus-mismatch');
   if(request.evaluation.regressions!==0||request.evaluation.status==='regressed')reasons.push('offline-replay-regression');
   if(request.evaluation.cases<=0)reasons.push('offline-replay-empty');
 
   return Object.freeze({
     status:reasons.length===0?'reviewable':'blocked',
-    recipeId:request.recipeId,baseDigest:request.baseDigest,proposedDigest:request.proposedDigest,
+    recipeId:request.recipeId,baseDigest:request.baseDigest,proposedDigest:request.proposedDigest,corpusDigest:request.corpusDigest,
     reasons:Object.freeze(reasons),evidenceIds:Object.freeze([...request.evidenceIds]),
     promotionApproved:false as const,authorityGranted:false as const,
   });

@@ -5,11 +5,13 @@ import { WindowsUiaSemanticRecipeRegistry } from '../src/computer/windowsUiaSema
 import { digestWindowsUiaSemanticRecipeManifest, type WindowsUiaSemanticRecipeManifest } from '../src/computer/windowsUiaSemanticRecipeManifest.js';
 import type { WindowsUiaSemanticOfflineEvaluation } from '../src/computer/windowsUiaSemanticOfflineEvaluation.js';
 
+const CORPUS_DIGEST=`sha256:${'0'.repeat(64)}`;
+
 function manifest(revision:number,names:readonly string[],parentDigest?:string):WindowsUiaSemanticRecipeManifest {
   return Object.freeze({schemaVersion:1,revision,...(parentDigest?{parentDigest}:{}),evidenceIds:Object.freeze([`evidence-${revision}`]),recipe:Object.freeze({id:'save-skill',locator:Object.freeze({id:'save-target',names:Object.freeze(names),controlTypes:Object.freeze(['Button']),requiredPatterns:Object.freeze(['invoke'] as const)}),action:Object.freeze({kind:'invoke' as const})})});
 }
 function evaluation(input:Partial<WindowsUiaSemanticOfflineEvaluation>={}):WindowsUiaSemanticOfflineEvaluation {
-  return Object.freeze({status:'improved',cases:2,corpusDigest:`sha256:${'0'.repeat(64)}`,recoveries:1,regressions:0,stableReady:1,proposedUnresolved:0,generalization:Object.freeze({distinctApplications:0,distinctProviderFamilies:0,domains:Object.freeze([]),partitions:Object.freeze([])}),caseResults:Object.freeze([]),promotionEligible:false,authorityGranted:false,...input});
+  return Object.freeze({status:'improved',cases:2,corpusDigest:CORPUS_DIGEST,recoveries:1,regressions:0,stableReady:1,proposedUnresolved:0,generalization:Object.freeze({distinctApplications:0,distinctProviderFamilies:0,domains:Object.freeze([]),partitions:Object.freeze([])}),caseResults:Object.freeze([]),promotionEligible:false,authorityGranted:false,...input});
 }
 function registryPair(){
   const registry=new WindowsUiaSemanticRecipeRegistry();
@@ -22,7 +24,7 @@ function registryPair(){
 
 test('zero-regression exact child becomes reviewable but never approved or authoritative',()=>{
   const {registry,baseEntry,proposedEntry}=registryPair();
-  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,evaluation:evaluation(),evidenceIds:['offline-replay-001']});
+  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,corpusDigest:CORPUS_DIGEST,evaluation:evaluation(),evidenceIds:['offline-replay-001']});
   assert.equal(result.status,'reviewable');
   assert.deepEqual(result.reasons,[]);
   assert.equal(result.promotionApproved,false);
@@ -33,7 +35,7 @@ test('zero-regression exact child becomes reviewable but never approved or autho
 
 test('offline regression blocks human-review candidate',()=>{
   const {registry,baseEntry,proposedEntry}=registryPair();
-  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,evaluation:evaluation({status:'regressed',recoveries:0,regressions:1}),evidenceIds:['offline-replay-regression']});
+  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,corpusDigest:CORPUS_DIGEST,evaluation:evaluation({status:'regressed',recoveries:0,regressions:1}),evidenceIds:['offline-replay-regression']});
   assert.equal(result.status,'blocked');
   assert.ok(result.reasons.includes('offline-replay-regression'));
   assert.equal(result.promotionApproved,false);
@@ -44,19 +46,30 @@ test('unregistered proposed digest cannot become reviewable',()=>{
   const base=manifest(1,['Save']);
   const baseEntry=registry.register(base);
   const missing=`sha256:${'0'.repeat(64)}`;
-  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:missing,evaluation:evaluation(),evidenceIds:['offline-replay-missing']});
+  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:missing,corpusDigest:CORPUS_DIGEST,evaluation:evaluation(),evidenceIds:['offline-replay-missing']});
   assert.equal(result.status,'blocked');
   assert.ok(result.reasons.includes('proposed-manifest-not-registered'));
 });
 
+test('candidate blocks a review record bound to a different replay corpus',()=>{
+  const {registry,baseEntry,proposedEntry}=registryPair();
+  const other=`sha256:${'1'.repeat(64)}`;
+  const result=assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,corpusDigest:other,evaluation:evaluation(),evidenceIds:['offline-replay-corpus-mismatch']});
+  assert.equal(result.status,'blocked');
+  assert.ok(result.reasons.includes('offline-replay-corpus-mismatch'));
+  assert.equal(result.corpusDigest,other);
+  assert.equal(result.promotionApproved,false);
+  assert.equal(result.authorityGranted,false);
+});
+
 test('candidate requires bounded unique replay/review evidence ids',()=>{
   const {registry,baseEntry,proposedEntry}=registryPair();
-  assert.throws(()=>assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,evaluation:evaluation(),evidenceIds:[]}),/promotion-candidate-invalid/);
-  assert.throws(()=>assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,evaluation:evaluation(),evidenceIds:['same','same']}),/promotion-candidate-invalid/);
+  assert.throws(()=>assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,corpusDigest:CORPUS_DIGEST,evaluation:evaluation(),evidenceIds:[]}),/promotion-candidate-invalid/);
+  assert.throws(()=>assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,corpusDigest:CORPUS_DIGEST,evaluation:evaluation(),evidenceIds:['same','same']}),/promotion-candidate-invalid/);
 });
 
 test('candidate rejects forged evaluation authority flags',()=>{
   const {registry,baseEntry,proposedEntry}=registryPair();
   const forged={...evaluation(),authorityGranted:true} as unknown as WindowsUiaSemanticOfflineEvaluation;
-  assert.throws(()=>assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,evaluation:forged,evidenceIds:['offline-replay-001']}),/promotion-evaluation-invalid/);
+  assert.throws(()=>assessWindowsUiaSemanticPromotionCandidate(registry,{recipeId:'save-skill',baseDigest:baseEntry.digest,proposedDigest:proposedEntry.digest,corpusDigest:CORPUS_DIGEST,evaluation:forged,evidenceIds:['offline-replay-001']}),/promotion-evaluation-invalid/);
 });
