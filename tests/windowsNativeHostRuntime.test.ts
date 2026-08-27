@@ -25,6 +25,7 @@ test('native runtime capability profile follows implemented operations rather th
   assert.equal(support(profile,'transient-capture-retention'),'unsupported');
   assert.equal(support(profile,'window-modal-authority'),'partial');
   assert.equal(support(profile,'human-interference-detection'),'unsupported');
+  assert.equal(support(profile,'foreground-interaction-lease'),'unsupported');
 });
 
 test('native window-state observation upgrades modal authority only with the semantic observation surface',()=>{
@@ -35,10 +36,13 @@ test('native window-state observation upgrades modal authority only with the sem
   assert.equal(support(deriveWindowsNativeHostCapabilityProfile(['hello','uia.window-states']),'window-modal-authority'),'unsupported');
 });
 
-test('native human input monitor upgrades interference detection without overstating foreground lease ownership',()=>{
-  const profile=deriveWindowsNativeHostCapabilityProfile(['hello','input.send','input.human-sequence']);
-  assert.equal(support(profile,'human-interference-detection'),'supported');
-  assert.equal(support(profile,'foreground-interaction-lease'),'partial');
+test('human monitoring alone is insufficient for a foreground lease; exact window observation completes it',()=>{
+  const monitorOnly=deriveWindowsNativeHostCapabilityProfile(['hello','input.send','input.human-sequence']);
+  assert.equal(support(monitorOnly,'human-interference-detection'),'supported');
+  assert.equal(support(monitorOnly,'foreground-interaction-lease'),'unsupported');
+
+  const complete=deriveWindowsNativeHostCapabilityProfile(['hello','system.windows','input.send','input.human-sequence']);
+  assert.equal(support(complete,'foreground-interaction-lease'),'supported');
 });
 
 test('capture is supported only when both frame production and artifact release are implemented',()=>{
