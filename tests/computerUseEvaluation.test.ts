@@ -11,7 +11,9 @@ import {
   DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
   DP11_WINDOWS_EMPIRICAL_EXPANDED,
   DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,
+  DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,
 } from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
+import { COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS } from '../src/computer/computerUseProductionGate.js';
 
 function passingCases():ComputerUseEvaluationCaseResult[]{
   return COMPUTER_USE_EVALUATION_STRATA.map((stratum,index)=>({
@@ -87,7 +89,7 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
 });
 
 test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,45);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,47);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
@@ -97,7 +99,7 @@ test('DKG85 expanded provider-diversity corpus retains protected-VM WPF groundin
   assert.equal(primitive.attempted,15);
   assert.equal(verification.attempted,8);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='grounding')!.attempted,6);
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!.attempted,7);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!.attempted,9);
   const foregroundRefusal=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-provider-unavailable-foreground-refusal')!;
   assert.equal(foregroundRefusal.outcome,'passed');
   assert.ok(foregroundRefusal.evidence?.includes('no-raw-dispatch'));
@@ -135,6 +137,25 @@ test('DKG85 expanded provider-diversity corpus retains protected-VM WPF groundin
   assert.equal(wpfVm.outcome,'failed');
   assert.ok(wpfVm.evidence?.includes('no-semantic-action-dispatch'));
   assert.deepEqual(wpfVm.sources?.map((source)=>source.kind),['windows-vm-smoke']);
+});
+
+test('DP11 production claim evidence covers every hard safety claim with passing sourced cases',()=>{
+  assert.equal(DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE.length,COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.length);
+  assert.deepEqual(new Set(DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE.map((entry)=>entry.claim)),new Set(COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS));
+  const byId=new Map(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.map((entry)=>[entry.caseId,entry] as const));
+  for(const claim of DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE){
+    assert.ok(claim.caseIds.length>0);
+    for(const caseId of claim.caseIds){
+      const entry=byId.get(caseId);
+      assert.ok(entry,`missing case ${caseId}`);
+      assert.equal(entry?.outcome,'passed',`claim ${claim.claim} references non-passing case ${caseId}`);
+      assert.ok(entry?.sources && entry.sources.length>0);
+    }
+  }
+  const privacy=byId.get('dp11-release-privacy-credential-retention')!;
+  assert.ok(privacy.evidence?.includes('credential-response-secret-rejected'));
+  const disablement=byId.get('dp11-release-disablement-no-authority-inheritance')!;
+  assert.ok(disablement.evidence?.includes('cu-level-authority-never-granted'));
 });
 
 test('DKG85 repeated trials are counted quantitatively without manufacturing case breadth',()=>{
