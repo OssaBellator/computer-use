@@ -8,14 +8,15 @@ internal static class Program
     {
         Console.WriteLine("REAL_APP_SMOKE_BEGIN");
         var mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-        if (mode is not ("all" or "calculator" or "notepad"))
+        if (mode is not ("all" or "calculator" or "notepad" or "explorer"))
         {
             Console.WriteLine("REAL_APP_SMOKE_STATUS=invalid-mode");
             return 2;
         }
-        var calculator = mode == "notepad" || RunCalculator();
-        var notepad = mode == "calculator" || RunNotepadObservation();
-        var passed = calculator && notepad;
+        var calculator = mode is "notepad" or "explorer" || RunCalculator();
+        var notepad = mode is "calculator" or "explorer" || RunNotepadObservation();
+        var explorer = mode is "calculator" or "notepad" || RunExplorer();
+        var passed = calculator && notepad && explorer;
         Console.WriteLine($"REAL_APP_SMOKE_STATUS={(passed ? "completed" : "blocked")}");
         return passed ? 0 : 3;
     }
@@ -144,6 +145,147 @@ internal static class Program
         {
             CloseWindow(window);
         }
+    }
+
+    private static bool RunExplorer()
+    {
+        AutomationElement? window = null;
+        try
+        {
+            static bool IsExplorer(string name) => name.EndsWith("File Explorer", StringComparison.OrdinalIgnoreCase);
+            var priorWindows = CaptureTopLevelHandles(IsExplorer);
+            StartApp("explorer.exe");
+            window = WaitForTopLevelWindow(IsExplorer, priorWindows);
+            if (window is null)
+            {
+                Console.WriteLine("EXPLORER_STATUS=window-unavailable");
+                return false;
+            }
+
+            Console.WriteLine($"EXPLORER_WINDOW=framework:{SafeCurrent(window, AutomationElement.FrameworkIdProperty)}:class:{SafeCurrent(window, AutomationElement.ClassNameProperty)}");
+            var addButton = WaitForInvokableControl(window, "AddButton", new[] { "Add New Tab" });
+            if (addButton is null || !addButton.TryGetCurrentPattern(InvokePattern.Pattern, out var rawAdd))
+            {
+                Console.WriteLine("EXPLORER_ADD_TAB=unsupported");
+                DumpDescendants(window, "EXPLORER");
+                return false;
+            }
+
+            var baselineTitle = window.Current.Name;
+            ((InvokePattern)rawAdd).Invoke();
+            var added = WaitForWindowNameChange(window, baselineTitle);
+            var addedTitle = SafeCurrent(window, AutomationElement.NameProperty)?.ToString() ?? string.Empty;
+            Console.WriteLine("EXPLORER_ADD_TAB=dispatched-once");
+            Console.WriteLine($"EXPLORER_ADD_VERIFY={(added ? "pass" : "mismatch")}:baseline:{baselineTitle}:after:{addedTitle}");
+            if (!added)
+            {
+                Console.WriteLine("EXPLORER_STATUS=verification-mismatch");
+                return false;
+            }
+
+            var closeButton = WaitForSelectedTabCloseButton(window);
+            if (closeButton is null || !closeButton.TryGetCurrentPattern(InvokePattern.Pattern, out var rawClose))
+            {
+                Console.WriteLine("EXPLORER_CLOSE_TAB=unsupported");
+                return false;
+            }
+            ((InvokePattern)rawClose).Invoke();
+            var restored = WaitForWindowName(window, baselineTitle);
+            var restoredTitle = SafeCurrent(window, AutomationElement.NameProperty)?.ToString() ?? string.Empty;
+            Console.WriteLine("EXPLORER_CLOSE_TAB=dispatched-once");
+            Console.WriteLine($"EXPLORER_CLOSE_VERIFY={(restored ? "pass" : "mismatch")}:expected:{baselineTitle}:actual:{restoredTitle}");
+            Console.WriteLine($"EXPLORER_STATUS={(restored ? "completed" : "verification-mismatch")}");
+            return restored;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"EXPLORER_STATUS=blocked:{ex.GetType().Name}:0x{ex.HResult:X8}");
+            return false;
+        }
+        finally
+        {
+            CloseWindow(window);
+        }
+    }
+
+    private static int CountTabCloseButtons(AutomationElement root)
+    {
+        try
+        {
+            var tabList = FindByAutomationId(root, "TabListView");
+            if (tabList is null) return -1;
+            var descendants = tabList.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+            var count = 0;
+            for (var i = 0; i < descendants.Count; i++)
+            {
+                var candidate = descendants[i];
+                try
+                {
+                    if (candidate.Current.AutomationId == "CloseButton" &&
+                        candidate.Current.ControlType == ControlType.Button &&
+                        candidate.TryGetCurrentPattern(InvokePattern.Pattern, out _))
+                        count += 1;
+                }
+                catch (ElementNotAvailableException) { }
+            }
+            return count;
+        }
+        catch (ElementNotAvailableException) { return -1; }
+    }
+
+    private static AutomationElement? WaitForSelectedTabCloseButton(AutomationElement root)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                var tabList = FindByAutomationId(root, "TabListView");
+                if (tabList is null) return null;
+                var descendants = tabList.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+                for (var i = 0; i < descendants.Count; i++)
+                {
+                    var tab = descendants[i];
+                    try
+                    {
+                        if (tab.Current.ControlType != ControlType.TabItem ||
+                            !tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var rawSelection) ||
+                            !((SelectionItemPattern)rawSelection).Current.IsSelected)
+                            continue;
+                        var close = FindByAutomationId(tab, "CloseButton");
+                        if (IsInvokable(close)) return close;
+                    }
+                    catch (ElementNotAvailableException) { }
+                }
+            }
+            catch (ElementNotAvailableException) { }
+            Thread.Sleep(100);
+        }
+        return null;
+    }
+
+    private static bool WaitForWindowNameChange(AutomationElement window, string baseline)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            try { if (!StringComparer.Ordinal.Equals(window.Current.Name, baseline)) return true; }
+            catch (ElementNotAvailableException) { return false; }
+            Thread.Sleep(100);
+        }
+        return false;
+    }
+
+    private static bool WaitForWindowName(AutomationElement window, string expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            try { if (StringComparer.Ordinal.Equals(window.Current.Name, expected)) return true; }
+            catch (ElementNotAvailableException) { return false; }
+            Thread.Sleep(100);
+        }
+        return false;
     }
 
     private static void StartApp(string fileName)
