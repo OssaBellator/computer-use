@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WindowsGraphicsCaptureRuntime, type WindowsGraphicsCaptureObservation } from '../src/computer/windowsGraphicsCaptureRuntime.js';
-import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager } from '../src/computer/windowsVisualArtifactRetention.js';
+import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager, windowsVisualSensitivityForSemanticTree } from '../src/computer/windowsVisualArtifactRetention.js';
 
 const window = Object.freeze({
   hwnd:'0x900',desktopSessionId:'interactive:1',process:Object.freeze({processId:900,startIdentity:'p900'}),generation:1,
@@ -12,6 +12,14 @@ const observation:WindowsGraphicsCaptureObservation = Object.freeze({
     geometry:Object.freeze({left:0,top:0,width:400,height:300,dpi:96}),
   }),
   artifact:Object.freeze({token:'artifact-2-10',mediaType:'image/png',byteLength:100_000}),
+});
+
+test('semantic password fields automatically escalate visual retention to credential-adjacent',()=>{
+  const ordinary={ref:{window,runtimeId:[1],controlType:'Edit',generation:1},patterns:['value'],enabled:true,value:'ordinary'} as const;
+  const password={ref:{window,runtimeId:[2],controlType:'Edit',generation:1},patterns:['value'],enabled:true,isPassword:true} as const;
+  assert.equal(windowsVisualSensitivityForSemanticTree(undefined),'normal');
+  assert.equal(windowsVisualSensitivityForSemanticTree(ordinary),'sensitive-field');
+  assert.equal(windowsVisualSensitivityForSemanticTree({...ordinary,children:[password]}),'credential-adjacent');
 });
 
 test('sensitive screenshots have shorter enforceable retention windows', () => {

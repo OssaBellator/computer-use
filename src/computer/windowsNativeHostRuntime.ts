@@ -2,7 +2,7 @@ import { DesktopInteractionLeaseManager } from './desktopInteractionLease.js';
 import { WindowsComApartmentExecutor } from './windowsComApartment.js';
 import { WindowsGraphicsCaptureRuntime } from './windowsGraphicsCaptureRuntime.js';
 import { WindowsInteractiveHostLeaseService } from './windowsInteractiveHostLease.js';
-import { WindowsNativeHostCaptureBridge, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
+import { WindowsNativeHostCaptureBridge, WindowsNativeHostCredentialBroker, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
 import { WindowsNativeHostComApartmentHost } from './windowsNativeHostComApartment.js';
 import { WindowsNativeHostHumanInputObserver } from './windowsNativeHostHumanInput.js';
 import { WINDOWS_NATIVE_HOST_OPERATIONS, WindowsNativeHostProtocolClient, type WindowsNativeHostOperation, type WindowsNativeHostRequestIdSource } from './windowsNativeHostProtocol.js';
@@ -15,6 +15,7 @@ import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
 import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
+import { WindowsCredentialMediator, type WindowsCredentialBroker } from './windowsCredentialMediator.js';
 import { WindowsRetainedVisualGroundingRuntime, WindowsVisualGroundingProvider, type WindowsVisualGroundingBackend } from './windowsVisualGroundingProvider.js';
 
 const VALID_OPERATIONS=new Set<WindowsNativeHostOperation>(WINDOWS_NATIVE_HOST_OPERATIONS);
@@ -61,6 +62,8 @@ export function deriveWindowsNativeHostCapabilityProfile(
   const capture=has(implemented,'capture.next-frame','artifact.release');
   const human=has(implemented,'input.human-sequence');
   const foregroundLease=has(implemented,'system.windows')&&input&&human;
+  const credentialRevalidation=has(implemented,'uia.resolve-control','uia.compare-elements','uia.snapshot-control');
+  const credentialNative=credentialRevalidation&&implemented.has('credential.apply');
   return Object.freeze({
     id:'windows-native-host',
     capabilities:Object.freeze({
@@ -84,6 +87,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'human-interference-detection':capability(human?'supported':'unsupported','native non-injected input monitor is unavailable'),
       'transient-capture-retention':capability(capture?'supported':'unsupported','no live native artifact producer exists in this host/session'),
       'side-effect-verification':capability('partial','verification runtime exists; an authoritative action-specific observation predicate remains caller-supplied'),
+      'credential-brokered-use':capability(credentialNative?'supported':credentialRevalidation?'partial':'unsupported',credentialNative?undefined:credentialRevalidation?'password-field revalidation exists but no trusted credential application verb is available':'UIA password-field revalidation surface unavailable'),
     }),
   });
 }
@@ -91,15 +95,16 @@ export function deriveWindowsNativeHostCapabilityProfile(
 function composeCapabilityProfile(
   operations:readonly WindowsNativeHostOperation[],
   visualGrounding:boolean,
+  credentialBroker:boolean,
 ):WindowsProviderCapabilityProfile {
   const base=deriveWindowsNativeHostCapabilityProfile(operations);
-  if(!visualGrounding)return base;
   const implemented=new Set(operations);
-  if(!implemented.has('artifact.consume'))return base;
-  return Object.freeze({
-    id:base.id,
-    capabilities:Object.freeze({...base.capabilities,'visual-grounding':'supported' as const}),
-  });
+  const capabilities={...base.capabilities};
+  if(visualGrounding&&implemented.has('artifact.consume'))capabilities['visual-grounding']='supported';
+  if(credentialBroker&&has(implemented,'uia.resolve-control','uia.compare-elements','uia.snapshot-control')){
+    capabilities['credential-brokered-use']='supported';
+  }
+  return Object.freeze({id:base.id,capabilities:Object.freeze(capabilities)});
 }
 
 export interface WindowsNativeHostRuntime {
@@ -119,6 +124,7 @@ export interface WindowsNativeHostRuntime {
   readonly retainedCapture?:WindowsRetainedGraphicsCaptureRuntime;
   readonly visualGrounding?:WindowsVisualGroundingProvider;
   readonly retainedVisualGrounding?:WindowsRetainedVisualGroundingRuntime;
+  readonly credentials?:WindowsCredentialMediator;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
@@ -130,6 +136,8 @@ export interface WindowsNativeHostRuntimeOptions {
   readonly cwd?:string;
   readonly eventPollIntervalMs?:number;
   readonly visualGroundingBackend?:WindowsVisualGroundingBackend;
+  /** Trusted secret-owning boundary. Computer-use receives opaque refs only. */
+  readonly credentialBroker?:WindowsCredentialBroker;
 }
 
 /**
@@ -183,6 +191,11 @@ export async function openWindowsNativeHostRuntime(
     const retainedVisualGrounding=visualGrounding&&retention&&implementedSet.has('artifact.consume')
       ?new WindowsRetainedVisualGroundingRuntime(visualGrounding,retention)
       :undefined;
+    const credentialBroker=options?.credentialBroker??(implementedSet.has('credential.apply')?new WindowsNativeHostCredentialBroker(protocol,host.threadToken):undefined);
+    const credentialRevalidation=has(implementedSet,'uia.resolve-control','uia.compare-elements','uia.snapshot-control');
+    const credentials=credentialBroker&&credentialRevalidation
+      ?new WindowsCredentialMediator(uia,credentialBroker)
+      :undefined;
 
     let closed=false;
     return Object.freeze({
@@ -197,7 +210,8 @@ export async function openWindowsNativeHostRuntime(
       ...(retainedCapture?{retainedCapture}:{}),
       ...(visualGrounding?{visualGrounding}:{}),
       ...(retainedVisualGrounding?{retainedVisualGrounding}:{}),
-      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined),
+      ...(credentials?{credentials}:{}),
+      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined,credentials!==undefined),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;

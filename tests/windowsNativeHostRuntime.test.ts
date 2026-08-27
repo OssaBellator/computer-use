@@ -67,6 +67,13 @@ test('supported live capabilities never retain stale unavailable reasons',()=>{
   assert.equal(profile.capabilities['foreground-interaction-lease'],'supported');
 });
 
+test('credential capability requires exact target revalidation plus the native exact-use verb, not generic UIA action dispatch',()=>{
+  const revalidation:WindowsNativeHostOperation[]=['hello','uia.resolve-control','uia.compare-elements','uia.snapshot-control'];
+  assert.equal(support(deriveWindowsNativeHostCapabilityProfile(revalidation),'credential-brokered-use'),'partial');
+  assert.equal(support(deriveWindowsNativeHostCapabilityProfile([...revalidation,'credential.apply']),'credential-brokered-use'),'supported');
+  assert.equal(support(deriveWindowsNativeHostCapabilityProfile(['hello','credential.apply']),'credential-brokered-use'),'unsupported');
+});
+
 test('missing integrity operations cannot advertise guarded native input',()=>{
   const profile=deriveWindowsNativeHostCapabilityProfile(['hello','input.send']);
   assert.equal(support(profile,'keyboard-input'),'supported');

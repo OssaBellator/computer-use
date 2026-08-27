@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
@@ -132,6 +133,80 @@ internal sealed class UiaService
         if (snapshot.Enabled is false) return ActionResult("rejected", false, "windows-uia-control-disabled");
 
         return DispatchPattern(current, request.Action);
+    }
+
+    internal string? ValidateCredentialTarget(CredentialApplyRequest request)
+    {
+        RequireThread(request.ThreadToken);
+        ValidateWindowGeneration(request.Ref.Window);
+        var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
+        if (current is null) return "windows-credential-target-missing";
+        var snapshot = Snapshot(current, request.Ref.Window);
+        if (snapshot.Ref.Generation != request.Ref.Generation) return "windows-credential-target-replaced";
+        if (snapshot.IsPassword is not true) return "windows-credential-target-not-password";
+        if (snapshot.Enabled is false) return "windows-credential-target-disabled";
+        if (!current.TryGetCurrentPattern(ValuePattern.Pattern, out _)) return "windows-credential-value-pattern-unavailable";
+        return null;
+    }
+
+    internal object ApplyCredential(CredentialApplyRequest request, string secret)
+    {
+        var invalid = ValidateCredentialTarget(request);
+        if (invalid is not null) return new { status = "rejected", evidence = new[] { invalid } };
+        var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
+        if (current is null) return new { status = "rejected", evidence = new[] { "windows-credential-target-missing" } };
+
+        var snapshot = Snapshot(current, request.Ref.Window);
+        var nativeHandle = CurrentInt(current, AutomationElement.NativeWindowHandleProperty);
+        if (snapshot.Ref.ControlType == "Edit" && nativeHandle != 0)
+        {
+            var sent = CredentialNativeMethods.SendMessageTimeoutW(
+                checked((nint)nativeHandle),
+                0x000C,
+                0,
+                secret,
+                0x0001 | 0x0002,
+                1_000,
+                out var messageResult);
+            if (sent == 0)
+                return new { status = "unknown", evidence = new[] { "windows-credential-native-edit-dispatch-unknown" } };
+            return messageResult != 0
+                ? new { status = "applied", evidence = new[] { "windows-credential-native-edit-applied" } }
+                : new { status = "rejected", evidence = new[] { "windows-credential-native-edit-rejected" } };
+        }
+
+        if (!current.TryGetCurrentPattern(ValuePattern.Pattern, out var valuePattern))
+            return new { status = "rejected", evidence = new[] { "windows-credential-value-pattern-unavailable" } };
+        try
+        {
+            ((ValuePattern)valuePattern).SetValue(secret);
+            return new { status = "applied", evidence = new[] { "windows-credential-uia-applied" } };
+        }
+        catch (ElementNotAvailableException)
+        {
+            return new { status = "unknown", evidence = new[] { "windows-credential-uia-element-unavailable-after-dispatch" } };
+        }
+        catch (InvalidOperationException)
+        {
+            return new { status = "unknown", evidence = new[] { "windows-credential-uia-invalid-operation-after-dispatch" } };
+        }
+        catch (COMException)
+        {
+            return new { status = "unknown", evidence = new[] { "windows-credential-uia-com-error-after-dispatch" } };
+        }
+    }
+
+    private static class CredentialNativeMethods
+    {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern nint SendMessageTimeoutW(
+            nint hWnd,
+            uint message,
+            nint wParam,
+            string lParam,
+            uint flags,
+            uint timeoutMs,
+            out nint result);
     }
 
     private ControlSnapshotDto BuildNode(AutomationElement element, WindowRefDto window, CachePlanDto plan, TreeBuildState state, int depth)

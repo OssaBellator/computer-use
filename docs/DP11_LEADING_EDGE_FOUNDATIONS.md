@@ -65,6 +65,9 @@ The Windows-specific provider is now implemented without weakening the neutral c
 - built-in semantic UIA post-state verification where normalized state exists;
 - visual post-action assessment retained strictly as weak evidence that cannot manufacture semantic success;
 - password controls marked with UIA `IsPassword`, with Value text redacted before native-host serialization;
+- brokered credential application for exact generation-bound password controls using opaque credential references; credential grants are trusted-source-bound, purpose-bound, capped at 60 seconds, and one-shot, and no secret-read/export operation exists in the computer-use protocol;
+- the native Windows Credential Manager backend validates the password target before secret lookup and again at application time, copies credential bytes only inside the trusted sidecar, zeroes that private byte copy after use, immediately frees the OS-owned credential allocation, and reports only bounded status/evidence; UIA `ValuePattern.SetValue` necessarily requires a short-lived managed string, so DP11 does not claim deterministic managed-string zeroization;
+- semantic password presence automatically escalates screenshot retention to `credential-adjacent` limits;
 - Windows provider capabilities projected into the neutral `ComputerCapabilityProfile` without inferring unrelated powers;
 - explicit embodiment routing exposure with available embodiments, selection reason, fallback/conflict reason, and fail-closed authoritative target conflict handling.
 

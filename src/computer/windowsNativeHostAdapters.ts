@@ -1,6 +1,7 @@
 import type { ComputerEffectClass } from './environmentAdapter.js';
 import type { DesktopVisualAcquisitionLimits, DesktopBackendActionResult } from './desktopUiBackend.js';
 import type { WindowsComApartmentContext } from './windowsComApartment.js';
+import type { WindowsCredentialBroker, WindowsCredentialBrokerRequest, WindowsCredentialBrokerResult } from './windowsCredentialMediator.js';
 import type { WindowsGraphicsCaptureNativeBridge, WindowsGraphicsCaptureNativeFrame } from './windowsGraphicsCaptureRuntime.js';
 import { WindowsNativeHostProtocolClient } from './windowsNativeHostProtocol.js';
 import type { WindowsNativeInputDispatchAuthority } from './windowsNativeInputGate.js';
@@ -10,6 +11,7 @@ import type { WindowsUiaCacheRequestPlan } from './windowsUiaCacheRequestPlan.js
 import {
   captureDesktopBackendActionResult,
   captureWindowsUiaCachedObservation,
+  captureWindowsUiaControlRef,
   captureWindowsUiaRevalidation,
   captureWindowsUiaWindowRef,
   type WindowsProcessGeneration,
@@ -26,6 +28,7 @@ const TOKEN_PATTERN=/^[a-z0-9][a-z0-9._:-]{0,191}$/i;
 const MEDIA_PATTERN=/^[a-z0-9][a-z0-9.+-]{0,63}\/[a-z0-9][a-z0-9.+-]{0,63}$/i;
 const EVIDENCE_PATTERN=/^[a-z0-9][a-z0-9._:-]{0,191}$/i;
 const MAX_DIMENSION=32_768;
+const CREDENTIAL_ID_PATTERN=/^[a-z0-9][a-z0-9._:-]{0,127}$/i;
 
 function captureOwnDataObject(value:unknown,allowed:readonly string[]):Readonly<Record<string,unknown>>|undefined {
   if(!value||typeof value!=='object'||Array.isArray(value)) return undefined;
@@ -176,6 +179,35 @@ export class WindowsNativeHostCaptureBridge implements WindowsGraphicsCaptureNat
       throw new Error('windows-native-host-artifact-consume-response-invalid');
     }
     return Object.freeze({mediaType:raw.mediaType,bytes:new Uint8Array(bytes.buffer,bytes.byteOffset,bytes.byteLength)});
+  }
+}
+
+export class WindowsNativeHostCredentialBroker implements WindowsCredentialBroker {
+  constructor(readonly protocol:WindowsNativeHostProtocolClient,readonly threadToken:string) {}
+  async applyCredential(request:WindowsCredentialBrokerRequest):Promise<WindowsCredentialBrokerResult> {
+    if(!CREDENTIAL_ID_PATTERN.test(this.threadToken)||!CREDENTIAL_ID_PATTERN.test(request.credentialRef)||!CREDENTIAL_ID_PATTERN.test(request.purpose)){
+      throw new Error('windows-native-host-credential-request-invalid');
+    }
+    const target=captureWindowsUiaControlRef(request.target);
+    if(!target)throw new Error('windows-native-host-credential-target-invalid');
+    const response=await this.protocol.call('credential.apply',Object.freeze({
+      threadToken:this.threadToken,credentialRef:request.credentialRef,ref:target,purpose:request.purpose,
+    }));
+    if(!response||typeof response!=='object'||Array.isArray(response)||Object.getOwnPropertyNames(response).some((key)=>key!=='status'&&key!=='evidence')){
+      throw new Error('windows-native-host-credential-response-invalid');
+    }
+    const raw=captureOwnDataObject(response,['status','evidence']);
+    if(!raw||typeof raw.status!=='string'||!['applied','rejected','unavailable','unknown'].includes(raw.status)){
+      throw new Error('windows-native-host-credential-response-invalid');
+    }
+    let evidence:readonly string[]|undefined;
+    if(raw.evidence!==undefined){
+      if(!Array.isArray(raw.evidence)||raw.evidence.length>16||raw.evidence.some((item)=>typeof item!=='string'||!EVIDENCE_PATTERN.test(item))){
+        throw new Error('windows-native-host-credential-response-invalid');
+      }
+      evidence=Object.freeze([...raw.evidence]);
+    }
+    return Object.freeze({status:raw.status as WindowsCredentialBrokerResult['status'],...(evidence?{evidence}:{})});
   }
 }
 

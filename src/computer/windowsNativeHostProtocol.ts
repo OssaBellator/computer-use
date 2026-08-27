@@ -17,6 +17,7 @@ export const WINDOWS_NATIVE_HOST_OPERATIONS = [
   'capture.next-frame',
   'artifact.release',
   'artifact.consume',
+  'credential.apply',
   'integrity.current',
   'integrity.process',
   'input.send',

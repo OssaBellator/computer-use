@@ -30,6 +30,7 @@ internal sealed class ProtocolServer : IDisposable
         "capture.next-frame",
         "artifact.release",
         "artifact.consume",
+        "credential.apply",
         "integrity.current",
         "integrity.process",
         "input.send",
@@ -44,6 +45,7 @@ internal sealed class ProtocolServer : IDisposable
     private readonly WindowEnumerationService _windows = new();
     private readonly WindowAuthorityService _windowAuthority;
     private readonly GraphicsCaptureService _capture = new();
+    private readonly CredentialService _credentials = new();
     private readonly bool _captureAvailable;
     private readonly HumanInputMonitor? _humanInput;
     private readonly TextReader _input;
@@ -184,6 +186,7 @@ internal sealed class ProtocolServer : IDisposable
             "uia.compare-elements" => _mta.InvokeAsync(() => _uia.CompareElements(ProtocolJson.DeserializeBody<CompareElementsRequest>(request.Body))),
             "uia.snapshot-control" => _mta.InvokeAsync(() => _uia.SnapshotControl(ProtocolJson.DeserializeBody<SnapshotControlRequest>(request.Body))),
             "uia.perform-pattern" => _mta.InvokeAsync(() => _uia.PerformPattern(ProtocolJson.DeserializeBody<PerformPatternRequest>(request.Body))),
+            "credential.apply" => _mta.InvokeAsync(() => _credentials.Apply(_uia, ProtocolJson.DeserializeBody<CredentialApplyRequest>(request.Body))),
             "uia.window-states" => _mta.InvokeAsync(() => _windowAuthority.Observe(ProtocolJson.DeserializeBody<WindowStatesRequest>(request.Body))),
             "uia.events.register" => _mta.InvokeAsync(() => _events.Register(ProtocolJson.DeserializeBody<UiaEventRegisterRequest>(request.Body))),
             "uia.events.unregister" => _mta.InvokeAsync(() => _events.Unregister(ProtocolJson.DeserializeBody<UiaEventUnregisterRequest>(request.Body))),

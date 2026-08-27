@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { WindowsNativeHostProtocolClient } from '../src/computer/windowsNativeHostProtocol.js';
 import {
   WindowsNativeHostCaptureBridge,
+  WindowsNativeHostCredentialBroker,
   WindowsNativeHostIntegrityReader,
   WindowsNativeHostSendInputBridge,
   WindowsNativeHostUiaClient,
@@ -88,6 +89,24 @@ test('capture adapter consumes one bounded canonical PNG payload',async()=>{
   const fakePng=Buffer.from([1,2,3,4,5,6,7,8]).toString('base64');
   const malformedSignature=new WindowsNativeHostCaptureBridge(protocol(()=>({mediaType:'image/png',byteLength:8,dataBase64:fakePng})));
   await assert.rejects(()=>malformedSignature.consumeArtifact('capture-1',32),/consume-response-invalid/);
+});
+
+test('credential adapter sends only opaque reference, purpose, thread token and exact target',async()=>{
+  let body:unknown;
+  const broker=new WindowsNativeHostCredentialBroker(protocol((operation,value)=>{
+    if(operation==='credential.apply'){body=value;return {status:'applied',evidence:['native-applied']};}
+    return {};
+  }),'uia-mta');
+  const passwordTarget={...ref,controlType:'Edit'};
+  const result=await broker.applyCredential({credentialRef:'vault:example-login',target:passwordTarget,purpose:'authenticate'});
+  assert.deepEqual(body,{threadToken:'uia-mta',credentialRef:'vault:example-login',ref:passwordTarget,purpose:'authenticate'});
+  assert.deepEqual(result,{status:'applied',evidence:['native-applied']});
+  assert.equal(JSON.stringify(body).includes('secret'),false);
+
+  const malformed=new WindowsNativeHostCredentialBroker(protocol(()=>({status:'applied',evidence:['bad evidence with spaces']})),'uia-mta');
+  await assert.rejects(()=>malformed.applyCredential({credentialRef:'vault:example-login',target:passwordTarget,purpose:'authenticate'}),/credential-response-invalid/);
+  const leaking=new WindowsNativeHostCredentialBroker(protocol(()=>({status:'applied',evidence:['native-applied'],secret:'must-not-cross'})),'uia-mta');
+  await assert.rejects(()=>leaking.applyCredential({credentialRef:'vault:example-login',target:passwordTarget,purpose:'authenticate'}),/credential-response-invalid/);
 });
 
 test('integrity and SendInput adapters require bounded numeric native results and exact authority payload', async () => {

@@ -19,6 +19,7 @@ export const WINDOWS_PROVIDER_CAPABILITIES = [
   'human-interference-detection',
   'transient-capture-retention',
   'side-effect-verification',
+  'credential-brokered-use',
 ] as const;
 
 export type WindowsProviderCapability = typeof WINDOWS_PROVIDER_CAPABILITIES[number];

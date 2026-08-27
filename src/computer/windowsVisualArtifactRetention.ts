@@ -1,6 +1,6 @@
 import type { DesktopVisualAcquisitionLimits } from './desktopUiBackend.js';
 import { WindowsGraphicsCaptureRuntime, type WindowsGraphicsCaptureObservation, type WindowsGraphicsCaptureNativeBridge } from './windowsGraphicsCaptureRuntime.js';
-import type { WindowsUiaWindowRef } from './windowsUiaContract.js';
+import type { WindowsUiaControlSnapshot, WindowsUiaWindowRef } from './windowsUiaContract.js';
 
 export type WindowsVisualArtifactSensitivity = 'normal' | 'sensitive-field' | 'credential-adjacent';
 
@@ -35,6 +35,24 @@ function ttlLimit(sensitivity:WindowsVisualArtifactSensitivity):number {
     case 'sensitive-field':return MAX_SENSITIVE_TTL_MS;
     case 'credential-adjacent':return MAX_CREDENTIAL_TTL_MS;
   }
+}
+
+/**
+ * Escalates screenshot retention when the semantic tree contains a password
+ * control. The secret text itself is already redacted at the UIA boundary; this
+ * additionally constrains incidental pixels surrounding credential entry.
+ */
+export function windowsVisualSensitivityForSemanticTree(root:WindowsUiaControlSnapshot|undefined):WindowsVisualArtifactSensitivity {
+  if(!root)return 'normal';
+  const stack:WindowsUiaControlSnapshot[]=[root];
+  let sensitive=false;
+  while(stack.length>0){
+    const node=stack.pop()!;
+    if(node.isPassword===true)return 'credential-adjacent';
+    if(node.value!==undefined)sensitive=true;
+    for(const child of node.children??[])stack.push(child);
+  }
+  return sensitive?'sensitive-field':'normal';
 }
 
 /**
