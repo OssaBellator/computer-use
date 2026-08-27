@@ -52,4 +52,9 @@ Write-Host '== WPF semantic smoke target Release build =='
 dotnet build $wpfSmoke -c Release --nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+$win32Smoke = 'native/windows/Ossa.ComputerUse.Win32Smoke/Ossa.ComputerUse.Win32Smoke.csproj'
+Write-Host '== Native Win32 semantic smoke target Release build =='
+dotnet build $win32Smoke -c Release --nologo
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Write-Host 'DP11 Windows validation receipt: PASS'
