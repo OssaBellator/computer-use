@@ -67,6 +67,9 @@ export interface ComputerUseProductionGatePolicy {
   readonly stratumRequirements:readonly ComputerUseProductionStratumRequirement[];
   readonly claimRequirements:readonly ComputerUseProductionClaimRequirement[];
   readonly requiredSourceKinds:readonly ComputerUseEvaluationSourceKind[];
+  /** Global application/provider diversity is distinct from source and embodiment breadth. */
+  readonly minDistinctApplications:number;
+  readonly minDistinctProviderFamilies:number;
   /** Explicit release environments are policy inputs; host/VM evidence never implies this list. */
   readonly requiredReleaseEnvironments:readonly string[];
 }
@@ -97,6 +100,7 @@ export interface ComputerUseProductionGateDecision {
   readonly evaluation:ReturnType<typeof summarizeComputerUseEvaluation>;
   readonly stratumBreadth:readonly ComputerUseProductionStratumBreadth[];
   readonly satisfiedSourceKinds:readonly ComputerUseEvaluationSourceKind[];
+  readonly corpusDiversity:Readonly<{distinctApplications:number;distinctProviderFamilies:number}>;
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
   readonly satisfiedReleaseEnvironments:readonly string[];
   readonly targetEnablement:ReturnType<typeof assessComputerUseEnablement>;
@@ -140,6 +144,8 @@ export function validateComputerUseProductionGatePolicy(policy:ComputerUseProduc
     if(!COMPUTER_USE_EVALUATION_SOURCE_KINDS.includes(sourceKind)||sourceKinds.has(sourceKind))throw new Error('computer-use-production-source-policy-invalid');
     sourceKinds.add(sourceKind);
   }
+  if(!safeInt(policy.minDistinctApplications,1)||!safeInt(policy.minDistinctProviderFamilies,1))
+    throw new Error('computer-use-production-corpus-diversity-policy-invalid');
   if(!Array.isArray(policy.requiredReleaseEnvironments)||policy.requiredReleaseEnvironments.length===0||policy.requiredReleaseEnvironments.length>MAX_THRESHOLD)
     throw new Error('computer-use-production-release-environment-policy-invalid');
   if(new Set(policy.requiredReleaseEnvironments).size!==policy.requiredReleaseEnvironments.length||policy.requiredReleaseEnvironments.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
@@ -222,6 +228,12 @@ export function evaluateComputerUseProductionGate(
   const observedSourceKinds=new Set<ComputerUseEvaluationSourceKind>();
   for(const entry of cases)for(const source of entry.sources??[])observedSourceKinds.add(source.kind);
   for(const required of policy.requiredSourceKinds)if(!observedSourceKinds.has(required))blockers.push(`source-kind:${required}:missing`);
+  const attemptedCases=cases.filter((entry)=>entry.outcome!=='skipped');
+  const applications=new Set(attemptedCases.map((entry)=>entry.applicationId).filter((value):value is string=>value!==undefined));
+  const providerFamilies=new Set(attemptedCases.map((entry)=>entry.providerFamily).filter((value):value is string=>value!==undefined));
+  const corpusDiversity=Object.freeze({distinctApplications:applications.size,distinctProviderFamilies:providerFamilies.size});
+  if(applications.size<policy.minDistinctApplications)blockers.push('corpus:application-breadth-below-threshold');
+  if(providerFamilies.size<policy.minDistinctProviderFamilies)blockers.push('corpus:provider-family-breadth-below-threshold');
 
   const byId=new Map(cases.map((entry)=>[entry.caseId,entry] as const));
   const evidenceByClaim=new Map(claimEvidence.map((entry)=>[entry.claim,entry] as const));
@@ -288,6 +300,7 @@ export function evaluateComputerUseProductionGate(
     evaluation,
     stratumBreadth:Object.freeze(stratumBreadth),
     satisfiedSourceKinds:Object.freeze([...observedSourceKinds].sort()),
+    corpusDiversity,
     satisfiedClaims:Object.freeze(satisfiedClaims),
     satisfiedReleaseEnvironments:Object.freeze(satisfiedReleaseEnvironments),
     targetEnablement,

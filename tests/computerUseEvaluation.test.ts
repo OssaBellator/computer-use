@@ -61,6 +61,13 @@ test('DKG85 skipped-only stratum stays missing rather than becoming coverage',()
   assert.deepEqual({attempted:equivalence.attempted,skipped:equivalence.skipped,complete:equivalence.complete},{attempted:0,skipped:1,complete:false});
 });
 
+test('DKG85 application and provider-family identities are bounded when supplied',()=>{
+  const base=passingCases()[0]!;
+  assert.doesNotThrow(()=>validateEmpiricalComputerUseEvaluationCases([{...base,applicationId:'test-app',providerFamily:'test-provider',sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]));
+  assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{...base,applicationId:'BAD APP',sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]),/computer-use-evaluation-application-id-invalid/);
+  assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{...base,providerFamily:'BAD PROVIDER',sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]),/computer-use-evaluation-provider-family-invalid/);
+});
+
 test('DKG85 empirical source independence identities are bounded tokens when supplied',()=>{
   const cases=passingCases().map((entry,index)=>({...entry,sources:[{kind:'automated-test' as const,sourceId:`source-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`}]}));
   cases[0]={...cases[0]!,sources:[{kind:'automated-test',sourceId:'source-a',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:'run-a'}]};

@@ -35,6 +35,10 @@ export interface ComputerUseEvaluationCaseResult {
   /** Repeated executions represented by this source result. Defaults to 1. */
   readonly trials?:number;
   readonly embodiment?:string;
+  /** Application/harness family exercised by this empirical case; omitted when not application-bound. */
+  readonly applicationId?:string;
+  /** Semantic/native provider family exercised by this case; omitted when provider-neutral. */
+  readonly providerFamily?:string;
   readonly evidence?:readonly string[];
   readonly sources?:readonly ComputerUseEvaluationEvidenceSource[];
 }
@@ -85,6 +89,8 @@ function validateCase(entry:ComputerUseEvaluationCaseResult):void{
   if(!['passed','failed','unknown','skipped'].includes(entry.outcome))throw new Error('computer-use-evaluation-outcome-invalid');
   if(entry.trials!==undefined&&(!Number.isSafeInteger(entry.trials)||entry.trials<1||entry.trials>MAX_TRIALS_PER_CASE))throw new Error('computer-use-evaluation-trials-invalid');
   if(entry.embodiment!==undefined&&!EMBODIMENT.test(entry.embodiment))throw new Error('computer-use-evaluation-embodiment-invalid');
+  if(entry.applicationId!==undefined&&!EVIDENCE.test(entry.applicationId))throw new Error('computer-use-evaluation-application-id-invalid');
+  if(entry.providerFamily!==undefined&&!EVIDENCE.test(entry.providerFamily))throw new Error('computer-use-evaluation-provider-family-invalid');
   if(entry.evidence!==undefined){
     if(!Array.isArray(entry.evidence)||entry.evidence.length>MAX_EVIDENCE_PER_CASE||entry.evidence.some((value)=>typeof value!=='string'||!EVIDENCE.test(value)))
       throw new Error('computer-use-evaluation-evidence-invalid');

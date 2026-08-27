@@ -42,7 +42,7 @@ export const DP11_WINDOWS_EMPIRICAL_BASELINE_CASES:readonly ComputerUseEvaluatio
   }),
   Object.freeze({
     caseId:'dp11-vm-semantic-primitive-actions',
-    stratum:'primitive-action',outcome:'passed',trials:10,embodiment:'semantic-ui',
+    stratum:'primitive-action',outcome:'passed',trials:10,embodiment:'semantic-ui',applicationId:'ossa-windows-smoke',providerFamily:'winforms',
     evidence:Object.freeze(['value-pattern-pass','invoke-pattern-pass','range-value-pattern-pass','window-pattern-pass']),
     sources:Object.freeze([Object.freeze({
       kind:'windows-vm-smoke' as const,sourceId:'uca_smoke_semantic10_vm_27aug26_ao11',gitSha:'220d16233a3a80b9d6ec938ca9373c67424e3e9a',
@@ -179,7 +179,7 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
   ...releaseSafetyCases,
   Object.freeze({
     caseId:'dp11-wpf-host-primitive-actions',
-    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',applicationId:'ossa-wpf-smoke',providerFamily:'wpf',
     evidence:Object.freeze(['wpf-value-pass','wpf-invoke-pass','wpf-toggle-pass','wpf-range-pass','wpf-selection-pass','wpf-window-pass']),
     sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_wpf_exact_host_27aug26_z11a',gitSha:WPF_EVIDENCE_SHA})]),
   }),
@@ -197,13 +197,13 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
   }),
   Object.freeze({
     caseId:'dp11-win32-host-primitive-actions',
-    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',applicationId:'ossa-win32-smoke',providerFamily:'win32-standard-controls',
     evidence:Object.freeze(['win32-value-pass','win32-invoke-pass','win32-toggle-pass','win32-window-pass']),
     sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_dp11_win32_pinned_host_0827_02',gitSha:WIN32_EVIDENCE_SHA})]),
   }),
   Object.freeze({
     caseId:'dp11-win32-vm-primitive-actions',
-    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',applicationId:'ossa-win32-smoke',providerFamily:'win32-standard-controls',
     evidence:Object.freeze(['win32-value-pass','win32-invoke-pass','win32-toggle-pass','win32-window-pass','protected-vm']),
     sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_win32_pinned_vm_0827_01',gitSha:WIN32_EVIDENCE_SHA})]),
   }),

@@ -28,6 +28,8 @@ function policy(minAttempted=1):ComputerUseProductionGatePolicy{
     })),
     claimRequirements:COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,minPassingCases:1})),
     requiredSourceKinds:['automated-test','execution-receipt'],
+    minDistinctApplications:1,
+    minDistinctProviderFamilies:1,
     requiredReleaseEnvironments:['test-release-environment'],
   };
 }
@@ -38,6 +40,7 @@ function corpus():ComputerUseEvaluationCaseResult[]{
     stratum,
     outcome:'passed' as const,
     embodiment:'semantic-ui',
+    applicationId:'test-app',providerFamily:'test-provider',
     sources:[
       {kind:'automated-test' as const,sourceId:`test-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`},
       {kind:'execution-receipt' as const,sourceId:`receipt-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`},
@@ -95,6 +98,16 @@ test('current DP11 expanded corpus and claim map remain production-blocked under
   assert.ok(decision.blockers.includes('stratum:grounding:failures-above-threshold'));
   assert.ok(decision.blockers.includes('release-environment:test-release-environment:evidence-missing'));
   assert.ok(decision.blockers.includes('enablement:CU-0:rollout-evidence-missing'));
+});
+
+test('production corpus diversity is independent from source and embodiment breadth',()=>{
+  const cases=corpus();
+  const strict={...policy(),minDistinctApplications:2,minDistinctProviderFamilies:2};
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId));
+  assert.equal(decision.eligible,false);
+  assert.deepEqual(decision.corpusDiversity,{distinctApplications:1,distinctProviderFamilies:1});
+  assert.ok(decision.blockers.includes('corpus:application-breadth-below-threshold'));
+  assert.ok(decision.blockers.includes('corpus:provider-family-breadth-below-threshold'));
 });
 
 test('production breadth policy rejects repeated single-embodiment or single-source evidence',()=>{
@@ -195,6 +208,8 @@ test('production policy must enumerate every stratum and safety claim with bound
   assert.throws(()=>validateComputerUseProductionGatePolicy(invalid),/computer-use-production-claim-policy-incomplete/);
   const badRate={...policy(),stratumRequirements:policy().stratumRequirements.map((entry,index)=>index===0?{...entry,minSuccessRate:1.1}:entry)};
   assert.throws(()=>validateComputerUseProductionGatePolicy(badRate),/computer-use-production-stratum-threshold-invalid/);
+  assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),minDistinctApplications:0}),/computer-use-production-corpus-diversity-policy-invalid/);
+  assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),minDistinctProviderFamilies:0}),/computer-use-production-corpus-diversity-policy-invalid/);
   assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),requiredReleaseEnvironments:[]}),/computer-use-production-release-environment-policy-invalid/);
   assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),requiredReleaseEnvironments:['same-environment','same-environment']}),/computer-use-production-release-environment-policy-invalid/);
 });
