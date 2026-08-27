@@ -257,6 +257,46 @@ test('continuation gate exception fails closed into suspension before adapter ex
   assert.equal(environment.adapter.actCount, 0);
 });
 
+test('durable checkpoint sink receives unknown-dispatch fence before adapter dispatch and completed state after verification', async () => {
+  const environment = registryWith(['fake.write']);
+  const checkpoints = [] as ReturnType<ComputerTaskRuntime['checkpoint']>[];
+  const runtime = new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    hooks: { checkpointSink: async (checkpoint) => { checkpoints.push(checkpoint); } },
+  });
+  const result = await runtime.run();
+  assert.equal(result.status, 'completed');
+  assert.equal(environment.adapter.actCount, 1);
+  assert.equal(checkpoints.length, 2);
+  assert.equal(checkpoints[0]?.actions.find((entry) => entry.stepId === 'write')?.state, 'unknown-dispatch');
+  assert.equal(checkpoints[0]?.cursor.stepsExecuted, 0);
+  assert.equal(checkpoints[1]?.actions.find((entry) => entry.stepId === 'write')?.state, 'completed');
+  assert.equal(checkpoints[1]?.cursor.stepsExecuted, 1);
+});
+
+test('ambiguous pre-dispatch checkpoint persistence prevents dispatch and leaves conservative reconciliation state', async () => {
+  const environment = registryWith(['fake.write']);
+  let fenced: ReturnType<ComputerTaskRuntime['checkpoint']> | undefined;
+  const runtime = new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    hooks: { checkpointSink: async (checkpoint) => { fenced = checkpoint; throw new Error('durable-store-unknown'); } },
+  });
+  const result = await runtime.run();
+  assert.equal(result.status, 'suspended');
+  assert.ok(result.evidence?.includes('checkpoint-persistence-unknown-before-dispatch'));
+  assert.equal(environment.adapter.actCount, 0);
+  assert.equal(runtime.checkpoint().actions.find((entry) => entry.stepId === 'write')?.state, 'unknown-dispatch');
+  assert.ok(fenced);
+
+  const resumed = registryWith(['fake.write']);
+  const resumedResult = await new ComputerTaskRuntime(task, resumed.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint: fenced!,
+  }).run();
+  assert.equal(resumedResult.status, 'reconciliation-required');
+  assert.equal(resumed.adapter.actCount, 0);
+});
+
 test('verifier cannot mutate dispatch fields to bypass effectful post-dispatch verification', async () => {
   const environment = registryWith(['fake.write']);
   const verifyTask: ComputerTaskProgram = {

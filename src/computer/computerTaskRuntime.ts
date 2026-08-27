@@ -84,6 +84,11 @@ export interface ComputerTaskRuntimeHooks {
    * Suspension preserves the current cursor and does not consume task budget.
    */
   continuationGate?: (context: { step: ComputerTaskStep; stepsExecuted: number }) => Promise<ComputerTaskContinuationDecision>;
+  /**
+   * Optional durable sink. For action steps the runtime writes a conservative pre-dispatch fence before
+   * crossing the adapter boundary, then advances it only after verified state transitions.
+   */
+  checkpointSink?: (checkpoint: ComputerTaskCheckpoint) => Promise<void>;
   /** Must use bounded adapter/domain observations; raw observations are not retained by the runtime. */
   revalidateTarget?: (
     registry: ComputerEnvironmentRegistry,
@@ -284,6 +289,16 @@ export class ComputerTaskRuntime {
     return undefined;
   }
 
+  private async persistCheckpoint(): Promise<boolean> {
+    if (!this.hooks.checkpointSink) return true;
+    try {
+      await this.hooks.checkpointSink(this.checkpoint());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private async targetFresh(step: ComputerTaskActionStep): Promise<ComputerTaskTargetRevalidation> {
     if (!step.target) {
       return step.request.target
@@ -359,6 +374,14 @@ export class ComputerTaskRuntime {
       const predispatch = await this.targetFresh(step);
       if (predispatch.state !== 'fresh') {
         return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
+      }
+      if (this.hooks.checkpointSink) {
+        // Write-ahead fence: after this durable state exists, any crash/lost process must reconcile
+        // rather than replaying the action from an older not-started checkpoint.
+        this.actionStates.set(step.id, 'unknown-dispatch');
+        if (!await this.persistCheckpoint()) {
+          return { result: this.result('suspended', [], ['checkpoint-persistence-unknown-before-dispatch']) };
+        }
       }
       const registryResult = await this.registry.act(step.request);
       let adapterResult: ComputerActionResult;
@@ -461,6 +484,7 @@ export class ComputerTaskRuntime {
         observations.push(observationRecord(observation));
         this.stepsExecuted += 1;
         this.currentStepId = step.next;
+        if (!await this.persistCheckpoint()) return this.result('suspended', observations, ['checkpoint-persistence-failed-after-step']);
         continue;
       }
 
@@ -470,10 +494,12 @@ export class ComputerTaskRuntime {
       if (!skippedKnownCompleted) this.stepsExecuted += 1;
       if (execution.result.status === 'completed') {
         this.currentStepId = execution.next;
+        if (!await this.persistCheckpoint()) return this.result('suspended', observations, ['checkpoint-persistence-failed-after-step']);
         continue;
       }
       if (execution.result.status === 'failed' && execution.next !== undefined) {
         this.currentStepId = execution.next;
+        if (!await this.persistCheckpoint()) return this.result('suspended', observations, ['checkpoint-persistence-failed-after-step']);
         continue;
       }
       return {
