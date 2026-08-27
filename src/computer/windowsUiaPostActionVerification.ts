@@ -61,7 +61,7 @@ export function createWindowsUiaActionVerification(
   if(authorityAction.kind==='set-value'){
     return Object.freeze({
       provider:observer,
-      predicate:(observation)=>observation.value.status==='current'&&observation.value.control.value===authorityAction.value
+      predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='current'&&observation.value.control.value===authorityAction.value
         ?'match'
         :'inconclusive',
     });
@@ -71,7 +71,7 @@ export function createWindowsUiaActionVerification(
       provider:observer,
       // Missing exact UIA identity is positive evidence for close. Stale/replaced
       // identity is deliberately inconclusive rather than assumed to mean closed.
-      predicate:(observation)=>observation.value.status==='missing'?'match':'inconclusive',
+      predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='missing'?'match':'inconclusive',
     });
   }
   return undefined;

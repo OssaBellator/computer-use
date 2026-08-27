@@ -241,7 +241,7 @@ internal sealed class GraphicsCaptureService : IDisposable
                 throw new ProtocolException($"capture.d3d11-create-device.{unchecked((uint)hr):x8}");
 
             var iid = IdxgiDeviceGuid;
-            hr = Marshal.QueryInterface(nativeDevice, ref iid, out dxgiDevice);
+            hr = Marshal.QueryInterface(nativeDevice, in iid, out dxgiDevice);
             if (hr < 0 || dxgiDevice == 0)
                 throw new ProtocolException($"capture.dxgi-device.{unchecked((uint)hr):x8}");
 

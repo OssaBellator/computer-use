@@ -18,6 +18,10 @@ function protocol(handler:(operation:string,body:unknown)=>unknown|Promise<unkno
 }
 const fastSleep=async()=>{await new Promise(resolve=>setTimeout(resolve,1));};
 const settle=async()=>{await new Promise(resolve=>setTimeout(resolve,8));};
+const waitUntil=async(predicate:()=>boolean,timeoutMs=100)=>{
+  const deadline=Date.now()+timeoutMs;
+  while(!predicate()&&Date.now()<deadline)await fastSleep();
+};
 
 test('native event bridge polls bounded invalidation codes and stops after unregister', async()=>{
   let polls=0;
@@ -58,7 +62,7 @@ test('native event polling failure conservatively invalidates once with an autho
   const bridge=new WindowsNativeHostUiaEventBridge(p,'uia-mta-2',10,fastSleep);
   const seen:string[]=[];
   await bridge.register({registrationId:'reg-2',window:windowRef,events:['focus-changed']},event=>seen.push(event));
-  await settle();
+  await waitUntil(()=>seen.length>=2);
   assert.ok(seen.length>=2);
   assert.ok(seen.every(value=>value==='focus-changed'));
   await bridge.unregister('reg-2');
