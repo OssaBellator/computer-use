@@ -6,6 +6,7 @@ import {
 
 const EVIDENCE_SHA='a43015db804b28b338af1a9cd76c00e1df860895';
 const FULL_SUITE_RECEIPT='xrc_mtb427va_f0d5d32d439491bc154a01b7';
+const WPF_EVIDENCE_SHA='ce14a09a64de03862226b945ff7d4d2bfb827e79';
 
 function automated(sourceId:string){
   return Object.freeze([
@@ -82,4 +83,42 @@ export const DP11_WINDOWS_EMPIRICAL_BASELINE=Object.freeze({
   productionGateReason:'baseline-does-not-establish-breadth-repetition-thresholds-or-release-environment-coverage' as const,
   evidenceGitSha:EVIDENCE_SHA,
   summary:summarizeComputerUseEvaluation(DP11_WINDOWS_EMPIRICAL_BASELINE_CASES),
+});
+
+/**
+ * Provider-diversity expansion collected from the exact committed WPF smoke
+ * target. The protected-VM WPF tree-discovery failure is retained as a failed
+ * grounding case: environment/provider unavailability is evaluation evidence,
+ * not something to erase by falling back silently or relabel as action success.
+ */
+export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluationCaseResult[]=Object.freeze([
+  ...DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
+  Object.freeze({
+    caseId:'dp11-wpf-host-primitive-actions',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    evidence:Object.freeze(['wpf-value-pass','wpf-invoke-pass','wpf-toggle-pass','wpf-range-pass','wpf-selection-pass','wpf-window-pass']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_wpf_exact_host_27aug26_z11a',gitSha:WPF_EVIDENCE_SHA})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-wpf-host-state-verification',
+    stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',
+    evidence:Object.freeze(['wpf-text-readback-verified','wpf-toggle-state-verified','wpf-range-readback-verified','wpf-selection-verified','wpf-window-state-verified']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_wpf_exact_host_27aug26_z11a',gitSha:WPF_EVIDENCE_SHA})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-wpf-protected-vm-tree-discovery-blocked',
+    stratum:'grounding',outcome:'failed',embodiment:'semantic-ui',
+    evidence:Object.freeze(['wpf-uia-tree-discovery-blocked','com-8000401a','no-semantic-action-dispatch']),
+    sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_wpf_exact_vm_27aug26_z62b',gitSha:WPF_EVIDENCE_SHA})]),
+  }),
+]);
+
+validateEmpiricalComputerUseEvaluationCases(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES);
+
+export const DP11_WINDOWS_EMPIRICAL_EXPANDED=Object.freeze({
+  scope:'provider-diversity-evidence' as const,
+  productionGateSatisfied:false as const,
+  productionGateReason:'expanded-corpus-retains-protected-vm-wpf-grounding-failure-and-still-lacks-release-threshold-breadth' as const,
+  evidenceGitSha:WPF_EVIDENCE_SHA,
+  summary:summarizeComputerUseEvaluation(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES),
 });

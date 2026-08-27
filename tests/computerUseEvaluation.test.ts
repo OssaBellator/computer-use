@@ -6,7 +6,12 @@ import {
   validateEmpiricalComputerUseEvaluationCases,
   type ComputerUseEvaluationCaseResult,
 } from '../src/computer/computerUseEvaluation.js';
-import { DP11_WINDOWS_EMPIRICAL_BASELINE, DP11_WINDOWS_EMPIRICAL_BASELINE_CASES } from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
+import {
+  DP11_WINDOWS_EMPIRICAL_BASELINE,
+  DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
+  DP11_WINDOWS_EMPIRICAL_EXPANDED,
+  DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,
+} from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
 
 function passingCases():ComputerUseEvaluationCaseResult[]{
   return COMPUTER_USE_EVALUATION_STRATA.map((stratum,index)=>({
@@ -79,6 +84,21 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
   }
   const equivalence=DP11_WINDOWS_EMPIRICAL_BASELINE_CASES.find((entry)=>entry.stratum==='cross-embodiment-equivalence')!;
   assert.deepEqual(equivalence.sources?.map((source)=>source.kind),['windows-vm-smoke','windows-vm-smoke']);
+});
+
+test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,10);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.failedCases,1);
+  const wpfHost=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-host-primitive-actions')!;
+  assert.equal(wpfHost.outcome,'passed');
+  assert.deepEqual(wpfHost.sources?.map((source)=>source.kind),['windows-host-smoke']);
+  const wpfVm=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-protected-vm-tree-discovery-blocked')!;
+  assert.equal(wpfVm.outcome,'failed');
+  assert.ok(wpfVm.evidence?.includes('no-semantic-action-dispatch'));
+  assert.deepEqual(wpfVm.sources?.map((source)=>source.kind),['windows-vm-smoke']);
 });
 
 test('DKG85 case ledger rejects duplicate and malformed evidence instead of obscuring evaluation identity',()=>{
