@@ -85,6 +85,7 @@ export * from './computer/windowsVisualArtifactRetention.js';
 export * from './computer/windowsVisualGroundingProvider.js';
 export * from './computer/windowsWindowAuthority.js';
 export * from './computer/windowsInteractionCoordinator.js';
+export * from './computer/windowsPostActionVerification.js';
 export * from './computer/windowsProviderCapabilities.js';
 export * from './computer/windowsNativeHostProtocol.js';
 export * from './computer/windowsNativeHostAdapters.js';
