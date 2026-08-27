@@ -30,6 +30,8 @@ export interface ComputerUseEvaluationCaseResult {
   readonly caseId:string;
   readonly stratum:ComputerUseEvaluationStratum;
   readonly outcome:ComputerUseEvaluationOutcome;
+  /** Repeated executions represented by this source result. Defaults to 1. */
+  readonly trials?:number;
   readonly embodiment?:string;
   readonly evidence?:readonly string[];
   readonly sources?:readonly ComputerUseEvaluationEvidenceSource[];
@@ -43,6 +45,10 @@ export interface ComputerUseEvaluationStratumSummary {
   readonly failed:number;
   readonly unknown:number;
   readonly skipped:number;
+  readonly attemptedTrials:number;
+  readonly passedTrials:number;
+  readonly failedTrials:number;
+  readonly unknownTrials:number;
   readonly successRate:number;
   readonly complete:boolean;
   readonly passing:boolean;
@@ -69,11 +75,13 @@ const MAX_CASES=10_000;
 const MAX_EVIDENCE_PER_CASE=32;
 const MAX_SOURCES_PER_CASE=8;
 const GIT_SHA=/^[0-9a-f]{40}$/;
+const MAX_TRIALS_PER_CASE=10_000;
 
 function validateCase(entry:ComputerUseEvaluationCaseResult):void{
   if(!entry||typeof entry!=='object'||!CASE_ID.test(entry.caseId))throw new Error('computer-use-evaluation-case-id-invalid');
   if(!COMPUTER_USE_EVALUATION_STRATA.includes(entry.stratum))throw new Error('computer-use-evaluation-stratum-invalid');
   if(!['passed','failed','unknown','skipped'].includes(entry.outcome))throw new Error('computer-use-evaluation-outcome-invalid');
+  if(entry.trials!==undefined&&(!Number.isSafeInteger(entry.trials)||entry.trials<1||entry.trials>MAX_TRIALS_PER_CASE))throw new Error('computer-use-evaluation-trials-invalid');
   if(entry.embodiment!==undefined&&!EMBODIMENT.test(entry.embodiment))throw new Error('computer-use-evaluation-embodiment-invalid');
   if(entry.evidence!==undefined){
     if(!Array.isArray(entry.evidence)||entry.evidence.length>MAX_EVIDENCE_PER_CASE||entry.evidence.some((value)=>typeof value!=='string'||!EVIDENCE.test(value)))
@@ -127,10 +135,16 @@ export function summarizeComputerUseEvaluation(cases:readonly ComputerUseEvaluat
     const unknown=entries.filter((entry)=>entry.outcome==='unknown').length;
     const skipped=entries.filter((entry)=>entry.outcome==='skipped').length;
     const attempted=passed+failed+unknown;
+    const trialCount=(entry:ComputerUseEvaluationCaseResult)=>entry.trials??1;
+    const attemptedTrials=entries.filter((entry)=>entry.outcome!=='skipped').reduce((sum,entry)=>sum+trialCount(entry),0);
+    const passedTrials=entries.filter((entry)=>entry.outcome==='passed').reduce((sum,entry)=>sum+trialCount(entry),0);
+    const failedTrials=entries.filter((entry)=>entry.outcome==='failed').reduce((sum,entry)=>sum+trialCount(entry),0);
+    const unknownTrials=entries.filter((entry)=>entry.outcome==='unknown').reduce((sum,entry)=>sum+trialCount(entry),0);
     const complete=attempted>0;
     return Object.freeze({
       stratum,total:entries.length,attempted,passed,failed,unknown,skipped,
-      successRate:attempted===0?0:passed/attempted,
+      attemptedTrials,passedTrials,failedTrials,unknownTrials,
+      successRate:attemptedTrials===0?0:passedTrials/attemptedTrials,
       complete,
       passing:complete&&failed===0&&unknown===0&&passed===attempted,
     });

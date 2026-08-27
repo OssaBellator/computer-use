@@ -121,6 +121,16 @@ test('DKG85 expanded provider-diversity corpus retains protected-VM WPF groundin
   assert.deepEqual(wpfVm.sources?.map((source)=>source.kind),['windows-vm-smoke']);
 });
 
+test('DKG85 repeated trials are counted quantitatively without manufacturing case breadth',()=>{
+  const summary=summarizeComputerUseEvaluation([{
+    caseId:'ten-trial-semantic',stratum:'primitive-action',outcome:'passed',trials:10,embodiment:'semantic-ui',
+    sources:[{kind:'windows-vm-smoke',sourceId:'semantic-ten',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}],
+  }]);
+  const primitive=summary.strata.find((entry)=>entry.stratum==='primitive-action')!;
+  assert.deepEqual({attempted:primitive.attempted,trials:primitive.attemptedTrials,passedTrials:primitive.passedTrials,successRate:primitive.successRate},{attempted:1,trials:10,passedTrials:10,successRate:1});
+  assert.throws(()=>summarizeComputerUseEvaluation([{caseId:'bad-trials',stratum:'primitive-action',outcome:'passed',trials:0}]),/computer-use-evaluation-trials-invalid/);
+});
+
 test('DKG85 case ledger rejects duplicate and malformed evidence instead of obscuring evaluation identity',()=>{
   assert.throws(()=>summarizeComputerUseEvaluation([
     {caseId:'dup',stratum:'grounding',outcome:'passed'},

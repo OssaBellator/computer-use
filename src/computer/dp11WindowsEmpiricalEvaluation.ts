@@ -35,18 +35,18 @@ export const DP11_WINDOWS_EMPIRICAL_BASELINE_CASES:readonly ComputerUseEvaluatio
   }),
   Object.freeze({
     caseId:'dp11-vm-semantic-primitive-actions',
-    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    stratum:'primitive-action',outcome:'passed',trials:10,embodiment:'semantic-ui',
     evidence:Object.freeze(['value-pattern-pass','invoke-pattern-pass','range-value-pattern-pass','window-pattern-pass']),
     sources:Object.freeze([Object.freeze({
-      kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_dkg85_vm_semantic_immediate_20260827',gitSha:EVIDENCE_SHA,
+      kind:'windows-vm-smoke' as const,sourceId:'uca_smoke_semantic10_vm_27aug26_ao11',gitSha:'220d16233a3a80b9d6ec938ca9373c67424e3e9a',
     })]),
   }),
   Object.freeze({
     caseId:'dp11-vm-semantic-state-verification',
-    stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',
+    stratum:'state-transition-verification',outcome:'passed',trials:10,embodiment:'semantic-ui',
     evidence:Object.freeze(['edit-readback-verified','result-transition-verified','range-readback-verified','window-state-verified']),
     sources:Object.freeze([Object.freeze({
-      kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_dkg85_vm_semantic_immediate_20260827',gitSha:EVIDENCE_SHA,
+      kind:'windows-vm-smoke' as const,sourceId:'uca_smoke_semantic10_vm_27aug26_ao11',gitSha:'220d16233a3a80b9d6ec938ca9373c67424e3e9a',
     })]),
   }),
   Object.freeze({

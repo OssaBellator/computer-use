@@ -19,7 +19,7 @@ function policy(minAttempted=1):ComputerUseProductionGatePolicy{
   return {
     policyId:'test-production-policy',
     stratumRequirements:COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({
-      stratum,minAttempted,minSuccessRate:1,maxFailed:0,maxUnknown:0,minDistinctEmbodiments:1,minDistinctSources:1,
+      stratum,minAttempted,minAttemptedTrials:minAttempted,minSuccessRate:1,maxFailed:0,maxUnknown:0,minDistinctEmbodiments:1,minDistinctSources:1,
     })),
     claimRequirements:COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,minPassingCases:1})),
     requiredSourceKinds:['automated-test','execution-receipt'],
@@ -58,8 +58,8 @@ test('production gate can pass only under explicit policy, sourced corpus, zero 
   assert.equal(decision.authorityGranted,false);
   assert.equal(decision.targetEnablement.eligible,true);
   assert.deepEqual(decision.blockers,[]);
-  assert.deepEqual(decision.stratumBreadth.map((entry)=>({stratum:entry.stratum,attempted:entry.attempted,embodiments:entry.distinctEmbodiments,sources:entry.distinctSources})),
-    COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,embodiments:1,sources:2})));
+  assert.deepEqual(decision.stratumBreadth.map((entry)=>({stratum:entry.stratum,attempted:entry.attempted,trials:entry.attemptedTrials,embodiments:entry.distinctEmbodiments,sources:entry.distinctSources})),
+    COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,trials:1,embodiments:1,sources:2})));
 });
 
 test('current DP11 empirical baseline stays blocked by stricter quantitative breadth policy',()=>{
@@ -84,7 +84,20 @@ test('production breadth policy rejects repeated single-embodiment or single-sou
   assert.ok(decision.blockers.includes('stratum:primitive-action:embodiment-breadth-below-threshold'));
   assert.ok(decision.blockers.includes('stratum:primitive-action:source-breadth-below-threshold'));
   const measured=decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!;
-  assert.deepEqual({attempted:measured.attempted,embodiments:measured.distinctEmbodiments,sources:measured.distinctSources},{attempted:1,embodiments:1,sources:2});
+  assert.deepEqual({attempted:measured.attempted,trials:measured.attemptedTrials,embodiments:measured.distinctEmbodiments,sources:measured.distinctSources},{attempted:1,trials:1,embodiments:1,sources:2});
+});
+
+test('production repetition threshold is independent from case/source/embodiment breadth',()=>{
+  const cases=corpus();
+  cases[1]={...cases[1]!,trials:10};
+  const strict={...policy(),stratumRequirements:policy().stratumRequirements.map((entry)=>entry.stratum==='primitive-action'?{...entry,minAttemptedTrials:10}:entry)};
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId));
+  const measured=decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!;
+  assert.equal(measured.attempted,1);
+  assert.equal(measured.attemptedTrials,10);
+  assert.equal(measured.distinctEmbodiments,1);
+  assert.equal(measured.distinctSources,2);
+  assert.ok(!decision.blockers.includes('stratum:primitive-action:trials-below-threshold'));
 });
 
 test('zero-tolerance safety incidents block release regardless of quantitative policy thresholds',()=>{

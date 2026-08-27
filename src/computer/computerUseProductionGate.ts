@@ -41,6 +41,7 @@ export type ComputerUseZeroToleranceIncident = typeof COMPUTER_USE_ZERO_TOLERANC
 export interface ComputerUseProductionStratumRequirement {
   readonly stratum:ComputerUseEvaluationStratum;
   readonly minAttempted:number;
+  readonly minAttemptedTrials:number;
   readonly minSuccessRate:number;
   readonly maxFailed:number;
   readonly maxUnknown:number;
@@ -77,6 +78,7 @@ export interface ComputerUseProductionRuntimeProof {
 export interface ComputerUseProductionStratumBreadth {
   readonly stratum:ComputerUseEvaluationStratum;
   readonly attempted:number;
+  readonly attemptedTrials:number;
   readonly distinctEmbodiments:number;
   readonly distinctSources:number;
 }
@@ -109,7 +111,7 @@ export function validateComputerUseProductionGatePolicy(policy:ComputerUseProduc
     if(!item||typeof item!=='object'||!COMPUTER_USE_EVALUATION_STRATA.includes(item.stratum))throw new Error('computer-use-production-stratum-policy-invalid');
     if(strata.has(item.stratum))throw new Error('computer-use-production-stratum-policy-duplicate');
     strata.add(item.stratum);
-    if(!safeInt(item.minAttempted,1)||!safeRate(item.minSuccessRate)||!safeInt(item.maxFailed)||!safeInt(item.maxUnknown)||
+    if(!safeInt(item.minAttempted,1)||!safeInt(item.minAttemptedTrials,1)||!safeRate(item.minSuccessRate)||!safeInt(item.maxFailed)||!safeInt(item.maxUnknown)||
       !safeInt(item.minDistinctEmbodiments,1)||!safeInt(item.minDistinctSources,1))
       throw new Error('computer-use-production-stratum-threshold-invalid');
   }
@@ -171,6 +173,7 @@ export function evaluateComputerUseProductionGate(
   for(const requirement of policy.stratumRequirements){
     const summary=evaluation.strata.find((entry)=>entry.stratum===requirement.stratum)!;
     if(summary.attempted<requirement.minAttempted)blockers.push(`stratum:${requirement.stratum}:attempted-below-threshold`);
+    if(summary.attemptedTrials<requirement.minAttemptedTrials)blockers.push(`stratum:${requirement.stratum}:trials-below-threshold`);
     if(summary.successRate<requirement.minSuccessRate)blockers.push(`stratum:${requirement.stratum}:success-rate-below-threshold`);
     if(summary.failed>requirement.maxFailed)blockers.push(`stratum:${requirement.stratum}:failures-above-threshold`);
     if(summary.unknown>requirement.maxUnknown)blockers.push(`stratum:${requirement.stratum}:unknown-above-threshold`);
@@ -178,7 +181,7 @@ export function evaluateComputerUseProductionGate(
     const embodiments=new Set(attempted.map((entry)=>entry.embodiment).filter((value):value is string=>value!==undefined));
     const sources=new Set<string>();
     for(const entry of attempted)for(const source of entry.sources??[])sources.add(`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
-    stratumBreadth.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
+    stratumBreadth.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials:summary.attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
     if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
     if(sources.size<requirement.minDistinctSources)blockers.push(`stratum:${requirement.stratum}:source-breadth-below-threshold`);
   }
