@@ -39,4 +39,9 @@ Write-Host '== Native host Release build =='
 dotnet build $native -c Release --nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+$smoke = 'native/windows/Ossa.ComputerUse.WindowsSmoke/Ossa.ComputerUse.WindowsSmoke.csproj'
+Write-Host '== Windows embodiment smoke target Release build =='
+dotnet build $smoke -c Release --nologo
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Write-Host 'DP11 Windows validation receipt: PASS'
