@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS,
   COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS,
+  computerUseProductionPolicyDigest,
   evaluateComputerUseProductionGate,
   validateComputerUseProductionGatePolicy,
   type ComputerUseProductionGatePolicy,
+  type ComputerUseProductionPolicyApproval,
   type ComputerUseProductionReleaseEnvironmentEvidence,
   type ComputerUseProductionRuntimeProof,
 } from '../src/computer/computerUseProductionGate.js';
@@ -50,6 +52,9 @@ function corpus():ComputerUseEvaluationCaseResult[]{
 function claimEvidence(caseId:string){
   return COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,caseIds:[caseId]}));
 }
+function policyApproval(value:ComputerUseProductionGatePolicy):ComputerUseProductionPolicyApproval{
+  return {policyId:value.policyId,policyDigest:computerUseProductionPolicyDigest(value),approvalId:'test-policy-approval',reviewSourceId:'test-review-receipt',reviewGitSha:'cccccccccccccccccccccccccccccccccccccccc'};
+}
 function releaseEnvironmentEvidence(caseId:string,sourceId='test-0'):ComputerUseProductionReleaseEnvironmentEvidence[]{
   return [{environmentId:'test-release-environment',bindings:[{caseId,sourceId}]}];
 }
@@ -65,10 +70,12 @@ function runtimeProof(disablementCaseId:string):ComputerUseProductionRuntimeProo
 
 test('production gate can pass only under explicit policy, sourced corpus, zero incidents, and eligible CU policy',()=>{
   const cases=corpus();
-  const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId));
+  const approvedPolicy=policy();
+  const decision=evaluateComputerUseProductionGate(approvedPolicy,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId),policyApproval(approvedPolicy));
   assert.equal(decision.eligible,true);
   assert.equal(decision.authorityGranted,false);
   assert.equal(decision.targetEnablement.eligible,true);
+  assert.equal(decision.policyApprovalSatisfied,true);
   assert.deepEqual(decision.blockers,[]);
   assert.deepEqual(decision.stratumBreadth.map((entry)=>({stratum:entry.stratum,attempted:entry.attempted,trials:entry.attemptedTrials,embodiments:entry.distinctEmbodiments,sources:entry.distinctSources})),
     COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,trials:1,embodiments:1,sources:1})));
@@ -211,6 +218,22 @@ test('release-environment proof must bind a required environment to a passing ca
   const failedCases=cases.map((entry)=>entry.caseId===caseId?{...entry,outcome:'failed' as const}:entry);
   const failed=evaluateComputerUseProductionGate(policy(),failedCases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId));
   assert.ok(failed.blockers.includes(`release-environment:test-release-environment:case-not-passed:${caseId}`));
+});
+
+test('production policy approval must bind the exact canonical policy contents to immutable review evidence',()=>{
+  const cases=corpus();
+  const p=policy();
+  const caseId=cases[0]!.caseId;
+  const args=[cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId)] as const;
+  const missing=evaluateComputerUseProductionGate(p,...args);
+  assert.equal(missing.policyApprovalSatisfied,false);
+  assert.ok(missing.blockers.includes('policy:approval-missing'));
+  const wrongId=evaluateComputerUseProductionGate(p,...args,{...policyApproval(p),policyId:'other-policy'});
+  assert.ok(wrongId.blockers.includes('policy:approval-policy-id-mismatch:other-policy'));
+  const stale={...p,minDistinctApplications:2};
+  const staleDecision=evaluateComputerUseProductionGate(stale,...args,policyApproval(p));
+  assert.ok(staleDecision.blockers.includes('policy:approval-digest-mismatch'));
+  assert.throws(()=>evaluateComputerUseProductionGate(p,...args,{...policyApproval(p),reviewGitSha:'short'}),/computer-use-production-policy-approval-invalid/);
 });
 
 test('production policy must enumerate every stratum and safety claim with bounded thresholds',()=>{

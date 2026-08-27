@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ComputerCapabilityProfile } from './computerCapabilities.js';
 import {
   COMPUTER_USE_EVALUATION_SOURCE_KINDS,
@@ -62,6 +63,13 @@ export interface ComputerUseProductionReleaseEnvironmentEvidence {
   readonly environmentId:string;
   readonly bindings:readonly Readonly<{caseId:string;sourceId:string}>[];
 }
+export interface ComputerUseProductionPolicyApproval {
+  readonly policyId:string;
+  readonly policyDigest:string;
+  readonly approvalId:string;
+  readonly reviewSourceId:string;
+  readonly reviewGitSha:string;
+}
 export interface ComputerUseProductionGatePolicy {
   readonly policyId:string;
   readonly stratumRequirements:readonly ComputerUseProductionStratumRequirement[];
@@ -103,16 +111,33 @@ export interface ComputerUseProductionGateDecision {
   readonly corpusDiversity:Readonly<{distinctApplications:number;distinctProviderFamilies:number}>;
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
   readonly satisfiedReleaseEnvironments:readonly string[];
+  readonly policyApprovalSatisfied:boolean;
   readonly targetEnablement:ReturnType<typeof assessComputerUseEnablement>;
 }
 
 const TOKEN=/^[a-z0-9][a-z0-9._:-]{0,127}$/;
+const GIT_SHA=/^[0-9a-f]{40}$/;
+const SHA256=/^sha256:[0-9a-f]{64}$/;
 const MAX_THRESHOLD=10_000;
 function safeInt(value:unknown,min=0,max=MAX_THRESHOLD):value is number {
   return typeof value==='number'&&Number.isSafeInteger(value)&&value>=min&&value<=max;
 }
 function safeRate(value:unknown):value is number {
   return typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1;
+}
+
+export function computerUseProductionPolicyDigest(policy:ComputerUseProductionGatePolicy):string {
+  validateComputerUseProductionGatePolicy(policy);
+  const canonical={
+    policyId:policy.policyId,
+    stratumRequirements:[...policy.stratumRequirements].sort((a,b)=>COMPUTER_USE_EVALUATION_STRATA.indexOf(a.stratum)-COMPUTER_USE_EVALUATION_STRATA.indexOf(b.stratum)),
+    claimRequirements:[...policy.claimRequirements].sort((a,b)=>COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.indexOf(a.claim)-COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.indexOf(b.claim)),
+    requiredSourceKinds:[...policy.requiredSourceKinds].sort(),
+    minDistinctApplications:policy.minDistinctApplications,
+    minDistinctProviderFamilies:policy.minDistinctProviderFamilies,
+    requiredReleaseEnvironments:[...policy.requiredReleaseEnvironments].sort(),
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonical),'utf8').digest('hex')}`;
 }
 
 export function validateComputerUseProductionGatePolicy(policy:ComputerUseProductionGatePolicy):void {
@@ -150,6 +175,11 @@ export function validateComputerUseProductionGatePolicy(policy:ComputerUseProduc
     throw new Error('computer-use-production-release-environment-policy-invalid');
   if(new Set(policy.requiredReleaseEnvironments).size!==policy.requiredReleaseEnvironments.length||policy.requiredReleaseEnvironments.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
     throw new Error('computer-use-production-release-environment-policy-invalid');
+}
+
+function validatePolicyApproval(approval:ComputerUseProductionPolicyApproval):void {
+  if(!approval||typeof approval!=='object'||!TOKEN.test(approval.policyId)||!SHA256.test(approval.policyDigest)||!TOKEN.test(approval.approvalId)||
+    !TOKEN.test(approval.reviewSourceId)||!GIT_SHA.test(approval.reviewGitSha))throw new Error('computer-use-production-policy-approval-invalid');
 }
 
 function validateClaimEvidence(evidence:readonly ComputerUseProductionClaimEvidence[]):void {
@@ -198,14 +228,21 @@ export function evaluateComputerUseProductionGate(
   claimEvidence:readonly ComputerUseProductionClaimEvidence[],
   runtimeProof:ComputerUseProductionRuntimeProof,
   releaseEnvironmentEvidence:readonly ComputerUseProductionReleaseEnvironmentEvidence[],
+  policyApproval?:ComputerUseProductionPolicyApproval,
 ):ComputerUseProductionGateDecision {
   validateComputerUseProductionGatePolicy(policy);
   validateEmpiricalComputerUseEvaluationCases(cases);
   validateClaimEvidence(claimEvidence);
   validateRuntimeProof(runtimeProof);
   validateReleaseEnvironmentEvidence(releaseEnvironmentEvidence);
+  if(policyApproval!==undefined)validatePolicyApproval(policyApproval);
   const evaluation=summarizeComputerUseEvaluation(cases);
   const blockers:string[]=[];
+  let policyApprovalSatisfied=false;
+  if(policyApproval===undefined)blockers.push('policy:approval-missing');
+  else if(policyApproval.policyId!==policy.policyId)blockers.push(`policy:approval-policy-id-mismatch:${policyApproval.policyId}`);
+  else if(policyApproval.policyDigest!==computerUseProductionPolicyDigest(policy))blockers.push('policy:approval-digest-mismatch');
+  else policyApprovalSatisfied=true;
   const stratumBreadth:ComputerUseProductionStratumBreadth[]=[];
 
   for(const requirement of policy.stratumRequirements){
@@ -309,6 +346,7 @@ export function evaluateComputerUseProductionGate(
     corpusDiversity,
     satisfiedClaims:Object.freeze(satisfiedClaims),
     satisfiedReleaseEnvironments:Object.freeze(satisfiedReleaseEnvironments),
+    policyApprovalSatisfied,
     targetEnablement,
   });
 }
