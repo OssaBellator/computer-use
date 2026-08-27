@@ -34,9 +34,16 @@ internal static class Program
     private static void Main(string[] args)
     {
         var mode = args.Length == 0 ? "semantic-then-raw" : args[0];
+        var iterations = 1;
+        if (args.Length > 1 && (!int.TryParse(args[1], out iterations) || iterations < 1 || iterations > 20))
+        {
+            Console.Error.WriteLine("usage: [semantic-only|raw-only|semantic-then-raw] [iterations:1..20]");
+            Environment.ExitCode = 64;
+            return;
+        }
         if (mode is not ("semantic-only" or "raw-only" or "semantic-then-raw"))
         {
-            Console.Error.WriteLine("usage: [semantic-only|raw-only|semantic-then-raw]");
+            Console.Error.WriteLine("usage: [semantic-only|raw-only|semantic-then-raw] [iterations:1..20]");
             Environment.ExitCode = 64;
             return;
         }
@@ -64,22 +71,28 @@ internal static class Program
             {
                 try
                 {
-                    if (mode != "raw-only")
+                    var allPassed = true;
+                    for (var iteration = 1; iteration <= iterations; iteration++)
                     {
-                        var semantic = RunSemanticTasks(form.Handle, input.Handle, apply.Handle, range.Handle, result.Handle);
-                        if (semantic)
+                        Console.WriteLine($"SMOKE_ITERATION={iteration}/{iterations}");
+                        if (mode != "raw-only")
                         {
-                            Environment.ExitCode = 0;
-                            return;
+                            var semantic = RunSemanticTasks(form.Handle, input.Handle, apply.Handle, range.Handle, result.Handle);
+                            if (semantic) continue;
+                            if (mode == "semantic-only")
+                            {
+                                allPassed = false;
+                                break;
+                            }
                         }
-                        if (mode == "semantic-only")
+
+                        if (!RunRawTasks(form.Handle, input.Handle, apply.Handle, range.Handle, result.Handle))
                         {
-                            Environment.ExitCode = 4;
-                            return;
+                            allPassed = false;
+                            break;
                         }
                     }
-
-                    Environment.ExitCode = RunRawTasks(form.Handle, input.Handle, apply.Handle, range.Handle, result.Handle) ? 0 : 3;
+                    Environment.ExitCode = allPassed ? 0 : mode == "semantic-only" ? 4 : 3;
                 }
                 catch (Exception ex)
                 {
