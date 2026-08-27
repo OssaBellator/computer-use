@@ -2,7 +2,7 @@ import { DesktopInteractionLeaseManager } from './desktopInteractionLease.js';
 import { WindowsComApartmentExecutor } from './windowsComApartment.js';
 import { WindowsGraphicsCaptureRuntime } from './windowsGraphicsCaptureRuntime.js';
 import { WindowsInteractiveHostLeaseService } from './windowsInteractiveHostLease.js';
-import { WindowsNativeHostCaptureBridge, WindowsNativeHostCredentialBroker, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
+import { WindowsNativeHostCaptureBridge, WindowsNativeHostCredentialBroker, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostTotpFactorBroker, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
 import { WindowsNativeHostComApartmentHost } from './windowsNativeHostComApartment.js';
 import { WindowsNativeHostHumanInputObserver } from './windowsNativeHostHumanInput.js';
 import { WINDOWS_NATIVE_HOST_OPERATIONS, WindowsNativeHostProtocolClient, type WindowsNativeHostOperation, type WindowsNativeHostRequestIdSource } from './windowsNativeHostProtocol.js';
@@ -65,6 +65,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
   const foregroundLease=has(implemented,'system.windows')&&input&&human;
   const credentialRevalidation=has(implemented,'uia.resolve-control','uia.compare-elements','uia.snapshot-control');
   const credentialNative=credentialRevalidation&&implemented.has('credential.apply');
+  const totpNative=implemented.has('factor.totp.apply');
   return Object.freeze({
     id:'windows-native-host',
     capabilities:Object.freeze({
@@ -89,7 +90,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'transient-capture-retention':capability(capture?'supported':'unsupported','no live native artifact producer exists in this host/session'),
       'side-effect-verification':capability('partial','verification runtime exists; an authoritative action-specific observation predicate remains caller-supplied'),
       'credential-brokered-use':capability(credentialNative?'supported':credentialRevalidation?'partial':'unsupported',credentialNative?undefined:credentialRevalidation?'password-field revalidation exists but no trusted credential application verb is available':'UIA password-field revalidation surface unavailable'),
-      'authentication-factor-brokered-use':capability('unsupported','no trusted authentication factor broker is attached to this runtime'),
+      'authentication-factor-brokered-use':capability(totpNative?'partial':'unsupported',totpNative?'native host supports target-bound TOTP only; user-presence factors require an external trusted broker':'no trusted authentication factor broker is attached to this runtime'),
     }),
   });
 }
@@ -98,7 +99,7 @@ function composeCapabilityProfile(
   operations:readonly WindowsNativeHostOperation[],
   visualGrounding:boolean,
   credentialBroker:boolean,
-  authenticationFactorBroker:boolean,
+  authenticationFactorBroker:'none'|'totp-only'|'external',
 ):WindowsProviderCapabilityProfile {
   const base=deriveWindowsNativeHostCapabilityProfile(operations);
   const implemented=new Set(operations);
@@ -107,7 +108,8 @@ function composeCapabilityProfile(
   if(credentialBroker&&has(implemented,'uia.resolve-control','uia.compare-elements','uia.snapshot-control')){
     capabilities['credential-brokered-use']='supported';
   }
-  if(authenticationFactorBroker)capabilities['authentication-factor-brokered-use']='supported';
+  if(authenticationFactorBroker==='external')capabilities['authentication-factor-brokered-use']='supported';
+  else if(authenticationFactorBroker==='totp-only')capabilities['authentication-factor-brokered-use']=capability('partial','native host supports target-bound TOTP only; user-presence factors require an external trusted broker');
   return Object.freeze({id:base.id,capabilities:Object.freeze(capabilities)});
 }
 
@@ -203,9 +205,10 @@ export async function openWindowsNativeHostRuntime(
     const credentials=credentialBroker&&credentialRevalidation
       ?new WindowsCredentialMediator(uia,credentialBroker)
       :undefined;
-    const authenticationFactors=options?.authenticationFactorBroker
-      ?new WindowsAuthenticationFactorMediator(options.authenticationFactorBroker)
-      :undefined;
+    const nativeTotpBroker=implementedSet.has('factor.totp.apply')?new WindowsNativeHostTotpFactorBroker(protocol,host.threadToken):undefined;
+    const authenticationFactorBroker=options?.authenticationFactorBroker??nativeTotpBroker;
+    const authenticationFactors=authenticationFactorBroker?new WindowsAuthenticationFactorMediator(authenticationFactorBroker):undefined;
+    const authenticationFactorBrokerMode=options?.authenticationFactorBroker?'external':nativeTotpBroker?'totp-only':'none';
 
     let closed=false;
     return Object.freeze({
@@ -222,7 +225,7 @@ export async function openWindowsNativeHostRuntime(
       ...(retainedVisualGrounding?{retainedVisualGrounding}:{}),
       ...(credentials?{credentials}:{}),
       ...(authenticationFactors?{authenticationFactors}:{}),
-      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined,credentials!==undefined,authenticationFactors!==undefined),
+      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined,credentials!==undefined,authenticationFactorBrokerMode),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;

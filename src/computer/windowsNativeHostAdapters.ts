@@ -2,6 +2,7 @@ import type { ComputerEffectClass } from './environmentAdapter.js';
 import type { DesktopVisualAcquisitionLimits, DesktopBackendActionResult } from './desktopUiBackend.js';
 import type { WindowsComApartmentContext } from './windowsComApartment.js';
 import type { WindowsCredentialBroker, WindowsCredentialBrokerRequest, WindowsCredentialBrokerResult } from './windowsCredentialMediator.js';
+import type { WindowsAuthenticationFactorBroker, WindowsAuthenticationFactorBrokerRequest, WindowsAuthenticationFactorBrokerResult } from './windowsAuthenticationFactorMediator.js';
 import type { WindowsGraphicsCaptureNativeBridge, WindowsGraphicsCaptureNativeFrame } from './windowsGraphicsCaptureRuntime.js';
 import { WindowsNativeHostProtocolClient } from './windowsNativeHostProtocol.js';
 import type { WindowsNativeInputDispatchAuthority } from './windowsNativeInputGate.js';
@@ -208,6 +209,30 @@ export class WindowsNativeHostCredentialBroker implements WindowsCredentialBroke
       evidence=Object.freeze([...raw.evidence]);
     }
     return Object.freeze({status:raw.status as WindowsCredentialBrokerResult['status'],...(evidence?{evidence}:{})});
+  }
+}
+
+export class WindowsNativeHostTotpFactorBroker implements WindowsAuthenticationFactorBroker {
+  constructor(readonly protocol:WindowsNativeHostProtocolClient,readonly threadToken:string) {}
+  async performFactor(request:WindowsAuthenticationFactorBrokerRequest):Promise<WindowsAuthenticationFactorBrokerResult> {
+    if(request.kind!=='totp'||!request.target||!CREDENTIAL_ID_PATTERN.test(this.threadToken)||!CREDENTIAL_ID_PATTERN.test(request.factorRef)||
+       (request.purpose!=='authenticate'&&request.purpose!=='reauthenticate'))throw new Error('windows-native-host-totp-request-invalid');
+    const target=captureWindowsUiaControlRef(request.target);
+    if(!target)throw new Error('windows-native-host-totp-target-invalid');
+    const response=await this.protocol.call('factor.totp.apply',Object.freeze({threadToken:this.threadToken,factorRef:request.factorRef,ref:target,purpose:request.purpose}));
+    if(!response||typeof response!=='object'||Array.isArray(response)||Object.getOwnPropertyNames(response).some(key=>key!=='status'&&key!=='evidence')){
+      throw new Error('windows-native-host-totp-response-invalid');
+    }
+    const raw=captureOwnDataObject(response,['status','evidence']);
+    if(!raw||typeof raw.status!=='string'||!['completed','rejected','unavailable','unknown'].includes(raw.status))throw new Error('windows-native-host-totp-response-invalid');
+    let evidence:readonly string[]|undefined;
+    if(raw.evidence!==undefined){
+      if(!Array.isArray(raw.evidence)||raw.evidence.length>16||raw.evidence.some(item=>typeof item!=='string'||!EVIDENCE_PATTERN.test(item)||item.includes(request.factorRef))){
+        throw new Error('windows-native-host-totp-response-invalid');
+      }
+      evidence=Object.freeze([...raw.evidence]);
+    }
+    return Object.freeze({status:raw.status as WindowsAuthenticationFactorBrokerResult['status'],...(evidence?{evidence}:{})});
   }
 }
 

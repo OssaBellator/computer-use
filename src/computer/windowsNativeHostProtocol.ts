@@ -18,6 +18,7 @@ export const WINDOWS_NATIVE_HOST_OPERATIONS = [
   'artifact.release',
   'artifact.consume',
   'credential.apply',
+  'factor.totp.apply',
   'integrity.current',
   'integrity.process',
   'input.send',

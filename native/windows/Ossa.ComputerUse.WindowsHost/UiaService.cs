@@ -196,6 +196,58 @@ internal sealed class UiaService
         }
     }
 
+    internal string? ValidateTotpTarget(TotpFactorApplyRequest request)
+    {
+        RequireThread(request.ThreadToken);
+        ValidateWindowGeneration(request.Ref.Window);
+        var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
+        if (current is null) return "windows-totp-target-missing";
+        var snapshot = Snapshot(current, request.Ref.Window);
+        if (snapshot.Ref.Generation != request.Ref.Generation) return "windows-totp-target-replaced";
+        if (snapshot.Enabled is false) return "windows-totp-target-disabled";
+        if (snapshot.Ref.ControlType != "Edit") return "windows-totp-target-not-edit";
+        if (!current.TryGetCurrentPattern(ValuePattern.Pattern, out _)) return "windows-totp-value-pattern-unavailable";
+        return null;
+    }
+
+    internal object ApplyTotp(TotpFactorApplyRequest request, string code)
+    {
+        var invalid = ValidateTotpTarget(request);
+        if (invalid is not null) return new { status = "rejected", evidence = new[] { invalid } };
+        var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
+        if (current is null) return new { status = "rejected", evidence = new[] { "windows-totp-target-missing" } };
+        if (!current.TryGetCurrentPattern(ValuePattern.Pattern, out var valuePattern))
+            return new { status = "rejected", evidence = new[] { "windows-totp-value-pattern-unavailable" } };
+        try
+        {
+            ((ValuePattern)valuePattern).SetValue(code);
+            return new { status = "completed", evidence = new[] { "windows-totp-uia-applied" } };
+        }
+        catch (ElementNotAvailableException) { return ReconcileTotpDispatch(request, code, "windows-totp-uia-element-unavailable-after-dispatch"); }
+        catch (InvalidOperationException) { return ReconcileTotpDispatch(request, code, "windows-totp-uia-invalid-operation-after-dispatch"); }
+        catch (COMException) { return ReconcileTotpDispatch(request, code, "windows-totp-uia-com-error-after-dispatch"); }
+    }
+
+    private object ReconcileTotpDispatch(TotpFactorApplyRequest request, string code, string unknownEvidence)
+    {
+        try
+        {
+            var invalid = ValidateTotpTarget(request);
+            if (invalid is not null) return new { status = "unknown", evidence = new[] { unknownEvidence } };
+            var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
+            if (current is null || !current.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern))
+                return new { status = "unknown", evidence = new[] { unknownEvidence } };
+            var observed = ((ValuePattern)pattern).Current.Value;
+            return StringComparer.Ordinal.Equals(observed, code)
+                ? new { status = "completed", evidence = new[] { "windows-totp-native-reconciled" } }
+                : new { status = "unknown", evidence = new[] { unknownEvidence } };
+        }
+        catch
+        {
+            return new { status = "unknown", evidence = new[] { unknownEvidence } };
+        }
+    }
+
     private static class CredentialNativeMethods
     {
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

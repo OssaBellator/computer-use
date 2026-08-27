@@ -85,6 +85,11 @@ internal sealed record CredentialApplyRequest(
     string CredentialRef,
     ControlRefDto Ref,
     string Purpose);
+internal sealed record TotpFactorApplyRequest(
+    string ThreadToken,
+    string FactorRef,
+    ControlRefDto Ref,
+    string Purpose);
 internal sealed record WindowStatesRequest(WindowRefDto[] Windows);
 internal sealed record UiaEventRegisterRequest(
     string ThreadToken,

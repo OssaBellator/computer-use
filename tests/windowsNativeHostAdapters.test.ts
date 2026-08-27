@@ -6,6 +6,7 @@ import {
   WindowsNativeHostCredentialBroker,
   WindowsNativeHostIntegrityReader,
   WindowsNativeHostSendInputBridge,
+  WindowsNativeHostTotpFactorBroker,
   WindowsNativeHostUiaClient,
 } from '../src/computer/windowsNativeHostAdapters.js';
 import type { WindowsUiaWindowRef, WindowsUiaControlRef } from '../src/computer/windowsUiaContract.js';
@@ -107,6 +108,23 @@ test('credential adapter sends only opaque reference, purpose, thread token and 
   await assert.rejects(()=>malformed.applyCredential({credentialRef:'vault:example-login',target:passwordTarget,purpose:'authenticate'}),/credential-response-invalid/);
   const leaking=new WindowsNativeHostCredentialBroker(protocol(()=>({status:'applied',evidence:['native-applied'],secret:'must-not-cross'})),'uia-mta');
   await assert.rejects(()=>leaking.applyCredential({credentialRef:'vault:example-login',target:passwordTarget,purpose:'authenticate'}),/credential-response-invalid/);
+});
+
+test('TOTP adapter sends only opaque factor reference, purpose, thread token and exact target',async()=>{
+  let body:unknown;
+  const broker=new WindowsNativeHostTotpFactorBroker(protocol((operation,value)=>{
+    if(operation==='factor.totp.apply'){body=value;return {status:'completed',evidence:['windows-totp-uia-applied']};}
+    return {};
+  }),'uia-mta');
+  const target={...ref,controlType:'Edit'};
+  const result=await broker.performFactor({factorRef:'factor:totp:work',purpose:'authenticate',kind:'totp',target});
+  assert.deepEqual(body,{threadToken:'uia-mta',factorRef:'factor:totp:work',ref:target,purpose:'authenticate'});
+  assert.deepEqual(result,{status:'completed',evidence:['windows-totp-uia-applied']});
+  assert.equal(JSON.stringify(body).includes('code'),false);
+  assert.equal(JSON.stringify(body).includes('seed'),false);
+  await assert.rejects(()=>broker.performFactor({factorRef:'factor:passkey:work',purpose:'authenticate',kind:'passkey'}),/totp-request-invalid/);
+  const leaking=new WindowsNativeHostTotpFactorBroker(protocol(()=>({status:'completed',code:'123456'})),'uia-mta');
+  await assert.rejects(()=>leaking.performFactor({factorRef:'factor:totp:work',purpose:'authenticate',kind:'totp',target}),/totp-response-invalid/);
 });
 
 test('integrity and SendInput adapters require bounded numeric native results and exact authority payload', async () => {

@@ -75,6 +75,11 @@ test('credential capability requires exact target revalidation plus the native e
   assert.equal(support(deriveWindowsNativeHostCapabilityProfile(['hello','credential.apply']),'credential-brokered-use'),'unsupported');
 });
 
+test('native TOTP advertises partial factor support rather than implying passkey or Hello support',()=>{
+  const profile=deriveWindowsNativeHostCapabilityProfile(['hello','factor.totp.apply']);
+  assert.equal(support(profile,'authentication-factor-brokered-use'),'partial');
+});
+
 test('missing integrity operations cannot advertise guarded native input',()=>{
   const profile=deriveWindowsNativeHostCapabilityProfile(['hello','input.send']);
   assert.equal(support(profile,'keyboard-input'),'supported');
