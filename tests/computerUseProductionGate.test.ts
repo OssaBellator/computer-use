@@ -26,7 +26,7 @@ function policy(minAttempted=1):ComputerUseProductionGatePolicy{
   return {
     policyId:'test-production-policy',
     stratumRequirements:COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({
-      stratum,minAttempted,minAttemptedTrials:minAttempted,minSuccessRate:1,maxFailed:0,maxUnknown:0,minDistinctEmbodiments:1,minDistinctSources:1,
+      stratum,minAttempted,minAttemptedTrials:minAttempted,minSuccessRate:1,maxFailed:0,maxUnknown:0,minDistinctEmbodiments:1,minDistinctSources:1,minDistinctApplications:1,minDistinctProviderFamilies:1,
     })),
     claimRequirements:COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,minPassingCases:1})),
     requiredSourceKinds:['automated-test','execution-receipt'],
@@ -117,6 +117,19 @@ test('production corpus diversity is independent from source and embodiment brea
   assert.deepEqual(decision.corpusDiversity,{distinctApplications:1,distinctProviderFamilies:1});
   assert.ok(decision.blockers.includes('corpus:application-breadth-below-threshold'));
   assert.ok(decision.blockers.includes('corpus:provider-family-breadth-below-threshold'));
+});
+
+test('production policy can require application and provider breadth inside a specific stratum',()=>{
+  const cases=corpus();
+  const strict={...policy(),stratumRequirements:policy().stratumRequirements.map((entry)=>entry.stratum==='primitive-action'?{...entry,minDistinctApplications:2,minDistinctProviderFamilies:2}:entry)};
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases));
+  const measured=decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!;
+  assert.equal(measured.distinctApplications,1);
+  assert.equal(measured.distinctProviderFamilies,1);
+  assert.ok(decision.blockers.includes('stratum:primitive-action:application-breadth-below-threshold'));
+  assert.ok(decision.blockers.includes('stratum:primitive-action:provider-family-breadth-below-threshold'));
+  assert.ok(decision.blockers.includes('release-environment:test-release-environment:stratum:primitive-action:application-breadth-below-threshold'));
+  assert.ok(decision.blockers.includes('release-environment:test-release-environment:stratum:primitive-action:provider-family-breadth-below-threshold'));
 });
 
 test('production breadth policy rejects repeated single-embodiment or single-source evidence',()=>{
@@ -249,6 +262,8 @@ test('production policy must enumerate every stratum and safety claim with bound
   assert.throws(()=>validateComputerUseProductionGatePolicy(invalid),/computer-use-production-claim-policy-incomplete/);
   const badRate={...policy(),stratumRequirements:policy().stratumRequirements.map((entry,index)=>index===0?{...entry,minSuccessRate:1.1}:entry)};
   assert.throws(()=>validateComputerUseProductionGatePolicy(badRate),/computer-use-production-stratum-threshold-invalid/);
+  const badStratumDiversity={...policy(),stratumRequirements:policy().stratumRequirements.map((entry,index)=>index===0?{...entry,minDistinctApplications:0}:entry)};
+  assert.throws(()=>validateComputerUseProductionGatePolicy(badStratumDiversity),/computer-use-production-stratum-threshold-invalid/);
   assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),minDistinctApplications:0}),/computer-use-production-corpus-diversity-policy-invalid/);
   assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),minDistinctProviderFamilies:0}),/computer-use-production-corpus-diversity-policy-invalid/);
   assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),requiredReleaseEnvironments:[]}),/computer-use-production-release-environment-policy-invalid/);

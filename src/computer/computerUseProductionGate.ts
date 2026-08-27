@@ -50,6 +50,9 @@ export interface ComputerUseProductionStratumRequirement {
   readonly minDistinctEmbodiments:number;
   /** Breadth must also span replay-identifiable evidence sources. */
   readonly minDistinctSources:number;
+  /** Application/provider breadth can be required inside each safety stratum, not only globally. */
+  readonly minDistinctApplications:number;
+  readonly minDistinctProviderFamilies:number;
 }
 export interface ComputerUseProductionClaimRequirement {
   readonly claim:ComputerUseProductionSafetyClaim;
@@ -100,6 +103,8 @@ export interface ComputerUseProductionStratumBreadth {
   readonly attemptedTrials:number;
   readonly distinctEmbodiments:number;
   readonly distinctSources:number;
+  readonly distinctApplications:number;
+  readonly distinctProviderFamilies:number;
 }
 export interface ComputerUseProductionReleaseEnvironmentCoverage {
   readonly environmentId:string;
@@ -159,7 +164,7 @@ export function validateComputerUseProductionGatePolicy(policy:ComputerUseProduc
     if(strata.has(item.stratum))throw new Error('computer-use-production-stratum-policy-duplicate');
     strata.add(item.stratum);
     if(!safeInt(item.minAttempted,1)||!safeInt(item.minAttemptedTrials,1)||!safeRate(item.minSuccessRate)||!safeInt(item.maxFailed)||!safeInt(item.maxUnknown)||
-      !safeInt(item.minDistinctEmbodiments,1)||!safeInt(item.minDistinctSources,1))
+      !safeInt(item.minDistinctEmbodiments,1)||!safeInt(item.minDistinctSources,1)||!safeInt(item.minDistinctApplications,1)||!safeInt(item.minDistinctProviderFamilies,1))
       throw new Error('computer-use-production-stratum-threshold-invalid');
   }
   if(!Array.isArray(policy.claimRequirements)||policy.claimRequirements.length!==COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.length)
@@ -266,9 +271,13 @@ export function evaluateComputerUseProductionGate(
     const sources=new Set<string>();
     for(const entry of attempted)for(const source of entry.sources??[])
       sources.add(source.independenceId??`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
-    stratumBreadth.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials:summary.attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
+    const stratumApplications=new Set(attempted.map((entry)=>entry.applicationId).filter((value):value is string=>value!==undefined));
+    const stratumProviders=new Set(attempted.map((entry)=>entry.providerFamily).filter((value):value is string=>value!==undefined));
+    stratumBreadth.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials:summary.attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size,distinctApplications:stratumApplications.size,distinctProviderFamilies:stratumProviders.size}));
     if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
     if(sources.size<requirement.minDistinctSources)blockers.push(`stratum:${requirement.stratum}:source-breadth-below-threshold`);
+    if(stratumApplications.size<requirement.minDistinctApplications)blockers.push(`stratum:${requirement.stratum}:application-breadth-below-threshold`);
+    if(stratumProviders.size<requirement.minDistinctProviderFamilies)blockers.push(`stratum:${requirement.stratum}:provider-family-breadth-below-threshold`);
   }
 
   const observedSourceKinds=new Set<ComputerUseEvaluationSourceKind>();
@@ -337,7 +346,9 @@ export function evaluateComputerUseProductionGate(
       const sources=new Set<string>();
       for(const entry of attempted)for(const source of entry.sources??[])if(source.environmentId===environmentId)
         sources.add(source.independenceId??`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
-      environmentStrata.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
+      const stratumApplications=new Set(attempted.map((entry)=>entry.applicationId).filter((value):value is string=>value!==undefined));
+      const stratumProviders=new Set(attempted.map((entry)=>entry.providerFamily).filter((value):value is string=>value!==undefined));
+      environmentStrata.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size,distinctApplications:stratumApplications.size,distinctProviderFamilies:stratumProviders.size}));
       if(attempted.length<requirement.minAttempted)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:attempted-below-threshold`);
       if(attemptedTrials<requirement.minAttemptedTrials)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:trials-below-threshold`);
       if(successRate<requirement.minSuccessRate)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:success-rate-below-threshold`);
@@ -345,6 +356,8 @@ export function evaluateComputerUseProductionGate(
       if(unknown>requirement.maxUnknown)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:unknown-above-threshold`);
       if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
       if(sources.size<requirement.minDistinctSources)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:source-breadth-below-threshold`);
+      if(stratumApplications.size<requirement.minDistinctApplications)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:application-breadth-below-threshold`);
+      if(stratumProviders.size<requirement.minDistinctProviderFamilies)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:provider-family-breadth-below-threshold`);
     }
     const environmentApplications=new Set(environmentAttempted.map((entry)=>entry.applicationId).filter((value):value is string=>value!==undefined));
     const environmentProviders=new Set(environmentAttempted.map((entry)=>entry.providerFamily).filter((value):value is string=>value!==undefined));
