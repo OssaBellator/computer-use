@@ -87,7 +87,7 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
 });
 
 test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,41);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,42);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
@@ -97,10 +97,15 @@ test('DKG85 expanded provider-diversity corpus retains protected-VM WPF groundin
   assert.equal(primitive.attempted,13);
   assert.equal(verification.attempted,7);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='grounding')!.attempted,6);
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!.attempted,6);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!.attempted,7);
   const foregroundRefusal=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-provider-unavailable-foreground-refusal')!;
   assert.equal(foregroundRefusal.outcome,'passed');
   assert.ok(foregroundRefusal.evidence?.includes('no-raw-dispatch'));
+  assert.equal(foregroundRefusal.sources?.[0]?.sourceId,'uca_dp11_wpf_pinned_vm_0827_02');
+  const semanticSuccess=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-semantic-success-no-fallback')!;
+  assert.equal(semanticSuccess.outcome,'passed');
+  assert.ok(semanticSuccess.evidence?.includes('no-raw-fallback'));
+  assert.equal(semanticSuccess.sources?.[0]?.sourceId,'uca_dp11_wpf_pinned_host_0827_01');
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='long-horizon-mixed-interface')!.attempted,5);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='hostile-content-prompt-injection')!.attempted,3);
   const semanticRepeats=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.filter((entry)=>entry.caseId.startsWith('dp11-vm-semantic-repeat-')&&entry.stratum==='primitive-action');
