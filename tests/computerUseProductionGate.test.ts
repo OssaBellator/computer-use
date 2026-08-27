@@ -40,10 +40,10 @@ function corpus():ComputerUseEvaluationCaseResult[]{
     stratum,
     outcome:'passed' as const,
     embodiment:'semantic-ui',
-    applicationId:'test-app',providerFamily:'test-provider',
+    applicationId:'test-app',providerFamily:'test-provider',enablementLevel:'CU-0' as const,
     sources:[
-      {kind:'automated-test' as const,sourceId:`test-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`},
-      {kind:'execution-receipt' as const,sourceId:`receipt-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`},
+      {kind:'automated-test' as const,sourceId:`test-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`,environmentId:'test-release-environment'},
+      {kind:'execution-receipt' as const,sourceId:`receipt-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`,environmentId:'test-release-environment'},
     ],
   }));
 }
@@ -173,6 +173,12 @@ test('production rollout evidence is exact to the selected CU level and must ref
   const failedCases=cases.map((entry,index)=>index===0?{...entry,outcome:'failed' as const}:entry);
   const failed=evaluateComputerUseProductionGate(policy(),failedCases,claimEvidence(caseId),proof,releaseEnvironmentEvidence(caseId));
   assert.ok(failed.blockers.includes(`enablement:CU-0:rollout-case-not-passed:${caseId}`));
+  const missingLevelCases=cases.map((entry,index)=>index===0?{...entry,enablementLevel:undefined}:entry);
+  const missingLevel=evaluateComputerUseProductionGate(policy(),missingLevelCases,claimEvidence(caseId),proof,releaseEnvironmentEvidence(caseId));
+  assert.ok(missingLevel.blockers.includes(`enablement:CU-0:rollout-case-level-missing:${caseId}`));
+  const wrongLevelCases=cases.map((entry,index)=>index===0?{...entry,enablementLevel:'CU-1' as const}:entry);
+  const wrongLevel=evaluateComputerUseProductionGate(policy(),wrongLevelCases,claimEvidence(caseId),proof,releaseEnvironmentEvidence(caseId));
+  assert.ok(wrongLevel.blockers.includes(`enablement:CU-0:rollout-case-level-mismatch:${caseId}:CU-1`));
   assert.equal(failed.authorityGranted,false);
 });
 
@@ -183,7 +189,8 @@ test('production target CU level must be eligible under the complete granular ca
     ...runtimeProof(cases[0]!.caseId),
     enablement:{capabilityProfile:{id:'partial-profile',capabilities:{'pointer-input':'partial'}},policies,targetLevel:'CU-1',rolloutCaseIds:[cases[0]!.caseId],disablementCaseIds:[cases[0]!.caseId]},
   };
-  const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),proof,releaseEnvironmentEvidence(cases[0]!.caseId));
+  const levelCases=cases.map((entry,index)=>index===0?{...entry,enablementLevel:'CU-1' as const}:entry);
+  const decision=evaluateComputerUseProductionGate(policy(),levelCases,claimEvidence(cases[0]!.caseId),proof,releaseEnvironmentEvidence(cases[0]!.caseId));
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('enablement:CU-1:capability-ineligible'));
   assert.equal(decision.authorityGranted,false);
@@ -198,6 +205,9 @@ test('release-environment proof must bind a required environment to a passing ca
   assert.ok(missing.blockers.includes('release-environment:test-release-environment:evidence-missing'));
   const wrongSource=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId,'not-a-source'));
   assert.ok(wrongSource.blockers.includes(`release-environment:test-release-environment:source-not-bound:${caseId}:not-a-source`));
+  const wrongEnvironmentCases=cases.map((entry)=>entry.caseId===caseId?{...entry,sources:entry.sources?.map((source)=>source.sourceId==='test-0'?{...source,environmentId:'other-environment'}:source)}:entry);
+  const wrongEnvironment=evaluateComputerUseProductionGate(policy(),wrongEnvironmentCases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId));
+  assert.ok(wrongEnvironment.blockers.includes(`release-environment:test-release-environment:source-environment-mismatch:${caseId}:test-0:other-environment`));
   const failedCases=cases.map((entry)=>entry.caseId===caseId?{...entry,outcome:'failed' as const}:entry);
   const failed=evaluateComputerUseProductionGate(policy(),failedCases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId));
   assert.ok(failed.blockers.includes(`release-environment:test-release-environment:case-not-passed:${caseId}`));

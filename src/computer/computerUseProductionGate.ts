@@ -262,8 +262,12 @@ export function evaluateComputerUseProductionGate(
       const entry=byId.get(binding.caseId);
       if(!entry){blockers.push(`release-environment:${environmentId}:case-missing:${binding.caseId}`);continue;}
       if(entry.outcome!=='passed'){blockers.push(`release-environment:${environmentId}:case-not-passed:${binding.caseId}`);continue;}
-      if(!entry.sources?.some((source)=>source.sourceId===binding.sourceId)){
+      const source=entry.sources?.find((candidate)=>candidate.sourceId===binding.sourceId);
+      if(!source){
         blockers.push(`release-environment:${environmentId}:source-not-bound:${binding.caseId}:${binding.sourceId}`);continue;
+      }
+      if(source.environmentId!==environmentId){
+        blockers.push(`release-environment:${environmentId}:source-environment-mismatch:${binding.caseId}:${binding.sourceId}:${source.environmentId??'missing'}`);continue;
       }
       validBindings+=1;
     }
@@ -286,6 +290,8 @@ export function evaluateComputerUseProductionGate(
     const entry=byId.get(caseId);
     if(!entry)blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-case-missing:${caseId}`);
     else if(entry.outcome!=='passed')blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-case-not-passed:${caseId}`);
+    else if(entry.enablementLevel===undefined)blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-case-level-missing:${caseId}`);
+    else if(entry.enablementLevel!==runtimeProof.enablement.targetLevel)blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-case-level-mismatch:${caseId}:${entry.enablementLevel}`);
   }
   for(const caseId of runtimeProof.enablement.disablementCaseIds){
     const entry=byId.get(caseId);

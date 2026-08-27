@@ -66,14 +66,17 @@ test('DKG85 application and provider-family identities are bounded when supplied
   assert.doesNotThrow(()=>validateEmpiricalComputerUseEvaluationCases([{...base,applicationId:'test-app',providerFamily:'test-provider',sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]));
   assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{...base,applicationId:'BAD APP',sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]),/computer-use-evaluation-application-id-invalid/);
   assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{...base,providerFamily:'BAD PROVIDER',sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]),/computer-use-evaluation-provider-family-invalid/);
+  assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{...base,enablementLevel:'CU-9' as never,sources:[{kind:'automated-test',sourceId:'source',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}]}]),/computer-use-evaluation-enablement-level-invalid/);
 });
 
 test('DKG85 empirical source independence identities are bounded tokens when supplied',()=>{
-  const cases=passingCases().map((entry,index)=>({...entry,sources:[{kind:'automated-test' as const,sourceId:`source-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`}]}));
+  const cases:ComputerUseEvaluationCaseResult[]=passingCases().map((entry,index)=>({...entry,sources:[{kind:'automated-test' as const,sourceId:`source-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`}]}));
   cases[0]={...cases[0]!,sources:[{kind:'automated-test',sourceId:'source-a',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:'run-a'}]};
   assert.doesNotThrow(()=>validateEmpiricalComputerUseEvaluationCases(cases));
   cases[0]={...cases[0]!,sources:[{kind:'automated-test',sourceId:'source-a',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:'bad id'}]};
   assert.throws(()=>validateEmpiricalComputerUseEvaluationCases(cases),/computer-use-evaluation-source-independence-id-invalid/);
+  cases[0]={...cases[0]!,sources:[{kind:'automated-test',sourceId:'source-a',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',environmentId:'bad environment'}]};
+  assert.throws(()=>validateEmpiricalComputerUseEvaluationCases(cases),/computer-use-evaluation-source-environment-id-invalid/);
 });
 
 test('DKG85 empirical cases require bounded replay-identifiable provenance',()=>{

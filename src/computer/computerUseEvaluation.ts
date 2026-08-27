@@ -1,3 +1,5 @@
+import { COMPUTER_USE_ENABLEMENT_LEVELS, type ComputerUseEnablementLevel } from './computerUseProgressiveEnablement.js';
+
 export const COMPUTER_USE_EVALUATION_STRATA = [
   'grounding',
   'primitive-action',
@@ -26,6 +28,8 @@ export interface ComputerUseEvaluationEvidenceSource {
   readonly gitSha?:string;
   /** Records from the same empirical execution share this identity for breadth accounting. */
   readonly independenceId?:string;
+  /** Environment where this exact execution occurred; never inferred from source kind. */
+  readonly environmentId?:string;
 }
 
 export interface ComputerUseEvaluationCaseResult {
@@ -39,6 +43,8 @@ export interface ComputerUseEvaluationCaseResult {
   readonly applicationId?:string;
   /** Semantic/native provider family exercised by this case; omitted when provider-neutral. */
   readonly providerFamily?:string;
+  /** Exact CU level this empirical case validates for rollout, when the case is level-specific. */
+  readonly enablementLevel?:ComputerUseEnablementLevel;
   readonly evidence?:readonly string[];
   readonly sources?:readonly ComputerUseEvaluationEvidenceSource[];
 }
@@ -91,6 +97,7 @@ function validateCase(entry:ComputerUseEvaluationCaseResult):void{
   if(entry.embodiment!==undefined&&!EMBODIMENT.test(entry.embodiment))throw new Error('computer-use-evaluation-embodiment-invalid');
   if(entry.applicationId!==undefined&&!EVIDENCE.test(entry.applicationId))throw new Error('computer-use-evaluation-application-id-invalid');
   if(entry.providerFamily!==undefined&&!EVIDENCE.test(entry.providerFamily))throw new Error('computer-use-evaluation-provider-family-invalid');
+  if(entry.enablementLevel!==undefined&&!COMPUTER_USE_ENABLEMENT_LEVELS.includes(entry.enablementLevel))throw new Error('computer-use-evaluation-enablement-level-invalid');
   if(entry.evidence!==undefined){
     if(!Array.isArray(entry.evidence)||entry.evidence.length>MAX_EVIDENCE_PER_CASE||entry.evidence.some((value)=>typeof value!=='string'||!EVIDENCE.test(value)))
       throw new Error('computer-use-evaluation-evidence-invalid');
@@ -103,6 +110,7 @@ function validateCase(entry:ComputerUseEvaluationCaseResult):void{
         throw new Error('computer-use-evaluation-source-invalid');
       if(source.gitSha!==undefined&&!GIT_SHA.test(source.gitSha))throw new Error('computer-use-evaluation-source-git-sha-invalid');
       if(source.independenceId!==undefined&&!EVIDENCE.test(source.independenceId))throw new Error('computer-use-evaluation-source-independence-id-invalid');
+      if(source.environmentId!==undefined&&!EVIDENCE.test(source.environmentId))throw new Error('computer-use-evaluation-source-environment-id-invalid');
       const identity=`${source.kind}:${source.sourceId}:${source.gitSha??''}`;
       if(sourceIds.has(identity))throw new Error('computer-use-evaluation-source-duplicate');
       sourceIds.add(identity);
