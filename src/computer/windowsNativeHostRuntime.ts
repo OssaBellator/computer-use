@@ -1,6 +1,7 @@
 import { DesktopInteractionLeaseManager } from './desktopInteractionLease.js';
 import { WindowsComApartmentExecutor } from './windowsComApartment.js';
 import { WindowsGraphicsCaptureRuntime } from './windowsGraphicsCaptureRuntime.js';
+import { WindowsInteractiveHostLeaseService } from './windowsInteractiveHostLease.js';
 import { WindowsNativeHostCaptureBridge, WindowsNativeHostIntegrityReader, WindowsNativeHostSendInputBridge, WindowsNativeHostUiaClient } from './windowsNativeHostAdapters.js';
 import { WindowsNativeHostComApartmentHost } from './windowsNativeHostComApartment.js';
 import { WindowsNativeHostHumanInputObserver } from './windowsNativeHostHumanInput.js';
@@ -57,6 +58,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
   const integrity=has(implemented,'integrity.current','integrity.process');
   const capture=has(implemented,'capture.next-frame','artifact.release');
   const human=has(implemented,'input.human-sequence');
+  const foregroundLease=has(implemented,'system.windows')&&input&&human;
   return Object.freeze({
     id:'windows-native-host',
     capabilities:Object.freeze({
@@ -76,10 +78,10 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'keyboard-input':capability(input?'supported':'unsupported'),
       'pointer-input':capability(input?'supported':'unsupported'),
       'input-integrity-gating':capability(integrity&&input?'supported':'unsupported'),
-      'foreground-interaction-lease':capability(input&&human?'partial':'unsupported','target/expiry/human lease model exists; foreground acquisition policy remains caller-composed'),
+      'foreground-interaction-lease':capability(foregroundLease?'supported':'unsupported',foregroundLease?undefined:'exact foreground observation + human monitor + guarded native input unavailable'),
       'human-interference-detection':capability(human?'supported':'unsupported','native non-injected input monitor is unavailable'),
       'transient-capture-retention':capability(capture?'supported':'unsupported','no live native artifact producer exists in this host/session'),
-      'side-effect-verification':capability('partial','verification remains a separate post-action observation/reconciliation layer'),
+      'side-effect-verification':capability('partial','verification runtime exists; an authoritative action-specific observation predicate remains caller-supplied'),
     }),
   });
 }
@@ -107,6 +109,7 @@ export interface WindowsNativeHostRuntime {
   readonly input:WindowsNativeHostSendInputBridge;
   readonly humanInput?:WindowsNativeHostHumanInputObserver;
   readonly leases?:DesktopInteractionLeaseManager;
+  readonly interactiveLeases?:WindowsInteractiveHostLeaseService;
   readonly capture?:WindowsGraphicsCaptureRuntime;
   readonly retention?:WindowsVisualArtifactRetentionManager;
   readonly retainedCapture?:WindowsRetainedGraphicsCaptureRuntime;
@@ -156,6 +159,9 @@ export async function openWindowsNativeHostRuntime(
 
     const humanInput=implementedSet.has('input.human-sequence')?new WindowsNativeHostHumanInputObserver(protocol):undefined;
     const leases=humanInput?new DesktopInteractionLeaseManager(humanInput):undefined;
+    const interactiveLeases=leases&&implementedSet.has('system.windows')&&implementedSet.has('input.send')
+      ?new WindowsInteractiveHostLeaseService(system,leases)
+      :undefined;
 
     let capture:WindowsGraphicsCaptureRuntime|undefined;
     let retention:WindowsVisualArtifactRetentionManager|undefined;
@@ -177,6 +183,7 @@ export async function openWindowsNativeHostRuntime(
       integrity,input,
       ...(humanInput?{humanInput}:{}),
       ...(leases?{leases}:{}),
+      ...(interactiveLeases?{interactiveLeases}:{}),
       ...(capture?{capture}:{}),
       ...(retention?{retention}:{}),
       ...(retainedCapture?{retainedCapture}:{}),
