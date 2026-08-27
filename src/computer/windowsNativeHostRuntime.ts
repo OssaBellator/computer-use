@@ -15,7 +15,7 @@ import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
 import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
-import { WindowsVisualGroundingProvider, type WindowsVisualGroundingBackend } from './windowsVisualGroundingProvider.js';
+import { WindowsRetainedVisualGroundingRuntime, WindowsVisualGroundingProvider, type WindowsVisualGroundingBackend } from './windowsVisualGroundingProvider.js';
 
 const VALID_OPERATIONS=new Set<WindowsNativeHostOperation>(WINDOWS_NATIVE_HOST_OPERATIONS);
 
@@ -94,6 +94,8 @@ function composeCapabilityProfile(
 ):WindowsProviderCapabilityProfile {
   const base=deriveWindowsNativeHostCapabilityProfile(operations);
   if(!visualGrounding)return base;
+  const implemented=new Set(operations);
+  if(!implemented.has('artifact.consume'))return base;
   return Object.freeze({
     id:base.id,
     capabilities:Object.freeze({...base.capabilities,'visual-grounding':'supported' as const}),
@@ -116,6 +118,7 @@ export interface WindowsNativeHostRuntime {
   readonly retention?:WindowsVisualArtifactRetentionManager;
   readonly retainedCapture?:WindowsRetainedGraphicsCaptureRuntime;
   readonly visualGrounding?:WindowsVisualGroundingProvider;
+  readonly retainedVisualGrounding?:WindowsRetainedVisualGroundingRuntime;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
@@ -177,6 +180,9 @@ export async function openWindowsNativeHostRuntime(
     const visualGrounding=capture&&options?.visualGroundingBackend
       ?new WindowsVisualGroundingProvider(options.visualGroundingBackend)
       :undefined;
+    const retainedVisualGrounding=visualGrounding&&retention&&implementedSet.has('artifact.consume')
+      ?new WindowsRetainedVisualGroundingRuntime(visualGrounding,retention)
+      :undefined;
 
     let closed=false;
     return Object.freeze({
@@ -190,7 +196,8 @@ export async function openWindowsNativeHostRuntime(
       ...(retention?{retention}:{}),
       ...(retainedCapture?{retainedCapture}:{}),
       ...(visualGrounding?{visualGrounding}:{}),
-      capabilities:composeCapabilityProfile(implemented,visualGrounding!==undefined),
+      ...(retainedVisualGrounding?{retainedVisualGrounding}:{}),
+      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;
