@@ -87,11 +87,21 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
 });
 
 test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,11);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,26);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.failedCases,1);
+  const primitive=DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='primitive-action')!;
+  const verification=DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='state-transition-verification')!;
+  assert.equal(primitive.attempted,13);
+  assert.equal(verification.attempted,7);
+  const semanticRepeats=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.filter((entry)=>entry.caseId.startsWith('dp11-vm-semantic-repeat-')&&entry.stratum==='primitive-action');
+  const rawRepeats=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.filter((entry)=>entry.caseId.startsWith('dp11-vm-raw-repeat-'));
+  assert.equal(semanticRepeats.length,5);
+  assert.equal(rawRepeats.length,5);
+  assert.equal(new Set(semanticRepeats.flatMap((entry)=>entry.sources?.map((source)=>source.sourceId)??[])).size,1);
+  assert.equal(new Set(rawRepeats.flatMap((entry)=>entry.sources?.map((source)=>source.sourceId)??[])).size,1);
   const raw=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-vm-raw-primitive-actions')!;
   assert.equal(raw.outcome,'passed');
   assert.equal(raw.embodiment,'raw-coordinate');

@@ -7,6 +7,7 @@ import {
 const EVIDENCE_SHA='a43015db804b28b338af1a9cd76c00e1df860895';
 const FULL_SUITE_RECEIPT='xrc_mtb427va_f0d5d32d439491bc154a01b7';
 const WPF_EVIDENCE_SHA='ce14a09a64de03862226b945ff7d4d2bfb827e79';
+const REPEAT_EVIDENCE_SHA='2af373cf4375c2d4a9ff73a35900f5dfbb27ee93';
 
 function automated(sourceId:string){
   return Object.freeze([
@@ -91,6 +92,25 @@ export const DP11_WINDOWS_EMPIRICAL_BASELINE=Object.freeze({
  * grounding case: environment/provider unavailability is evaluation evidence,
  * not something to erase by falling back silently or relabel as action success.
  */
+const repeatedSemanticPrimitive=Object.freeze(Array.from({length:5},(_,index)=>Object.freeze({
+  caseId:`dp11-vm-semantic-repeat-${index+1}-primitive`,
+  stratum:'primitive-action' as const,outcome:'passed' as const,embodiment:'semantic-ui',
+  evidence:Object.freeze([`repeat-iteration-${index+1}`,'value-pattern-pass','invoke-pattern-pass','range-value-pattern-pass','window-pattern-pass']),
+  sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_smoke_repeat_vm_sem5_27aug26_au11',gitSha:REPEAT_EVIDENCE_SHA})]),
+})));
+const repeatedSemanticVerification=Object.freeze(Array.from({length:5},(_,index)=>Object.freeze({
+  caseId:`dp11-vm-semantic-repeat-${index+1}-verification`,
+  stratum:'state-transition-verification' as const,outcome:'passed' as const,embodiment:'semantic-ui',
+  evidence:Object.freeze([`repeat-iteration-${index+1}`,'edit-readback-verified','result-transition-verified','range-readback-verified','window-state-verified']),
+  sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_smoke_repeat_vm_sem5_27aug26_au11',gitSha:REPEAT_EVIDENCE_SHA})]),
+})));
+const repeatedRawPrimitive=Object.freeze(Array.from({length:5},(_,index)=>Object.freeze({
+  caseId:`dp11-vm-raw-repeat-${index+1}-primitive`,
+  stratum:'primitive-action' as const,outcome:'passed' as const,embodiment:'raw-coordinate',
+  evidence:Object.freeze([`repeat-iteration-${index+1}`,'raw-text-button-pass','raw-range-73-pass','raw-window-state-pass','raw-evidence-remains-weak']),
+  sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_smoke_repeat_vm_raw5_27aug26_au72',gitSha:REPEAT_EVIDENCE_SHA})]),
+})));
+
 export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluationCaseResult[]=Object.freeze([
   ...DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
   Object.freeze({
@@ -99,6 +119,9 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
     evidence:Object.freeze(['raw-text-button-pass','raw-range-73-pass','raw-window-state-pass','raw-evidence-remains-weak']),
     sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_dkg85_vm_raw_immediate_20260827',gitSha:EVIDENCE_SHA})]),
   }),
+  ...repeatedSemanticPrimitive,
+  ...repeatedSemanticVerification,
+  ...repeatedRawPrimitive,
   Object.freeze({
     caseId:'dp11-wpf-host-primitive-actions',
     stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',

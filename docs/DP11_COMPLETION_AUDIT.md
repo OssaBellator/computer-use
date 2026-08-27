@@ -23,6 +23,7 @@ The originally supplied `DP11 preparation and expansion^.docx` physically trunca
 - `270f092a7eb1863b224f91a9cf46bba19c879e51` — sourced DKG85 baseline evidence, exact receipt `xrc_mtb4sdji_8e1951981cf965689f2976c6`, 251/251 PASS.
 - Fresh protected-Windows-Sandbox smoke evidence on the unchanged WinForms target separately proved `semantic-only` Value/Invoke/RangeValue/Window execution and verification plus `raw-only` equivalent text/button, range=73, and minimize/restore effects. Raw success remains weak evidence and never upgrades to semantic authority.
 - Exact committed WPF target `ce14a09a64de03862226b945ff7d4d2bfb827e79` broadens provider coverage: normal-host run `uca_wpf_exact_host_27aug26_z11a` exposed Value/Invoke/Toggle/RangeValue/SelectionItem/Window and verified every transition, while protected-VM run `uca_wpf_exact_vm_27aug26_z62b` failed before semantic dispatch with COM `0x8000401A`. The expanded DKG85 corpus retains that VM result as a failed grounding/provider-availability case, so provider diversity currently makes the empirical summary less green rather than hiding an environment-specific failure.
+- Exact published WinForms smoke `2af373cf4375c2d4a9ff73a35900f5dfbb27ee93` supports bounded batch repetitions. Protected-VM batch sources `uca_smoke_repeat_vm_sem5_27aug26_au11` and `uca_smoke_repeat_vm_raw5_27aug26_au72` each completed 5/5 iterations. These raise attempted/repetition counts while remaining one source each, so they cannot manufacture source breadth.
 
 ## Stronger production gate still open
 
