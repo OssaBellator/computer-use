@@ -67,6 +67,7 @@ export * from './computer/observationTrust.js';
 export * from './computer/consequenceAuthority.js';
 export * from './computer/desktopInteractionLease.js';
 export * from './computer/groundingResolver.js';
+export * from './computer/computerUseEvaluation.js';
 export * from './computer/windowsUiaEmbodimentRouting.js';
 export * from './computer/windowsComApartment.js';
 export * from './computer/windowsUiaContract.js';

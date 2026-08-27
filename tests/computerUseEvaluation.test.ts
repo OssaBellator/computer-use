@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  COMPUTER_USE_EVALUATION_STRATA,
+  summarizeComputerUseEvaluation,
+  type ComputerUseEvaluationCaseResult,
+} from '../src/computer/computerUseEvaluation.js';
+
+function passingCases():ComputerUseEvaluationCaseResult[]{
+  return COMPUTER_USE_EVALUATION_STRATA.map((stratum,index)=>({
+    caseId:`case-${index}`,
+    stratum,
+    outcome:'passed' as const,
+    evidence:[`evidence-${index}`],
+  }));
+}
+
+test('DKG85 evaluation requires all seven strata before complete/passing',()=>{
+  const cases=passingCases();
+  const incomplete=summarizeComputerUseEvaluation(cases.slice(0,-1));
+  assert.equal(incomplete.complete,false);
+  assert.equal(incomplete.passing,false);
+  assert.deepEqual(incomplete.missingStrata,['hostile-content-prompt-injection']);
+  const complete=summarizeComputerUseEvaluation(cases);
+  assert.equal(complete.complete,true);
+  assert.equal(complete.passing,true);
+  assert.equal(complete.passedCases,7);
+  assert.equal(complete.successRate,1);
+});
+
+test('DKG85 UNKNOWN or failed cases prevent passing and remain quantitative',()=>{
+  const cases=passingCases();
+  cases.push({caseId:'recovery-unknown',stratum:'recovery-fault-injection',outcome:'unknown'});
+  cases.push({caseId:'grounding-failure',stratum:'grounding',outcome:'failed'});
+  const summary=summarizeComputerUseEvaluation(cases);
+  assert.equal(summary.complete,true);
+  assert.equal(summary.passing,false);
+  assert.equal(summary.unknownCases,1);
+  assert.equal(summary.failedCases,1);
+  const recovery=summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!;
+  assert.deepEqual({attempted:recovery.attempted,passed:recovery.passed,unknown:recovery.unknown,successRate:recovery.successRate,passing:recovery.passing},{attempted:2,passed:1,unknown:1,successRate:0.5,passing:false});
+});
+
+test('DKG85 skipped-only stratum stays missing rather than becoming coverage',()=>{
+  const cases=passingCases().filter((entry)=>entry.stratum!=='cross-embodiment-equivalence');
+  cases.push({caseId:'equivalence-skipped',stratum:'cross-embodiment-equivalence',outcome:'skipped'});
+  const summary=summarizeComputerUseEvaluation(cases);
+  assert.equal(summary.complete,false);
+  assert.ok(summary.missingStrata.includes('cross-embodiment-equivalence'));
+  const equivalence=summary.strata.find((entry)=>entry.stratum==='cross-embodiment-equivalence')!;
+  assert.deepEqual({attempted:equivalence.attempted,skipped:equivalence.skipped,complete:equivalence.complete},{attempted:0,skipped:1,complete:false});
+});
+
+test('DKG85 case ledger rejects duplicate and malformed evidence instead of obscuring evaluation identity',()=>{
+  assert.throws(()=>summarizeComputerUseEvaluation([
+    {caseId:'dup',stratum:'grounding',outcome:'passed'},
+    {caseId:'dup',stratum:'primitive-action',outcome:'passed'},
+  ]),/computer-use-evaluation-case-duplicate/);
+  assert.throws(()=>summarizeComputerUseEvaluation([
+    {caseId:'bad-evidence',stratum:'grounding',outcome:'passed',evidence:['not allowed whitespace']},
+  ]),/computer-use-evaluation-evidence-invalid/);
+});

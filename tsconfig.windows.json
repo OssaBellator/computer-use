@@ -10,6 +10,7 @@
     "tests/consequenceAuthority.test.ts",
     "tests/dp11Foundations.test.ts",
     "tests/computerTaskCheckpointReview.test.ts",
+    "tests/computerUseEvaluation.test.ts",
     "tests/windows*.test.ts"
   ],
   "exclude": [
