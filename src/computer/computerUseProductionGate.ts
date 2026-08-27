@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ComputerCapabilityProfile } from './computerCapabilities.js';
+import { COMPUTER_CAPABILITIES, type ComputerCapability, type ComputerCapabilityProfile } from './computerCapabilities.js';
 import {
   COMPUTER_USE_EVALUATION_SOURCE_KINDS,
   COMPUTER_USE_EVALUATION_STRATA,
@@ -11,6 +11,7 @@ import {
 } from './computerUseEvaluation.js';
 import {
   assessComputerUseEnablement,
+  COMPUTER_USE_ENABLEMENT_LEVELS,
   type ComputerUseEnablementLevel,
   type ComputerUseEnablementLevelPolicy,
 } from './computerUseProgressiveEnablement.js';
@@ -99,10 +100,17 @@ export interface ComputerUseProductionEnablementProof {
   readonly rolloutCaseIds:readonly string[];
   readonly disablementCaseIds:readonly string[];
 }
+export interface ComputerUseProductionEnablementApproval {
+  readonly enablementDigest:string;
+  readonly approvalId:string;
+  readonly reviewSourceId:string;
+  readonly reviewGitSha:string;
+}
 export interface ComputerUseProductionRuntimeProof {
   readonly zeroToleranceIncidents:ComputerUseZeroToleranceIncidentCounts;
   readonly zeroToleranceIncidentEvidence:readonly ComputerUseZeroToleranceIncidentEvidence[];
   readonly enablement:ComputerUseProductionEnablementProof;
+  readonly enablementApproval?:ComputerUseProductionEnablementApproval;
 }
 export interface ComputerUseProductionStratumBreadth {
   readonly stratum:ComputerUseEvaluationStratum;
@@ -137,6 +145,7 @@ export interface ComputerUseProductionGateDecision {
   readonly satisfiedReleaseEnvironments:readonly string[];
   readonly releaseEnvironmentCoverage:readonly ComputerUseProductionReleaseEnvironmentCoverage[];
   readonly policyApprovalSatisfied:boolean;
+  readonly enablementApprovalSatisfied:boolean;
   readonly targetEnablement:ReturnType<typeof assessComputerUseEnablement>;
 }
 
@@ -149,6 +158,47 @@ function safeInt(value:unknown,min=0,max=MAX_THRESHOLD):value is number {
 }
 function safeRate(value:unknown):value is number {
   return typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=1;
+}
+const CAPABILITY_NOTE=/^[\x20-\x7e]{1,512}$/;
+function normalizeCapabilityProfile(profile:ComputerCapabilityProfile):Readonly<{id:string;capabilities:readonly Readonly<{capability:ComputerCapability;support:string;note?:string}>[]}> {
+  if(!profile||typeof profile!=='object'||!TOKEN.test(profile.id)||!profile.capabilities||typeof profile.capabilities!=='object'||Array.isArray(profile.capabilities))
+    throw new Error('computer-use-production-capability-profile-invalid');
+  const capabilities:Readonly<{capability:ComputerCapability;support:string;note?:string}>[]=[];
+  for(const [key,value] of Object.entries(profile.capabilities)){
+    if(!COMPUTER_CAPABILITIES.includes(key as ComputerCapability))throw new Error('computer-use-production-capability-profile-invalid');
+    let support:unknown;
+    let note:unknown;
+    if(typeof value==='string')support=value;
+    else if(value&&typeof value==='object'&&!Array.isArray(value)){support=(value as {support?:unknown}).support;note=(value as {note?:unknown}).note;}
+    else throw new Error('computer-use-production-capability-profile-invalid');
+    if(!['supported','partial','unsupported'].includes(support as string)||
+      (note!==undefined&&(typeof note!=='string'||!CAPABILITY_NOTE.test(note))))throw new Error('computer-use-production-capability-profile-invalid');
+    capabilities.push(Object.freeze({capability:key as ComputerCapability,support:support as string,...(note!==undefined?{note:note as string}:{})}));
+  }
+  capabilities.sort((a,b)=>COMPUTER_CAPABILITIES.indexOf(a.capability)-COMPUTER_CAPABILITIES.indexOf(b.capability));
+  return Object.freeze({id:profile.id,capabilities:Object.freeze(capabilities)});
+}
+function validateEnablementProof(enablement:ComputerUseProductionEnablementProof):void {
+  if(!enablement||typeof enablement!=='object'||!Array.isArray(enablement.rolloutCaseIds)||enablement.rolloutCaseIds.length>MAX_THRESHOLD||
+    new Set(enablement.rolloutCaseIds).size!==enablement.rolloutCaseIds.length||enablement.rolloutCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id))||
+    !Array.isArray(enablement.disablementCaseIds)||enablement.disablementCaseIds.length===0||enablement.disablementCaseIds.length>MAX_THRESHOLD||
+    new Set(enablement.disablementCaseIds).size!==enablement.disablementCaseIds.length||enablement.disablementCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
+    throw new Error('computer-use-production-enablement-proof-invalid');
+  normalizeCapabilityProfile(enablement.capabilityProfile);
+  assessComputerUseEnablement(enablement.capabilityProfile,enablement.policies,enablement.targetLevel);
+}
+export function computerUseProductionEnablementDigest(enablement:ComputerUseProductionEnablementProof):string {
+  validateEnablementProof(enablement);
+  const canonical={
+    capabilityProfile:normalizeCapabilityProfile(enablement.capabilityProfile),
+    policies:[...enablement.policies].sort((a,b)=>COMPUTER_USE_ENABLEMENT_LEVELS.indexOf(a.level)-COMPUTER_USE_ENABLEMENT_LEVELS.indexOf(b.level)).map((entry)=>({
+      level:entry.level,requiredCapabilities:[...entry.requiredCapabilities].sort(),...(entry.note!==undefined?{note:entry.note}:{}),
+    })),
+    targetLevel:enablement.targetLevel,
+    rolloutCaseIds:[...enablement.rolloutCaseIds].sort(),
+    disablementCaseIds:[...enablement.disablementCaseIds].sort(),
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonical),'utf8').digest('hex')}`;
 }
 
 export function computerUseProductionPolicyDigest(policy:ComputerUseProductionGatePolicy):string {
@@ -206,6 +256,10 @@ function validatePolicyApproval(approval:ComputerUseProductionPolicyApproval):vo
   if(!approval||typeof approval!=='object'||!TOKEN.test(approval.policyId)||!SHA256.test(approval.policyDigest)||!TOKEN.test(approval.approvalId)||
     !TOKEN.test(approval.reviewSourceId)||!GIT_SHA.test(approval.reviewGitSha))throw new Error('computer-use-production-policy-approval-invalid');
 }
+function validateEnablementApproval(approval:ComputerUseProductionEnablementApproval):void {
+  if(!approval||typeof approval!=='object'||!SHA256.test(approval.enablementDigest)||!TOKEN.test(approval.approvalId)||
+    !TOKEN.test(approval.reviewSourceId)||!GIT_SHA.test(approval.reviewGitSha))throw new Error('computer-use-production-enablement-approval-invalid');
+}
 
 function validateClaimEvidence(evidence:readonly ComputerUseProductionClaimEvidence[]):void {
   if(!Array.isArray(evidence)||evidence.length>COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.length)throw new Error('computer-use-production-claim-evidence-invalid');
@@ -258,11 +312,8 @@ function validateRuntimeProof(proof:ComputerUseProductionRuntimeProof):void {
   for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
     if(aggregate[incident]!==proof.zeroToleranceIncidents[incident])throw new Error(`computer-use-production-incident-evidence-count-mismatch:${incident}`);
   }
-  if(!proof.enablement||typeof proof.enablement!=='object'||!Array.isArray(proof.enablement.rolloutCaseIds)||proof.enablement.rolloutCaseIds.length>MAX_THRESHOLD||
-    new Set(proof.enablement.rolloutCaseIds).size!==proof.enablement.rolloutCaseIds.length||proof.enablement.rolloutCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id))||
-    !Array.isArray(proof.enablement.disablementCaseIds)||proof.enablement.disablementCaseIds.length===0||proof.enablement.disablementCaseIds.length>MAX_THRESHOLD||
-    new Set(proof.enablement.disablementCaseIds).size!==proof.enablement.disablementCaseIds.length||proof.enablement.disablementCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
-    throw new Error('computer-use-production-enablement-proof-invalid');
+  validateEnablementProof(proof.enablement);
+  if(proof.enablementApproval!==undefined)validateEnablementApproval(proof.enablementApproval);
 }
 
 export function evaluateComputerUseProductionGate(
@@ -286,6 +337,10 @@ export function evaluateComputerUseProductionGate(
   else if(policyApproval.policyId!==policy.policyId)blockers.push(`policy:approval-policy-id-mismatch:${policyApproval.policyId}`);
   else if(policyApproval.policyDigest!==computerUseProductionPolicyDigest(policy))blockers.push('policy:approval-digest-mismatch');
   else policyApprovalSatisfied=true;
+  let enablementApprovalSatisfied=false;
+  if(runtimeProof.enablementApproval===undefined)blockers.push('enablement:approval-missing');
+  else if(runtimeProof.enablementApproval.enablementDigest!==computerUseProductionEnablementDigest(runtimeProof.enablement))blockers.push('enablement:approval-digest-mismatch');
+  else enablementApprovalSatisfied=true;
   const stratumBreadth:ComputerUseProductionStratumBreadth[]=[];
 
   for(const requirement of policy.stratumRequirements){
@@ -465,6 +520,7 @@ export function evaluateComputerUseProductionGate(
     satisfiedReleaseEnvironments:Object.freeze(satisfiedReleaseEnvironments),
     releaseEnvironmentCoverage:Object.freeze(releaseEnvironmentCoverage),
     policyApprovalSatisfied,
+    enablementApprovalSatisfied,
     targetEnablement,
   });
 }

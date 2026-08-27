@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS,
   COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS,
+  computerUseProductionEnablementDigest,
   computerUseProductionPolicyDigest,
   evaluateComputerUseProductionGate,
   validateComputerUseProductionGatePolicy,
+  type ComputerUseProductionEnablementApproval,
   type ComputerUseProductionGatePolicy,
   type ComputerUseProductionPolicyApproval,
   type ComputerUseProductionReleaseEnvironmentEvidence,
@@ -63,12 +65,17 @@ function releaseEnvironmentEvidence(cases:readonly ComputerUseEvaluationCaseResu
 function emptyEnablementPolicies():ComputerUseEnablementLevelPolicy[]{
   return COMPUTER_USE_ENABLEMENT_LEVELS.map((level)=>({level,requiredCapabilities:[]}));
 }
+function enablementApproval(enablement:ComputerUseProductionRuntimeProof['enablement']):ComputerUseProductionEnablementApproval{
+  return {enablementDigest:computerUseProductionEnablementDigest(enablement),approvalId:'test-enablement-approval',reviewSourceId:'test-enablement-review',reviewGitSha:'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'};
+}
 function runtimeProof(disablementCaseId:string):ComputerUseProductionRuntimeProof{
   const zeroCounts=Object.fromEntries(COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS.map((incident)=>[incident,0])) as ComputerUseProductionRuntimeProof['zeroToleranceIncidents'];
+  const enablement={capabilityProfile:{id:'test-profile',capabilities:{}},policies:emptyEnablementPolicies(),targetLevel:'CU-0' as const,rolloutCaseIds:[disablementCaseId],disablementCaseIds:[disablementCaseId]};
   return {
     zeroToleranceIncidents:zeroCounts,
     zeroToleranceIncidentEvidence:[{evidenceId:'test-incident-evidence',gitSha:'dddddddddddddddddddddddddddddddddddddddd',environmentId:'test-release-environment',counts:zeroCounts}],
-    enablement:{capabilityProfile:{id:'test-profile',capabilities:{}},policies:emptyEnablementPolicies(),targetLevel:'CU-0',rolloutCaseIds:[disablementCaseId],disablementCaseIds:[disablementCaseId]},
+    enablement,
+    enablementApproval:enablementApproval(enablement),
   };
 }
 
@@ -80,6 +87,7 @@ test('production gate can pass only under explicit policy, sourced corpus, zero 
   assert.equal(decision.authorityGranted,false);
   assert.equal(decision.targetEnablement.eligible,true);
   assert.equal(decision.policyApprovalSatisfied,true);
+  assert.equal(decision.enablementApprovalSatisfied,true);
   assert.deepEqual(decision.blockers,[]);
   assert.deepEqual(decision.stratumBreadth.map((entry)=>({stratum:entry.stratum,attempted:entry.attempted,trials:entry.attemptedTrials,embodiments:entry.distinctEmbodiments,sources:entry.distinctSources})),
     COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,trials:1,embodiments:1,sources:1})));
@@ -214,15 +222,31 @@ test('production rollout evidence is exact to the selected CU level and must ref
 test('production target CU level must be eligible under the complete granular capability policy',()=>{
   const cases=corpus();
   const policies=emptyEnablementPolicies().map((entry)=>entry.level==='CU-1'?{...entry,requiredCapabilities:['pointer-input' as const]}:entry);
-  const proof:ComputerUseProductionRuntimeProof={
-    ...runtimeProof(cases[0]!.caseId),
-    enablement:{capabilityProfile:{id:'partial-profile',capabilities:{'pointer-input':'partial'}},policies,targetLevel:'CU-1',rolloutCaseIds:[cases[0]!.caseId],disablementCaseIds:[cases[0]!.caseId]},
-  };
+  const base=runtimeProof(cases[0]!.caseId);
+  const enablement={capabilityProfile:{id:'partial-profile',capabilities:{'pointer-input':'partial' as const}},policies,targetLevel:'CU-1' as const,rolloutCaseIds:[cases[0]!.caseId],disablementCaseIds:[cases[0]!.caseId]};
+  const proof:ComputerUseProductionRuntimeProof={...base,enablement,enablementApproval:enablementApproval(enablement)};
   const levelCases=cases.map((entry,index)=>index===0?{...entry,enablementLevel:'CU-1' as const}:entry);
   const decision=evaluateComputerUseProductionGate(policy(),levelCases,claimEvidence(cases[0]!.caseId),proof,releaseEnvironmentEvidence(cases));
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('enablement:CU-1:capability-ineligible'));
   assert.equal(decision.authorityGranted,false);
+});
+
+test('production enablement approval binds the exact capability profile, CU policy table, target level, rollout, and disablement mapping',()=>{
+  const cases=corpus();
+  const caseId=cases[0]!.caseId;
+  const proof=runtimeProof(caseId);
+  const missing=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...proof,enablementApproval:undefined},releaseEnvironmentEvidence(cases));
+  assert.equal(missing.enablementApprovalSatisfied,false);
+  assert.ok(missing.blockers.includes('enablement:approval-missing'));
+  const changedEnablement={...proof.enablement,capabilityProfile:{id:'changed-profile',capabilities:{}}};
+  const stale=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...proof,enablement:changedEnablement},releaseEnvironmentEvidence(cases));
+  assert.ok(stale.blockers.includes('enablement:approval-digest-mismatch'));
+  assert.throws(()=>evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...proof,enablementApproval:{...proof.enablementApproval!,reviewGitSha:'short'}},releaseEnvironmentEvidence(cases)),/computer-use-production-enablement-approval-invalid/);
+  const invalidCapability={...proof.enablement,capabilityProfile:{id:'test-profile',capabilities:{'pointer-input':'mystery' as never}}};
+  assert.throws(()=>computerUseProductionEnablementDigest(invalidCapability),/computer-use-production-capability-profile-invalid/);
+  const unknownCapability={...proof.enablement,capabilityProfile:{id:'test-profile',capabilities:{'invented-capability':'supported'} as never}};
+  assert.throws(()=>computerUseProductionEnablementDigest(unknownCapability),/computer-use-production-capability-profile-invalid/);
 });
 
 test('release-environment proof must bind a required environment to a passing case and one of its replay-identifiable sources',()=>{
