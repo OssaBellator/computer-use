@@ -140,6 +140,44 @@ test('stale exact-target UIA support remains stale rather than becoming a generi
   assert.deepEqual(decision.resolution.rejected,[{id:'uia-save',reason:'stale'}]);
 });
 
+test('DKG84 peer scores cannot let weaker authority outrank semantic UI',()=>{
+  const target={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
+  const decision=routeGroundingEmbodiment([
+    {id:'uia-save',kind:'semantic-ui',confidence:0.2,supported:true,stale:false,target,routing:{reliability:0.2,verification:0.2,cost:1,foreground:1,risk:1}},
+    {id:'raw-perfect',kind:'raw-coordinate',confidence:1,supported:true,stale:false,frame:{surface,frameSequence:61,capturedAtMs:6},routing:{reliability:1,verification:1,cost:0,foreground:0,risk:0}},
+  ]);
+  assert.equal(decision.selectedCandidateId,'uia-save');
+  const semantic=decision.candidates.find((candidate)=>candidate.id==='uia-save')!;
+  const raw=decision.candidates.find((candidate)=>candidate.id==='raw-perfect')!;
+  assert.ok(raw.peerScore>semantic.peerScore);
+  assert.ok(semantic.authorityRank>raw.authorityRank);
+});
+
+test('DKG84 same-authority peers rank by bounded reliability verification cost foreground and risk',()=>{
+  const decision=routeGroundingEmbodiment([
+    {id:'semantic-risky',kind:'keyboard-semantic',confidence:0.9,supported:true,stale:false,routing:{reliability:0.5,verification:0.3,cost:0.9,foreground:1,risk:0.9}},
+    {id:'semantic-strong',kind:'keyboard-semantic',confidence:0.6,supported:true,stale:false,routing:{reliability:0.95,verification:0.9,cost:0.2,foreground:0.2,risk:0.1}},
+  ]);
+  assert.equal(decision.selectedCandidateId,'semantic-strong');
+  assert.deepEqual(decision.candidates.map(({id,eligible,authorityRank})=>({id,eligible,authorityRank})),[
+    {id:'semantic-risky',eligible:true,authorityRank:300},
+    {id:'semantic-strong',eligible:true,authorityRank:300},
+  ]);
+  assert.ok(decision.candidates[1]!.peerScore>decision.candidates[0]!.peerScore);
+});
+
+test('DKG84 invalid routing metrics fail closed and remain visible in decision exposure',()=>{
+  const decision=routeGroundingEmbodiment([
+    {id:'bad-cost',kind:'keyboard-semantic',confidence:0.8,supported:true,stale:false,routing:{cost:1.1}},
+  ]);
+  assert.equal(decision.selectedCandidateId,undefined);
+  assert.deepEqual(decision.resolution.rejected,[{id:'bad-cost',reason:'invalid-routing-signal'}]);
+  assert.equal(decision.candidates[0]?.eligible,false);
+  assert.equal(decision.candidates[0]?.rejectionReason,'invalid-routing-signal');
+  assert.equal(decision.candidates[0]?.cost,1);
+  assert.ok((decision.candidates[0]?.peerScore??-1)>=0&&(decision.candidates[0]?.peerScore??2)<=1);
+});
+
 test('visual and coordinate candidates fail closed unless frame and generation bound', () => {
   const noFrame: GroundingCandidate = {id:'pixel-1',kind:'raw-coordinate',confidence:1,supported:true,stale:false};
   const noGeneration: GroundingCandidate = {id:'visual-1',kind:'visual-grounded',confidence:1,supported:true,stale:false,frame:{surface:{...surface,generation:undefined},frameSequence:1,capturedAtMs:1}};

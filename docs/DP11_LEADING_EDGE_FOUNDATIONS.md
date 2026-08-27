@@ -34,7 +34,7 @@ The dispatching adapter should revalidate the lease immediately before native po
 4. visual grounding
 5. raw coordinates
 
-Confidence breaks ties *within* an embodiment class; it does not allow a high-confidence pixel target to outrank a valid semantic/native target.
+Within an authority tier, routing uses a bounded peer score derived from semantic strength, reliability, verification quality, execution cost, foreground dependence, operational risk, and current availability. Authority rank remains categorical: no numeric score, confidence value, or low-risk pixel route can outrank a valid stronger-authority semantic/native embodiment. Every candidate is retained in bounded DecisionExposure with eligibility/rejection reason and the normalized routing dimensions used for peer ranking.
 
 Visual and coordinate candidates must be bound to a generation-bearing surface and a concrete frame sequence. They are short-lived evidence, not durable control identity.
 
@@ -81,7 +81,7 @@ The Windows-specific provider is now implemented without weakening the neutral c
 - hierarchy state itself is integrity-checked and CAS-versioned: durable snapshots validate parent/depth topology and exact cumulative-step totals, stale parent snapshots cannot overwrite newer lineage, and process restart must re-bind every executable child program and prove its deterministic program hash before reconstructing the hierarchy; executable child payloads are not stored in the hierarchy checkpoint;
 - Windows Hello/passkey/push/user-presence ceremonies have a separate bounded challenge state model (maximum five minutes) containing only opaque references and trusted state; external webpage content cannot prove ceremony completion, TOTP cannot enter this user-presence path, and ceremony completion remains evidence only until the authenticated-session verifier separately proves login success;
 - Windows provider capabilities projected into the neutral `ComputerCapabilityProfile` without inferring unrelated powers;
-- explicit embodiment routing exposure with available embodiments, selection reason, fallback/conflict reason, and fail-closed authoritative target conflict handling.
+- explicit DKG84 embodiment routing exposure with all candidates, eligibility/rejection reason, categorical authority rank, semantic strength, reliability, verification quality, cost, foreground dependence, risk, current availability, bounded peer score, selected candidate/embodiment, fallback/conflict reason, and fail-closed authoritative target conflict handling; peer scores can rank only equal-authority candidates and cannot manufacture authority.
 
 ## Research references
 
