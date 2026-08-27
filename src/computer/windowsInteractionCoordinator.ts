@@ -2,6 +2,12 @@ import type { ComputerActionResult, ComputerEffectClass, ComputerSurfaceRef } fr
 import type { DesktopInteractionLease } from './desktopInteractionLease.js';
 import { decideComputerConsequenceAuthority, type ComputerEffectAuthorityGrant } from './consequenceAuthority.js';
 import { WindowsNativeInputGate, type WindowsNativeInputDispatcher } from './windowsNativeInputGate.js';
+import {
+  verifyWindowsPostAction,
+  type WindowsPostActionObservationProvider,
+  type WindowsPostActionVerificationOptions,
+  type WindowsVerificationPredicate,
+} from './windowsPostActionVerification.js';
 import { resolveWindowsInputIntegrityContext, type WindowsProcessTokenIntegrityReader } from './windowsProcessIntegrity.js';
 import {
   sameWindowsUiaWindow,
@@ -21,15 +27,22 @@ function consequence(effect:ComputerEffectClass,grants:readonly ComputerEffectAu
   return decision.allowed ? undefined : rejected(`windows-consequence-${decision.reason}`);
 }
 
-export interface WindowsSemanticInteractionRequest {
+export interface WindowsInteractionVerification<T> {
+  readonly provider:WindowsPostActionObservationProvider<T>;
+  readonly predicate:WindowsVerificationPredicate<T>;
+  readonly options?:WindowsPostActionVerificationOptions;
+}
+
+export interface WindowsSemanticInteractionRequest<TVerification=unknown> {
   readonly ref:WindowsUiaControlRef;
   readonly action:WindowsUiaSemanticAction;
   readonly effect:ComputerEffectClass;
   readonly windows:readonly WindowsWindowAuthoritySnapshot[];
   readonly grants?:readonly ComputerEffectAuthorityGrant[];
+  readonly verification?:WindowsInteractionVerification<TVerification>;
 }
 
-export interface WindowsVisualNativeInteractionRequest {
+export interface WindowsVisualNativeInteractionRequest<TVerification=unknown> {
   readonly binding:WindowsVisualPointBinding;
   /** Most recent frame available immediately before dispatch. */
   readonly currentFrame:WindowsVisualFrameRef;
@@ -40,6 +53,22 @@ export interface WindowsVisualNativeInteractionRequest {
   readonly effect:ComputerEffectClass;
   readonly grants?:readonly ComputerEffectAuthorityGrant[];
   readonly dispatcher:WindowsNativeInputDispatcher;
+  readonly verification?:WindowsInteractionVerification<TVerification>;
+}
+
+async function verifyIfRequested<T>(
+  result:ComputerActionResult,
+  verification:WindowsInteractionVerification<T>|undefined,
+  notBeforeMs:number,
+):Promise<ComputerActionResult>{
+  if(!verification||result.dispatch==='not-dispatched')return result;
+  const callerNotBefore=verification.options?.notBeforeMs??0;
+  return verifyWindowsPostAction(result,verification.provider,verification.predicate,{
+    ...verification.options,
+    // The coordinator owns this lower bound so a caller cannot accidentally
+    // verify against a sample captured before this action attempt began.
+    notBeforeMs:Math.max(callerNotBefore,notBeforeMs),
+  });
 }
 
 /**
@@ -50,7 +79,8 @@ export interface WindowsVisualNativeInteractionRequest {
  * or old visual coordinate into the new window; the caller must re-observe or
  * re-ground against the authoritative modal first. Visual input additionally
  * requires an exact current frame and a fresh process-token integrity read
- * immediately before the native input gate.
+ * immediately before the native input gate. Optional post-action verification is
+ * observational only: it never rewrites an UNKNOWN dispatch ledger into success.
  */
 export class WindowsInteractionCoordinator {
   constructor(
@@ -59,7 +89,7 @@ export class WindowsInteractionCoordinator {
     readonly integrity:WindowsProcessTokenIntegrityReader,
   ) {}
 
-  async actSemantic(request:WindowsSemanticInteractionRequest):Promise<ComputerActionResult> {
+  async actSemantic<TVerification=unknown>(request:WindowsSemanticInteractionRequest<TVerification>):Promise<ComputerActionResult> {
     const consequenceDenied = consequence(request.effect,request.grants);
     if (consequenceDenied) return consequenceDenied;
     const authority = decideWindowsWindowAuthority(request.ref.window,request.windows);
@@ -67,10 +97,12 @@ export class WindowsInteractionCoordinator {
     if (!sameWindowsUiaWindow(authority.target,request.ref.window)) {
       return rejected('windows-window-authority-rerouted-reobserve');
     }
-    return this.semantic.act(request.ref,request.action,request.effect);
+    const notBeforeMs=Date.now();
+    const result=await this.semantic.act(request.ref,request.action,request.effect);
+    return verifyIfRequested(result,request.verification,notBeforeMs);
   }
 
-  async actVisualNative(request:WindowsVisualNativeInteractionRequest):Promise<ComputerActionResult> {
+  async actVisualNative<TVerification=unknown>(request:WindowsVisualNativeInteractionRequest<TVerification>):Promise<ComputerActionResult> {
     const consequenceDenied = consequence(request.effect,request.grants);
     if (consequenceDenied) return consequenceDenied;
     const requestedWindow = request.binding.frame.window;
@@ -86,7 +118,8 @@ export class WindowsInteractionCoordinator {
     if (grounding.status !== 'valid') return rejected(`windows-input-grounding-${grounding.status}`);
 
     const integrity = await resolveWindowsInputIntegrityContext(this.integrity,requestedWindow.process);
-    return this.nativeInput.dispatch({
+    const notBeforeMs=Date.now();
+    const result=await this.nativeInput.dispatch({
       lease:request.lease,
       targetDesktop:request.targetDesktop,
       targetSurface:request.targetSurface,
@@ -94,5 +127,6 @@ export class WindowsInteractionCoordinator {
       integrity,
       effect:request.effect,
     },request.dispatcher);
+    return verifyIfRequested(result,request.verification,notBeforeMs);
   }
 }
