@@ -408,6 +408,8 @@ export function evaluateComputerUseProductionGate(
     const entry=byId.get(caseId);
     if(!entry)blockers.push(`disablement:case-missing:${caseId}`);
     else if(entry.outcome!=='passed')blockers.push(`disablement:case-not-passed:${caseId}`);
+    else if(entry.enablementLevel===undefined)blockers.push(`disablement:${runtimeProof.enablement.targetLevel}:case-level-missing:${caseId}`);
+    else if(entry.enablementLevel!==runtimeProof.enablement.targetLevel)blockers.push(`disablement:${runtimeProof.enablement.targetLevel}:case-level-mismatch:${caseId}:${entry.enablementLevel}`);
   }
 
   return Object.freeze({

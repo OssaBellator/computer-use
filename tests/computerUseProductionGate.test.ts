@@ -201,6 +201,9 @@ test('production rollout evidence is exact to the selected CU level and must ref
   const wrongLevelCases=cases.map((entry,index)=>index===0?{...entry,enablementLevel:'CU-1' as const}:entry);
   const wrongLevel=evaluateComputerUseProductionGate(policy(),wrongLevelCases,claimEvidence(caseId),proof,releaseEnvironmentEvidence(cases));
   assert.ok(wrongLevel.blockers.includes(`enablement:CU-0:rollout-case-level-mismatch:${caseId}:CU-1`));
+  assert.ok(wrongLevel.blockers.includes(`disablement:CU-0:case-level-mismatch:${caseId}:CU-1`));
+  const missingDisablementLevel=evaluateComputerUseProductionGate(policy(),missingLevelCases,claimEvidence(caseId),proof,releaseEnvironmentEvidence(cases));
+  assert.ok(missingDisablementLevel.blockers.includes(`disablement:CU-0:case-level-missing:${caseId}`));
   assert.equal(failed.authorityGranted,false);
 });
 
