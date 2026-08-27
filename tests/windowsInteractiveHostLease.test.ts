@@ -22,7 +22,7 @@ test('interactive lease acquisition requires exact current foreground window and
   assert.equal(acquired.lease.mode,'interactive-host');
   assert.equal(acquired.lease.targetDesktop,'session:1');
   assert.equal(acquired.lease.humanInputBaseline,5);
-  assert.equal(acquired.targetWindow,target);
+  assert.deepEqual(acquired.targetWindow,target);
   assert.deepEqual(await leases.validate(acquired.lease,{targetDesktop:'session:1',targetSurface:surface}),{status:'valid'});
 });
 
