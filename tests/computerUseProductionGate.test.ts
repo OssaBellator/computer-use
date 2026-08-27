@@ -56,7 +56,7 @@ function emptyEnablementPolicies():ComputerUseEnablementLevelPolicy[]{
 function runtimeProof(disablementCaseId:string):ComputerUseProductionRuntimeProof{
   return {
     zeroToleranceIncidents:Object.fromEntries(COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS.map((incident)=>[incident,0])) as ComputerUseProductionRuntimeProof['zeroToleranceIncidents'],
-    enablement:{capabilityProfile:{id:'test-profile',capabilities:{}},policies:emptyEnablementPolicies(),targetLevel:'CU-0',disablementCaseIds:[disablementCaseId]},
+    enablement:{capabilityProfile:{id:'test-profile',capabilities:{}},policies:emptyEnablementPolicies(),targetLevel:'CU-0',rolloutCaseIds:[disablementCaseId],disablementCaseIds:[disablementCaseId]},
   };
 }
 
@@ -85,13 +85,16 @@ test('current DP11 empirical baseline stays blocked by stricter quantitative bre
 
 test('current DP11 expanded corpus and claim map remain production-blocked under strict quantitative policy',()=>{
   const disablement='dp11-release-disablement-no-authority-inheritance';
+  const proof=runtimeProof(disablement);
   const decision=evaluateComputerUseProductionGate(
-    policy(2),DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,runtimeProof(disablement),[],
+    policy(2),DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,
+    {...proof,enablement:{...proof.enablement,rolloutCaseIds:[]}},[],
   );
   assert.equal(decision.eligible,false);
   assert.equal(decision.authorityGranted,false);
   assert.ok(decision.blockers.includes('stratum:grounding:failures-above-threshold'));
   assert.ok(decision.blockers.includes('release-environment:test-release-environment:evidence-missing'));
+  assert.ok(decision.blockers.includes('enablement:CU-0:rollout-evidence-missing'));
 });
 
 test('production breadth policy rejects repeated single-embodiment or single-source evidence',()=>{
@@ -132,12 +135,27 @@ test('zero-tolerance safety incidents block release regardless of quantitative p
   assert.ok(decision.blockers.includes('incident:blind-retry-after-possible-dispatch:nonzero'));
 });
 
+test('production rollout evidence is exact to the selected CU level and must reference passing cases',()=>{
+  const cases=corpus();
+  const caseId=cases[0]!.caseId;
+  const proof=runtimeProof(caseId);
+  const missing=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...proof,enablement:{...proof.enablement,rolloutCaseIds:[]}},releaseEnvironmentEvidence(caseId));
+  assert.equal(missing.eligible,false);
+  assert.ok(missing.blockers.includes('enablement:CU-0:rollout-evidence-missing'));
+  const absent=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...proof,enablement:{...proof.enablement,rolloutCaseIds:['missing-rollout-case']}},releaseEnvironmentEvidence(caseId));
+  assert.ok(absent.blockers.includes('enablement:CU-0:rollout-case-missing:missing-rollout-case'));
+  const failedCases=cases.map((entry,index)=>index===0?{...entry,outcome:'failed' as const}:entry);
+  const failed=evaluateComputerUseProductionGate(policy(),failedCases,claimEvidence(caseId),proof,releaseEnvironmentEvidence(caseId));
+  assert.ok(failed.blockers.includes(`enablement:CU-0:rollout-case-not-passed:${caseId}`));
+  assert.equal(failed.authorityGranted,false);
+});
+
 test('production target CU level must be eligible under the complete granular capability policy',()=>{
   const cases=corpus();
   const policies=emptyEnablementPolicies().map((entry)=>entry.level==='CU-1'?{...entry,requiredCapabilities:['pointer-input' as const]}:entry);
   const proof:ComputerUseProductionRuntimeProof={
     ...runtimeProof(cases[0]!.caseId),
-    enablement:{capabilityProfile:{id:'partial-profile',capabilities:{'pointer-input':'partial'}},policies,targetLevel:'CU-1',disablementCaseIds:[cases[0]!.caseId]},
+    enablement:{capabilityProfile:{id:'partial-profile',capabilities:{'pointer-input':'partial'}},policies,targetLevel:'CU-1',rolloutCaseIds:[cases[0]!.caseId],disablementCaseIds:[cases[0]!.caseId]},
   };
   const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),proof,releaseEnvironmentEvidence(cases[0]!.caseId));
   assert.equal(decision.eligible,false);

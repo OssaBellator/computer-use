@@ -75,6 +75,8 @@ export interface ComputerUseProductionEnablementProof {
   readonly capabilityProfile:ComputerCapabilityProfile;
   readonly policies:readonly ComputerUseEnablementLevelPolicy[];
   readonly targetLevel:ComputerUseEnablementLevel;
+  /** Passing empirical cases reviewed as evidence for enabling exactly targetLevel. Empty means not approved. */
+  readonly rolloutCaseIds:readonly string[];
   readonly disablementCaseIds:readonly string[];
 }
 export interface ComputerUseProductionRuntimeProof {
@@ -177,9 +179,10 @@ function validateRuntimeProof(proof:ComputerUseProductionRuntimeProof):void {
   for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
     if(!safeInt(proof.zeroToleranceIncidents[incident]))throw new Error('computer-use-production-incident-count-invalid');
   }
-  if(!proof.enablement||typeof proof.enablement!=='object'||!Array.isArray(proof.enablement.disablementCaseIds)||proof.enablement.disablementCaseIds.length===0||
-    proof.enablement.disablementCaseIds.length>MAX_THRESHOLD||new Set(proof.enablement.disablementCaseIds).size!==proof.enablement.disablementCaseIds.length||
-    proof.enablement.disablementCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
+  if(!proof.enablement||typeof proof.enablement!=='object'||!Array.isArray(proof.enablement.rolloutCaseIds)||proof.enablement.rolloutCaseIds.length>MAX_THRESHOLD||
+    new Set(proof.enablement.rolloutCaseIds).size!==proof.enablement.rolloutCaseIds.length||proof.enablement.rolloutCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id))||
+    !Array.isArray(proof.enablement.disablementCaseIds)||proof.enablement.disablementCaseIds.length===0||proof.enablement.disablementCaseIds.length>MAX_THRESHOLD||
+    new Set(proof.enablement.disablementCaseIds).size!==proof.enablement.disablementCaseIds.length||proof.enablement.disablementCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
     throw new Error('computer-use-production-enablement-proof-invalid');
 }
 
@@ -265,6 +268,12 @@ export function evaluateComputerUseProductionGate(
     runtimeProof.enablement.targetLevel,
   );
   if(!targetEnablement.eligible)blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:capability-ineligible`);
+  if(runtimeProof.enablement.rolloutCaseIds.length===0)blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-evidence-missing`);
+  for(const caseId of runtimeProof.enablement.rolloutCaseIds){
+    const entry=byId.get(caseId);
+    if(!entry)blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-case-missing:${caseId}`);
+    else if(entry.outcome!=='passed')blockers.push(`enablement:${runtimeProof.enablement.targetLevel}:rollout-case-not-passed:${caseId}`);
+  }
   for(const caseId of runtimeProof.enablement.disablementCaseIds){
     const entry=byId.get(caseId);
     if(!entry)blockers.push(`disablement:case-missing:${caseId}`);
