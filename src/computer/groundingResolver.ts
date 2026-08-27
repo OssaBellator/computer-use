@@ -23,6 +23,8 @@ export interface GroundingCandidate {
   readonly target?: ComputerEntityRef;
   readonly frame?: GroundingFrameRef;
   readonly supported: boolean;
+  /** Bounded machine-readable reason when current target/provider support is absent. */
+  readonly supportReason?: string;
   readonly stale: boolean;
   readonly evidence?: readonly string[];
 }
@@ -66,8 +68,9 @@ function validCandidate(candidate: GroundingCandidate): string | undefined {
   if (!ID_PATTERN.test(candidate.id)) return 'invalid-candidate-id';
   if (!GROUNDING_KINDS.includes(candidate.kind)) return 'unsupported-grounding-kind';
   if (!Number.isFinite(candidate.confidence) || candidate.confidence < 0 || candidate.confidence > 1) return 'invalid-confidence';
-  if (!candidate.supported) return 'unsupported';
+  if (candidate.supportReason!==undefined&&!ID_PATTERN.test(candidate.supportReason)) return 'invalid-support-reason';
   if (candidate.stale) return 'stale';
+  if (!candidate.supported) return candidate.supportReason ?? 'unsupported';
 
   if (candidate.kind === 'visual-grounded' || candidate.kind === 'raw-coordinate') {
     if (candidate.target!==undefined) return 'visual-candidate-semantic-target-forbidden';

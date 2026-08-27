@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { deriveObservationTrust, mayContributeInstructionAuthority, observationTrust } from '../src/computer/observationTrust.js';
 import { DesktopInteractionLeaseManager } from '../src/computer/desktopInteractionLease.js';
 import { resolveGrounding, routeGroundingEmbodiment, type GroundingCandidate } from '../src/computer/groundingResolver.js';
+import { windowsUiaSemanticGroundingCandidate } from '../src/computer/windowsUiaEmbodimentRouting.js';
 
 const surface = { adapterId:'desktop:test', environment:'desktop-ui' as const, surfaceId:'win-1', generation:7 };
 
@@ -112,6 +113,31 @@ test('embodiment router exposes authoritative conflict instead of selecting thro
   assert.equal(decision.selectedEmbodiment,undefined);
   assert.equal(decision.selectionReason,'authoritative-conflict');
   assert.equal(decision.fallbackReason,'authoritative-target-conflict');
+});
+
+test('exact-target UIA support routes to fallback with provider reason instead of static platform assumption',()=>{
+  const target={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'range',surfaceId:'win-1',generation:7};
+  const semantic=windowsUiaSemanticGroundingCandidate({
+    id:'uia-range',confidence:0.95,target,
+    support:{status:'unsupported',requiredPattern:'range-value',observedPatterns:['value','invoke','window'],evidence:['windows-uia-pattern-unsupported']},
+  });
+  const decision=routeGroundingEmbodiment([
+    semantic,
+    {id:'keyboard-range',kind:'keyboard-semantic',confidence:0.7,supported:true,stale:false},
+  ]);
+  assert.equal(decision.selectedEmbodiment,'keyboard-semantic');
+  assert.deepEqual(decision.resolution.rejected,[{id:'uia-range',reason:'windows-uia-pattern-unsupported'}]);
+});
+
+test('stale exact-target UIA support remains stale rather than becoming a generic unsupported fallback',()=>{
+  const target={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
+  const semantic=windowsUiaSemanticGroundingCandidate({
+    id:'uia-save',confidence:0.95,target,
+    support:{status:'rejected',requiredPattern:'invoke',evidence:['windows-uia-stale','provider-stale']},
+  });
+  const decision=routeGroundingEmbodiment([semantic]);
+  assert.equal(decision.selectedEmbodiment,undefined);
+  assert.deepEqual(decision.resolution.rejected,[{id:'uia-save',reason:'stale'}]);
 });
 
 test('visual and coordinate candidates fail closed unless frame and generation bound', () => {
