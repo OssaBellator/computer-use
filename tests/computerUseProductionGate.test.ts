@@ -64,8 +64,10 @@ function emptyEnablementPolicies():ComputerUseEnablementLevelPolicy[]{
   return COMPUTER_USE_ENABLEMENT_LEVELS.map((level)=>({level,requiredCapabilities:[]}));
 }
 function runtimeProof(disablementCaseId:string):ComputerUseProductionRuntimeProof{
+  const zeroCounts=Object.fromEntries(COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS.map((incident)=>[incident,0])) as ComputerUseProductionRuntimeProof['zeroToleranceIncidents'];
   return {
-    zeroToleranceIncidents:Object.fromEntries(COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS.map((incident)=>[incident,0])) as ComputerUseProductionRuntimeProof['zeroToleranceIncidents'],
+    zeroToleranceIncidents:zeroCounts,
+    zeroToleranceIncidentEvidence:[{evidenceId:'test-incident-evidence',gitSha:'dddddddddddddddddddddddddddddddddddddddd',environmentId:'test-release-environment',counts:zeroCounts}],
     enablement:{capabilityProfile:{id:'test-profile',capabilities:{}},policies:emptyEnablementPolicies(),targetLevel:'CU-0',rolloutCaseIds:[disablementCaseId],disablementCaseIds:[disablementCaseId]},
   };
 }
@@ -175,9 +177,11 @@ test('production repetition threshold is independent from case/source/embodiment
 test('zero-tolerance safety incidents block release regardless of quantitative policy thresholds',()=>{
   const cases=corpus();
   const proof=runtimeProof(cases[0]!.caseId);
+  const nonzeroCounts={...proof.zeroToleranceIncidents,'blind-retry-after-possible-dispatch':1};
   const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),{
     ...proof,
-    zeroToleranceIncidents:{...proof.zeroToleranceIncidents,'blind-retry-after-possible-dispatch':1},
+    zeroToleranceIncidents:nonzeroCounts,
+    zeroToleranceIncidentEvidence:proof.zeroToleranceIncidentEvidence.map((evidence)=>({...evidence,counts:nonzeroCounts})),
   },releaseEnvironmentEvidence(cases));
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('incident:blind-retry-after-possible-dispatch:nonzero'));
@@ -231,6 +235,7 @@ test('release-environment proof must bind a required environment to a passing ca
   assert.deepEqual(good.releaseEnvironmentCoverage[0]?.satisfiedClaims,COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS);
   assert.equal(good.releaseEnvironmentCoverage[0]?.rolloutEvidenceSatisfied,true);
   assert.equal(good.releaseEnvironmentCoverage[0]?.disablementEvidenceSatisfied,true);
+  assert.equal(good.releaseEnvironmentCoverage[0]?.zeroToleranceIncidentEvidenceSatisfied,true);
   const partial=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[{environmentId:'test-release-environment',bindings:[{caseId,sourceId:'test-0'}]}]);
   assert.ok(partial.blockers.includes('release-environment:test-release-environment:case-unbound:prod-case-1'));
   const outsideClaimCase={...cases[0]!,caseId:'outside-claim-case',sources:cases[0]!.sources?.map((source)=>({...source,sourceId:`outside-${source.sourceId}`,environmentId:'other-environment'}))};
@@ -244,6 +249,10 @@ test('release-environment proof must bind a required environment to a passing ca
   assert.ok(!environmentEnablementGap.blockers.includes(`enablement:CU-0:rollout-case-not-passed:${outsideClaimCase.caseId}`));
   assert.ok(environmentEnablementGap.blockers.includes('release-environment:test-release-environment:enablement:CU-0:rollout-evidence-missing'));
   assert.ok(environmentEnablementGap.blockers.includes('release-environment:test-release-environment:enablement:CU-0:disablement-evidence-missing'));
+  const incidentProof=runtimeProof(caseId);
+  const wrongIncidentEnvironment=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...incidentProof,zeroToleranceIncidentEvidence:incidentProof.zeroToleranceIncidentEvidence.map((evidence)=>({...evidence,environmentId:'other-environment'}))},releaseEnvironmentEvidence(cases));
+  assert.ok(wrongIncidentEnvironment.blockers.includes('release-environment:test-release-environment:incident-evidence-missing'));
+  assert.throws(()=>evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),{...incidentProof,zeroToleranceIncidents:{...incidentProof.zeroToleranceIncidents,'secret-exposure':1}},releaseEnvironmentEvidence(cases)),/computer-use-production-incident-evidence-count-mismatch:secret-exposure/);
   const strict=evaluateComputerUseProductionGate(policy(2),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(cases));
   assert.ok(strict.blockers.includes('release-environment:test-release-environment:stratum:grounding:attempted-below-threshold')); 
   const missing=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[]);

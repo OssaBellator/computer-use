@@ -85,6 +85,12 @@ export interface ComputerUseProductionGatePolicy {
   readonly requiredReleaseEnvironments:readonly string[];
 }
 export type ComputerUseZeroToleranceIncidentCounts = Readonly<Record<ComputerUseZeroToleranceIncident,number>>;
+export interface ComputerUseZeroToleranceIncidentEvidence {
+  readonly evidenceId:string;
+  readonly gitSha:string;
+  readonly environmentId:string;
+  readonly counts:ComputerUseZeroToleranceIncidentCounts;
+}
 export interface ComputerUseProductionEnablementProof {
   readonly capabilityProfile:ComputerCapabilityProfile;
   readonly policies:readonly ComputerUseEnablementLevelPolicy[];
@@ -95,6 +101,7 @@ export interface ComputerUseProductionEnablementProof {
 }
 export interface ComputerUseProductionRuntimeProof {
   readonly zeroToleranceIncidents:ComputerUseZeroToleranceIncidentCounts;
+  readonly zeroToleranceIncidentEvidence:readonly ComputerUseZeroToleranceIncidentEvidence[];
   readonly enablement:ComputerUseProductionEnablementProof;
 }
 export interface ComputerUseProductionStratumBreadth {
@@ -116,6 +123,7 @@ export interface ComputerUseProductionReleaseEnvironmentCoverage {
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
   readonly rolloutEvidenceSatisfied:boolean;
   readonly disablementEvidenceSatisfied:boolean;
+  readonly zeroToleranceIncidentEvidenceSatisfied:boolean;
 }
 export interface ComputerUseProductionGateDecision {
   readonly eligible:boolean;
@@ -231,6 +239,24 @@ function validateRuntimeProof(proof:ComputerUseProductionRuntimeProof):void {
     throw new Error('computer-use-production-runtime-proof-invalid');
   for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
     if(!safeInt(proof.zeroToleranceIncidents[incident]))throw new Error('computer-use-production-incident-count-invalid');
+  }
+  if(!Array.isArray(proof.zeroToleranceIncidentEvidence)||proof.zeroToleranceIncidentEvidence.length===0||proof.zeroToleranceIncidentEvidence.length>MAX_THRESHOLD)
+    throw new Error('computer-use-production-incident-evidence-invalid');
+  const evidenceIds=new Set<string>();
+  const aggregate=Object.fromEntries(COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS.map((incident)=>[incident,0])) as Record<ComputerUseZeroToleranceIncident,number>;
+  for(const evidence of proof.zeroToleranceIncidentEvidence){
+    if(!evidence||typeof evidence!=='object'||!TOKEN.test(evidence.evidenceId)||evidenceIds.has(evidence.evidenceId)||!GIT_SHA.test(evidence.gitSha)||!TOKEN.test(evidence.environmentId)||!evidence.counts||typeof evidence.counts!=='object')
+      throw new Error('computer-use-production-incident-evidence-invalid');
+    evidenceIds.add(evidence.evidenceId);
+    for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
+      const count=evidence.counts[incident];
+      if(!safeInt(count))throw new Error('computer-use-production-incident-evidence-invalid');
+      aggregate[incident]+=count;
+      if(!safeInt(aggregate[incident]))throw new Error('computer-use-production-incident-evidence-invalid');
+    }
+  }
+  for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
+    if(aggregate[incident]!==proof.zeroToleranceIncidents[incident])throw new Error(`computer-use-production-incident-evidence-count-mismatch:${incident}`);
   }
   if(!proof.enablement||typeof proof.enablement!=='object'||!Array.isArray(proof.enablement.rolloutCaseIds)||proof.enablement.rolloutCaseIds.length>MAX_THRESHOLD||
     new Set(proof.enablement.rolloutCaseIds).size!==proof.enablement.rolloutCaseIds.length||proof.enablement.rolloutCaseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id))||
@@ -390,11 +416,13 @@ export function evaluateComputerUseProductionGate(
       return boundCaseIds.has(caseId)&&entry?.outcome==='passed'&&entry.enablementLevel===runtimeProof.enablement.targetLevel;
     });
     if(!disablementEvidenceSatisfied)blockers.push(`release-environment:${environmentId}:enablement:${runtimeProof.enablement.targetLevel}:disablement-evidence-missing`);
+    const zeroToleranceIncidentEvidenceSatisfied=runtimeProof.zeroToleranceIncidentEvidence.some((evidence)=>evidence.environmentId===environmentId);
+    if(!zeroToleranceIncidentEvidenceSatisfied)blockers.push(`release-environment:${environmentId}:incident-evidence-missing`);
     releaseEnvironmentCoverage.push(Object.freeze({
       environmentId,attemptedCases:environmentAttempted.length,stratumBreadth:Object.freeze(environmentStrata),
       distinctApplications:environmentApplications.size,distinctProviderFamilies:environmentProviders.size,
       sourceKinds:Object.freeze([...environmentSourceKinds].sort()),satisfiedClaims:Object.freeze(environmentSatisfiedClaims),
-      rolloutEvidenceSatisfied,disablementEvidenceSatisfied,
+      rolloutEvidenceSatisfied,disablementEvidenceSatisfied,zeroToleranceIncidentEvidenceSatisfied,
     }));
     if(blockers.length===environmentBlockerStart)satisfiedReleaseEnvironments.push(environmentId);
   }
