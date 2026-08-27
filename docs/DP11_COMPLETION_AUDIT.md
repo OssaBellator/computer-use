@@ -2,23 +2,45 @@
 
 ## Source status
 
-The supplied `DP11 preparation and expansion^.docx` explicitly defines DKG-79 through DKG-83 and names DKG-84 through DKG-86 as part of the DP11 package range. The file begins `DKG-84 — Embodiment routing` and then physically ends mid-sentence. No DKG-85 or DKG-86 criteria are present in the supplied file or repository docs.
+The originally supplied `DP11 preparation and expansion^.docx` physically truncates during DKG-84, so the repository's earlier audit could only prove DKG-79 through DKG-83 from that file. A later fuller DP11 expansion reviewed during implementation provides high-level DKG-84 embodiment-routing, DKG-85 evaluation, DKG-86 progressive-enablement, and stronger production-gate criteria. This audit therefore no longer treats DKG-85/DKG-86 as undefined; it separates mechanism coverage, empirical evidence, and remaining production proof.
 
 ## Requirement status
 
-| Package | Status | Repository evidence |
-| --- | --- | --- |
-| DKG-79 | source-proven | SHA-pinned contracts, effect/trust/retention/verification audits, Windows Tester publication receipts |
-| DKG-80 | source-proven | production UIA host, generation identity, bounded cache, event invalidation, pattern actions, modal/integrity/ambiguity handling, stale-control tests, secret-value redaction |
-| DKG-81 | source-proven | exact HWND WGC, DPI/frame generation, transient retention, one-shot grounding payload, frame-bound coordinates, guarded native input, foreground/human-interference/UIPI gates |
-| DKG-82 | source-proven for visible criteria | effect authority, untrusted-content zero authority, pre-dispatch revalidation, sticky UNKNOWN, semantic verification, weak visual evidence, privacy retention, sensitive-field handling |
-| DKG-83 | source-proven | granular neutral capability profile plus Windows-to-neutral capability projection; no single omnipotent computer-use permission |
-| DKG-84 | partially source-proven | available source hierarchy implemented by embodiment routing, explicit conflicts, decision exposure, visual evidence forbidden from semantic identity; source tail is missing |
-| DKG-85 | source-unverifiable | requirement text absent from supplied source |
-| DKG-86 | source-unverifiable | requirement text absent from supplied source |
+| Package | Status | Repository evidence | Remaining gap |
+| --- | --- | --- | --- |
+| DKG-79 | implemented / source-proven | SHA-pinned contracts, effect/trust/retention/verification audits, Windows Tester publication receipts | production proof is governed by the shared DP11 release gate |
+| DKG-80 | implemented / source-proven | production UIA host, generation identity, bounded cache, event invalidation, exact-target pattern actions, modal/integrity/ambiguity handling, stale-control tests, secret-value redaction | broader application/provider coverage remains evaluation work |
+| DKG-81 | implemented / source-proven | exact HWND WGC, DPI/frame generation, transient retention, one-shot grounding payload, frame-bound coordinates, guarded native input, foreground/human-interference/UIPI gates | broader application/provider coverage remains evaluation work |
+| DKG-82 | implemented for visible criteria | effect authority, untrusted-content zero authority, pre-dispatch revalidation, sticky UNKNOWN, semantic verification, weak visual evidence, privacy retention, sensitive-field handling | shared production gate still needs quantitative hostile-content/recovery/privacy evidence |
+| DKG-83 | implemented / source-proven | granular neutral capability profile plus Windows-to-neutral capability projection; no single omnipotent computer-use permission | production enablement must continue using granular capabilities, not a global permission |
+| DKG-84 | mechanism implemented; production evidence partial | exact-target UIA support probing; authority-preserving routing; bounded per-candidate reliability/verification/cost/foreground/risk scores; full candidate/selection DecisionExposure; authoritative-conflict blocking; VM/host provider-difference evidence | expand routing corpus across applications/providers and establish release thresholds; scores are peer tie-breakers only and cannot cross authority tiers |
+| DKG-85 | evaluation mechanism implemented; sourced baseline complete; production corpus incomplete | explicit seven-stratum evaluation ledger; replay-identifiable provenance; fresh protected-VM semantic-only/raw-only WinForms evidence; exact-SHA automated recovery, long-horizon, grounding, and hostile-content evidence; baseline has one passing sourced case in every stratum | one case per stratum is not production proof: require breadth, repetition, application diversity, fault campaigns, quantitative thresholds, and release-environment runs |
+| DKG-86 | progressive-enablement mechanism implemented; production policy incomplete | exact CU-0 through CU-8 level vocabulary; validated complete policy table; granular capability requirements; partial/unsupported capability blocks eligibility; adjacent levels do not implicitly inherit requirements; level assessment explicitly grants no authority | define and approve the concrete production CU-level capability/evaluation policy and bind rollout/disablement criteria to release evidence |
+
+## Current empirical receipts
+
+- `a43015db804b28b338af1a9cd76c00e1df860895` — CU progressive-enablement mechanism, exact receipt `xrc_mtb427va_f0d5d32d439491bc154a01b7`, 249/249 PASS.
+- `270f092a7eb1863b224f91a9cf46bba19c879e51` — sourced DKG85 baseline evidence, exact receipt `xrc_mtb4sdji_8e1951981cf965689f2976c6`, 251/251 PASS.
+- Fresh protected-Windows-Sandbox smoke evidence on the unchanged smoke target separately proved `semantic-only` Value/Invoke/RangeValue/Window execution and verification plus `raw-only` equivalent text/button, range=73, and minimize/restore effects. Raw success remains weak evidence and never upgrades to semantic authority.
+
+## Stronger production gate still open
+
+DP11 must not be promoted merely because all mechanisms exist. The production gate still needs a release-facing quantitative corpus that demonstrates, at minimum:
+
+- no blind retry after possible consequential dispatch;
+- no consequential success asserted solely from dispatch;
+- authoritative state-transition verification where semantic verification exists;
+- prompt-injection/hostile-content authority isolation;
+- human-interference handling and UNKNOWN semantics;
+- routing quality and fallback visibility across multiple embodiments/providers;
+- recovery/fault-injection behavior, including stale identity and process-loss cases;
+- privacy/secret-retention behavior for credential-adjacent workflows;
+- cross-embodiment equivalence without authority flattening;
+- long-horizon suspend/resume, re-authentication, anti-rollback, and hierarchical-task behavior;
+- explicit disablement/progressive-enablement policy with no automatic authority inheritance.
 
 ## Release decision
 
-`main` promotion is blocked by definition, not by a known failing implementation: the condition "all DP11 requirements are met" cannot be proven while the authoritative supplied source is missing the remainder of DKG-84 and all DKG-85/DKG-86 criteria.
+`main` promotion remains blocked, but no longer because DKG-84 through DKG-86 are undefined. It is blocked because the implementation has reached **mechanism-complete / baseline-evidence-present** status without yet reaching **production-proof-complete** status.
 
-Promotion becomes eligible when either the complete DKG-84–86 criteria are provided and satisfied, or the source-visible high-level DP11 goal plus an explicit replacement completion definition is designated authoritative.
+Promotion should require an explicit production-gate policy with quantitative thresholds, a DKG85 corpus satisfying that policy in the release environment, and a reviewed DKG86 CU-level rollout/disablement mapping. Until those conditions are met, `dp11-leading-edge-foundations` remains the integration branch and `main` stays unchanged.

@@ -26,6 +26,7 @@ $tests = @(
   'dist-windows/tests/dp11Foundations.test.js',
   'dist-windows/tests/computerTaskCheckpointReview.test.js',
   'dist-windows/tests/computerUseEvaluation.test.js',
+  'dist-windows/tests/computerUseProductionGate.test.js',
   'dist-windows/tests/computerUseProgressiveEnablement.test.js'
 )
 $tests += Get-ChildItem 'dist-windows/tests/windows*.test.js' | ForEach-Object { $_.FullName }
