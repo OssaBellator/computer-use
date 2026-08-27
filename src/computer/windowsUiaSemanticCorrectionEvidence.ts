@@ -31,12 +31,13 @@ export type WindowsUiaSemanticCorrectionEvidenceAssessment=
     }>;
 
 function validEvidenceIds(values:unknown):values is readonly string[]{
-  return Array.isArray(values)&&values.length>0&&values.length<=MAX_EVIDENCE&&
-    values.every((value)=>typeof value==='string'&&TOKEN.test(value))&&new Set(values).size===values.length;
-}
-
-function freezeEvidenceIds(evidenceIds:readonly string[]):readonly string[]{
-  return Object.freeze([...evidenceIds]);
+  if(!Array.isArray(values)||values.length===0||values.length>MAX_EVIDENCE)return false;
+  const seen=new Set<string>();
+  for(const value of values){
+    if(typeof value!=='string'||!TOKEN.test(value)||seen.has(value))return false;
+    seen.add(value);
+  }
+  return true;
 }
 
 function rejectEvidence(
@@ -45,15 +46,12 @@ function rejectEvidence(
   reason:string,
 ):WindowsUiaSemanticCorrectionEvidenceAssessment {
   return Object.freeze({
-    status:'rejected' as const,reason,
-    evidenceIds:freezeEvidenceIds(evidenceIds),bindings:Object.freeze([...bindings]),
+    status:'rejected' as const,reason,evidenceIds,bindings:Object.freeze([...bindings]),
     promotionApproved:false as const,authorityGranted:false as const,
   });
 }
 
-type IndexedEvidenceSource=
-  | Readonly<{kind:'binding';binding:WindowsUiaSemanticCorrectionEvidenceBinding}>
-  | Readonly<{kind:'git-sha-missing'}>;
+type IndexedEvidenceSource=WindowsUiaSemanticCorrectionEvidenceBinding|null;
 
 function indexEvidenceBindings(
   cases:readonly ComputerUseEvaluationCaseResult[],
@@ -64,12 +62,12 @@ function indexEvidenceBindings(
     for(const source of entry.sources??[]){
       if(!requestedEvidenceIds.has(source.sourceId))continue;
       const indexed:IndexedEvidenceSource=typeof source.gitSha==='string'
-        ?Object.freeze({kind:'binding' as const,binding:Object.freeze({
+        ?Object.freeze({
             evidenceId:source.sourceId,caseId:entry.caseId,outcome:entry.outcome,sourceKind:source.kind,gitSha:source.gitSha,
             ...(entry.applicationId!==undefined?{applicationId:entry.applicationId}:{}),
             ...(entry.providerFamily!==undefined?{providerFamily:entry.providerFamily}:{}),
-          })})
-        :Object.freeze({kind:'git-sha-missing' as const});
+          })
+        :null;
       const existing=byEvidenceId.get(source.sourceId);
       if(existing)existing.push(indexed);
       else byEvidenceId.set(source.sourceId,[indexed]);
@@ -90,19 +88,20 @@ export function assessWindowsUiaSemanticCorrectionEvidence(
   if(!validEvidenceIds(evidenceIds))throw new Error('windows-uia-semantic-correction-evidence-ids-invalid');
   validateEmpiricalComputerUseEvaluationCases(cases);
 
-  const indexed=indexEvidenceBindings(cases,new Set(evidenceIds));
+  const frozenEvidenceIds=Object.freeze([...evidenceIds]);
+  const indexed=indexEvidenceBindings(cases,new Set(frozenEvidenceIds));
   const bindings:WindowsUiaSemanticCorrectionEvidenceBinding[]=[];
-  for(const evidenceId of evidenceIds){
+  for(const evidenceId of frozenEvidenceIds){
     const matches=indexed.get(evidenceId);
-    if(matches===undefined)return rejectEvidence(evidenceIds,bindings,`evidence-source-missing:${evidenceId}`);
+    if(matches===undefined)return rejectEvidence(frozenEvidenceIds,bindings,`evidence-source-missing:${evidenceId}`);
     for(const match of matches){
-      if(match.kind==='git-sha-missing')return rejectEvidence(evidenceIds,bindings,`evidence-source-git-sha-missing:${evidenceId}`);
-      bindings.push(match.binding);
+      if(match===null)return rejectEvidence(frozenEvidenceIds,bindings,`evidence-source-git-sha-missing:${evidenceId}`);
+      bindings.push(match);
     }
   }
   bindings.sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId)||a.caseId.localeCompare(b.caseId)||a.sourceKind.localeCompare(b.sourceKind));
   return Object.freeze({
-    status:'bound' as const,evidenceIds:freezeEvidenceIds(evidenceIds),bindings:Object.freeze(bindings),
+    status:'bound' as const,evidenceIds:frozenEvidenceIds,bindings:Object.freeze(bindings),
     promotionApproved:false as const,authorityGranted:false as const,
   });
 }
