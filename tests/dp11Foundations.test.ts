@@ -47,6 +47,16 @@ test('background semantic lease does not depend on host input sequence', async (
   assert.deepEqual(await manager.validate(lease,{targetDesktop:'desktop-1'}),{status:'valid'});
 });
 
+test('bulk lease revocation invalidates every retained authority immediately',async()=>{
+  const manager=new DesktopInteractionLeaseManager({snapshot:async()=>({sequence:1})},()=>100);
+  const first=await manager.acquire({leaseId:'lease-a',mode:'interactive-host',targetDesktop:'desktop-1',targetSurface:surface,durationMs:1_000});
+  const second=await manager.acquire({leaseId:'lease-b',mode:'background-semantic',targetDesktop:'desktop-1',durationMs:1_000});
+  assert.equal(manager.releaseAll(),2);
+  assert.equal(manager.releaseAll(),0);
+  assert.deepEqual(await manager.validate(first,{targetDesktop:'desktop-1',targetSurface:surface}),{status:'released'});
+  assert.deepEqual(await manager.validate(second,{targetDesktop:'desktop-1'}),{status:'released'});
+});
+
 test('grounding resolver prefers semantic authority over higher-confidence pixels', () => {
   const candidates: GroundingCandidate[] = [
     {id:'visual-save',kind:'visual-grounded',confidence:0.99,supported:true,stale:false,frame:{surface,frameSequence:44,capturedAtMs:1}},
