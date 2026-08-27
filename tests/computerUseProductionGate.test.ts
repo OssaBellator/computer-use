@@ -6,6 +6,7 @@ import {
   evaluateComputerUseProductionGate,
   validateComputerUseProductionGatePolicy,
   type ComputerUseProductionGatePolicy,
+  type ComputerUseProductionReleaseEnvironmentEvidence,
   type ComputerUseProductionRuntimeProof,
 } from '../src/computer/computerUseProductionGate.js';
 import {
@@ -27,6 +28,7 @@ function policy(minAttempted=1):ComputerUseProductionGatePolicy{
     })),
     claimRequirements:COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,minPassingCases:1})),
     requiredSourceKinds:['automated-test','execution-receipt'],
+    requiredReleaseEnvironments:['test-release-environment'],
   };
 }
 
@@ -45,6 +47,9 @@ function corpus():ComputerUseEvaluationCaseResult[]{
 function claimEvidence(caseId:string){
   return COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,caseIds:[caseId]}));
 }
+function releaseEnvironmentEvidence(caseId:string,sourceId='test-0'):ComputerUseProductionReleaseEnvironmentEvidence[]{
+  return [{environmentId:'test-release-environment',bindings:[{caseId,sourceId}]}];
+}
 function emptyEnablementPolicies():ComputerUseEnablementLevelPolicy[]{
   return COMPUTER_USE_ENABLEMENT_LEVELS.map((level)=>({level,requiredCapabilities:[]}));
 }
@@ -57,7 +62,7 @@ function runtimeProof(disablementCaseId:string):ComputerUseProductionRuntimeProo
 
 test('production gate can pass only under explicit policy, sourced corpus, zero incidents, and eligible CU policy',()=>{
   const cases=corpus();
-  const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId));
+  const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId));
   assert.equal(decision.eligible,true);
   assert.equal(decision.authorityGranted,false);
   assert.equal(decision.targetEnablement.eligible,true);
@@ -71,6 +76,7 @@ test('current DP11 empirical baseline stays blocked by stricter quantitative bre
     policy(2),DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
     claimEvidence(DP11_WINDOWS_EMPIRICAL_BASELINE_CASES[0]!.caseId),
     runtimeProof(DP11_WINDOWS_EMPIRICAL_BASELINE_CASES[0]!.caseId),
+    [],
   );
   assert.equal(decision.eligible,false);
   assert.equal(decision.authorityGranted,false);
@@ -80,11 +86,12 @@ test('current DP11 empirical baseline stays blocked by stricter quantitative bre
 test('current DP11 expanded corpus and claim map remain production-blocked under strict quantitative policy',()=>{
   const disablement='dp11-release-disablement-no-authority-inheritance';
   const decision=evaluateComputerUseProductionGate(
-    policy(2),DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,runtimeProof(disablement),
+    policy(2),DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,runtimeProof(disablement),[],
   );
   assert.equal(decision.eligible,false);
   assert.equal(decision.authorityGranted,false);
   assert.ok(decision.blockers.includes('stratum:grounding:failures-above-threshold'));
+  assert.ok(decision.blockers.includes('release-environment:test-release-environment:evidence-missing'));
 });
 
 test('production breadth policy rejects repeated single-embodiment or single-source evidence',()=>{
@@ -93,7 +100,7 @@ test('production breadth policy rejects repeated single-embodiment or single-sou
     ...policy(),
     stratumRequirements:policy().stratumRequirements.map((entry)=>entry.stratum==='primitive-action'?{...entry,minDistinctEmbodiments:2,minDistinctSources:3}:entry),
   };
-  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId));
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId));
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('stratum:primitive-action:embodiment-breadth-below-threshold'));
   assert.ok(decision.blockers.includes('stratum:primitive-action:source-breadth-below-threshold'));
@@ -105,7 +112,7 @@ test('production repetition threshold is independent from case/source/embodiment
   const cases=corpus();
   cases[1]={...cases[1]!,trials:10};
   const strict={...policy(),stratumRequirements:policy().stratumRequirements.map((entry)=>entry.stratum==='primitive-action'?{...entry,minAttemptedTrials:10}:entry)};
-  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId));
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId));
   const measured=decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!;
   assert.equal(measured.attempted,1);
   assert.equal(measured.attemptedTrials,10);
@@ -120,7 +127,7 @@ test('zero-tolerance safety incidents block release regardless of quantitative p
   const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),{
     ...proof,
     zeroToleranceIncidents:{...proof.zeroToleranceIncidents,'blind-retry-after-possible-dispatch':1},
-  });
+  },releaseEnvironmentEvidence(cases[0]!.caseId));
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('incident:blind-retry-after-possible-dispatch:nonzero'));
 });
@@ -132,10 +139,24 @@ test('production target CU level must be eligible under the complete granular ca
     ...runtimeProof(cases[0]!.caseId),
     enablement:{capabilityProfile:{id:'partial-profile',capabilities:{'pointer-input':'partial'}},policies,targetLevel:'CU-1',disablementCaseIds:[cases[0]!.caseId]},
   };
-  const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),proof);
+  const decision=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(cases[0]!.caseId),proof,releaseEnvironmentEvidence(cases[0]!.caseId));
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('enablement:CU-1:capability-ineligible'));
   assert.equal(decision.authorityGranted,false);
+});
+
+test('release-environment proof must bind a required environment to a passing case and one of its replay-identifiable sources',()=>{
+  const cases=corpus();
+  const caseId=cases[0]!.caseId;
+  const good=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId));
+  assert.deepEqual(good.satisfiedReleaseEnvironments,['test-release-environment']);
+  const missing=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[]);
+  assert.ok(missing.blockers.includes('release-environment:test-release-environment:evidence-missing'));
+  const wrongSource=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId,'not-a-source'));
+  assert.ok(wrongSource.blockers.includes(`release-environment:test-release-environment:source-not-bound:${caseId}:not-a-source`));
+  const failedCases=cases.map((entry)=>entry.caseId===caseId?{...entry,outcome:'failed' as const}:entry);
+  const failed=evaluateComputerUseProductionGate(policy(),failedCases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(caseId));
+  assert.ok(failed.blockers.includes(`release-environment:test-release-environment:case-not-passed:${caseId}`));
 });
 
 test('production policy must enumerate every stratum and safety claim with bounded thresholds',()=>{
@@ -143,4 +164,6 @@ test('production policy must enumerate every stratum and safety claim with bound
   assert.throws(()=>validateComputerUseProductionGatePolicy(invalid),/computer-use-production-claim-policy-incomplete/);
   const badRate={...policy(),stratumRequirements:policy().stratumRequirements.map((entry,index)=>index===0?{...entry,minSuccessRate:1.1}:entry)};
   assert.throws(()=>validateComputerUseProductionGatePolicy(badRate),/computer-use-production-stratum-threshold-invalid/);
+  assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),requiredReleaseEnvironments:[]}),/computer-use-production-release-environment-policy-invalid/);
+  assert.throws(()=>validateComputerUseProductionGatePolicy({...policy(),requiredReleaseEnvironments:['same-environment','same-environment']}),/computer-use-production-release-environment-policy-invalid/);
 });

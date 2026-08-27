@@ -58,11 +58,17 @@ export interface ComputerUseProductionClaimEvidence {
   readonly claim:ComputerUseProductionSafetyClaim;
   readonly caseIds:readonly string[];
 }
+export interface ComputerUseProductionReleaseEnvironmentEvidence {
+  readonly environmentId:string;
+  readonly bindings:readonly Readonly<{caseId:string;sourceId:string}>[];
+}
 export interface ComputerUseProductionGatePolicy {
   readonly policyId:string;
   readonly stratumRequirements:readonly ComputerUseProductionStratumRequirement[];
   readonly claimRequirements:readonly ComputerUseProductionClaimRequirement[];
   readonly requiredSourceKinds:readonly ComputerUseEvaluationSourceKind[];
+  /** Explicit release environments are policy inputs; host/VM evidence never implies this list. */
+  readonly requiredReleaseEnvironments:readonly string[];
 }
 export type ComputerUseZeroToleranceIncidentCounts = Readonly<Record<ComputerUseZeroToleranceIncident,number>>;
 export interface ComputerUseProductionEnablementProof {
@@ -90,6 +96,7 @@ export interface ComputerUseProductionGateDecision {
   readonly stratumBreadth:readonly ComputerUseProductionStratumBreadth[];
   readonly satisfiedSourceKinds:readonly ComputerUseEvaluationSourceKind[];
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
+  readonly satisfiedReleaseEnvironments:readonly string[];
   readonly targetEnablement:ReturnType<typeof assessComputerUseEnablement>;
 }
 
@@ -131,6 +138,10 @@ export function validateComputerUseProductionGatePolicy(policy:ComputerUseProduc
     if(!COMPUTER_USE_EVALUATION_SOURCE_KINDS.includes(sourceKind)||sourceKinds.has(sourceKind))throw new Error('computer-use-production-source-policy-invalid');
     sourceKinds.add(sourceKind);
   }
+  if(!Array.isArray(policy.requiredReleaseEnvironments)||policy.requiredReleaseEnvironments.length===0||policy.requiredReleaseEnvironments.length>MAX_THRESHOLD)
+    throw new Error('computer-use-production-release-environment-policy-invalid');
+  if(new Set(policy.requiredReleaseEnvironments).size!==policy.requiredReleaseEnvironments.length||policy.requiredReleaseEnvironments.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
+    throw new Error('computer-use-production-release-environment-policy-invalid');
 }
 
 function validateClaimEvidence(evidence:readonly ComputerUseProductionClaimEvidence[]):void {
@@ -142,6 +153,22 @@ function validateClaimEvidence(evidence:readonly ComputerUseProductionClaimEvide
     claims.add(item.claim);
     if(!Array.isArray(item.caseIds)||item.caseIds.length===0||item.caseIds.length>MAX_THRESHOLD||new Set(item.caseIds).size!==item.caseIds.length||item.caseIds.some((id:unknown)=>typeof id!=='string'||!TOKEN.test(id)))
       throw new Error('computer-use-production-claim-evidence-invalid');
+  }
+}
+function validateReleaseEnvironmentEvidence(evidence:readonly ComputerUseProductionReleaseEnvironmentEvidence[]):void {
+  if(!Array.isArray(evidence)||evidence.length>MAX_THRESHOLD)throw new Error('computer-use-production-release-environment-evidence-invalid');
+  const environments=new Set<string>();
+  for(const item of evidence){
+    if(!item||typeof item!=='object'||!TOKEN.test(item.environmentId)||environments.has(item.environmentId)||!Array.isArray(item.bindings)||item.bindings.length===0||item.bindings.length>MAX_THRESHOLD)
+      throw new Error('computer-use-production-release-environment-evidence-invalid');
+    environments.add(item.environmentId);
+    const bindings=new Set<string>();
+    for(const binding of item.bindings){
+      if(!binding||typeof binding!=='object'||!TOKEN.test(binding.caseId)||!TOKEN.test(binding.sourceId))throw new Error('computer-use-production-release-environment-evidence-invalid');
+      const identity=`${binding.caseId}:${binding.sourceId}`;
+      if(bindings.has(identity))throw new Error('computer-use-production-release-environment-evidence-invalid');
+      bindings.add(identity);
+    }
   }
 }
 function validateRuntimeProof(proof:ComputerUseProductionRuntimeProof):void {
@@ -161,11 +188,13 @@ export function evaluateComputerUseProductionGate(
   cases:readonly ComputerUseEvaluationCaseResult[],
   claimEvidence:readonly ComputerUseProductionClaimEvidence[],
   runtimeProof:ComputerUseProductionRuntimeProof,
+  releaseEnvironmentEvidence:readonly ComputerUseProductionReleaseEnvironmentEvidence[],
 ):ComputerUseProductionGateDecision {
   validateComputerUseProductionGatePolicy(policy);
   validateEmpiricalComputerUseEvaluationCases(cases);
   validateClaimEvidence(claimEvidence);
   validateRuntimeProof(runtimeProof);
+  validateReleaseEnvironmentEvidence(releaseEnvironmentEvidence);
   const evaluation=summarizeComputerUseEvaluation(cases);
   const blockers:string[]=[];
   const stratumBreadth:ComputerUseProductionStratumBreadth[]=[];
@@ -207,6 +236,25 @@ export function evaluateComputerUseProductionGate(
     else satisfiedClaims.push(requirement.claim);
   }
 
+  const releaseEvidenceByEnvironment=new Map(releaseEnvironmentEvidence.map((entry)=>[entry.environmentId,entry] as const));
+  const satisfiedReleaseEnvironments:string[]=[];
+  for(const environmentId of policy.requiredReleaseEnvironments){
+    const supplied=releaseEvidenceByEnvironment.get(environmentId);
+    if(!supplied){blockers.push(`release-environment:${environmentId}:evidence-missing`);continue;}
+    let validBindings=0;
+    for(const binding of supplied.bindings){
+      const entry=byId.get(binding.caseId);
+      if(!entry){blockers.push(`release-environment:${environmentId}:case-missing:${binding.caseId}`);continue;}
+      if(entry.outcome!=='passed'){blockers.push(`release-environment:${environmentId}:case-not-passed:${binding.caseId}`);continue;}
+      if(!entry.sources?.some((source)=>source.sourceId===binding.sourceId)){
+        blockers.push(`release-environment:${environmentId}:source-not-bound:${binding.caseId}:${binding.sourceId}`);continue;
+      }
+      validBindings+=1;
+    }
+    if(validBindings===0)blockers.push(`release-environment:${environmentId}:no-valid-binding`);
+    else satisfiedReleaseEnvironments.push(environmentId);
+  }
+
   for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
     if(runtimeProof.zeroToleranceIncidents[incident]!==0)blockers.push(`incident:${incident}:nonzero`);
   }
@@ -231,6 +279,7 @@ export function evaluateComputerUseProductionGate(
     stratumBreadth:Object.freeze(stratumBreadth),
     satisfiedSourceKinds:Object.freeze([...observedSourceKinds].sort()),
     satisfiedClaims:Object.freeze(satisfiedClaims),
+    satisfiedReleaseEnvironments:Object.freeze(satisfiedReleaseEnvironments),
     targetEnablement,
   });
 }
