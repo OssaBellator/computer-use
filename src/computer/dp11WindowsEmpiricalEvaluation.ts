@@ -94,6 +94,12 @@ export const DP11_WINDOWS_EMPIRICAL_BASELINE=Object.freeze({
 export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluationCaseResult[]=Object.freeze([
   ...DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
   Object.freeze({
+    caseId:'dp11-vm-raw-primitive-actions',
+    stratum:'primitive-action',outcome:'passed',embodiment:'raw-coordinate',
+    evidence:Object.freeze(['raw-text-button-pass','raw-range-73-pass','raw-window-state-pass','raw-evidence-remains-weak']),
+    sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_dkg85_vm_raw_immediate_20260827',gitSha:EVIDENCE_SHA})]),
+  }),
+  Object.freeze({
     caseId:'dp11-wpf-host-primitive-actions',
     stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
     evidence:Object.freeze(['wpf-value-pass','wpf-invoke-pass','wpf-toggle-pass','wpf-range-pass','wpf-selection-pass','wpf-window-pass']),

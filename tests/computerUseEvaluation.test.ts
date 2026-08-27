@@ -87,11 +87,14 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
 });
 
 test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,10);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,11);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.failedCases,1);
+  const raw=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-vm-raw-primitive-actions')!;
+  assert.equal(raw.outcome,'passed');
+  assert.equal(raw.embodiment,'raw-coordinate');
   const wpfHost=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-host-primitive-actions')!;
   assert.equal(wpfHost.outcome,'passed');
   assert.deepEqual(wpfHost.sources?.map((source)=>source.kind),['windows-host-smoke']);

@@ -44,6 +44,10 @@ export interface ComputerUseProductionStratumRequirement {
   readonly minSuccessRate:number;
   readonly maxFailed:number;
   readonly maxUnknown:number;
+  /** Breadth must come from distinct execution embodiments, not repeated identical runs. */
+  readonly minDistinctEmbodiments:number;
+  /** Breadth must also span replay-identifiable evidence sources. */
+  readonly minDistinctSources:number;
 }
 export interface ComputerUseProductionClaimRequirement {
   readonly claim:ComputerUseProductionSafetyClaim;
@@ -98,7 +102,8 @@ export function validateComputerUseProductionGatePolicy(policy:ComputerUseProduc
     if(!item||typeof item!=='object'||!COMPUTER_USE_EVALUATION_STRATA.includes(item.stratum))throw new Error('computer-use-production-stratum-policy-invalid');
     if(strata.has(item.stratum))throw new Error('computer-use-production-stratum-policy-duplicate');
     strata.add(item.stratum);
-    if(!safeInt(item.minAttempted,1)||!safeRate(item.minSuccessRate)||!safeInt(item.maxFailed)||!safeInt(item.maxUnknown))
+    if(!safeInt(item.minAttempted,1)||!safeRate(item.minSuccessRate)||!safeInt(item.maxFailed)||!safeInt(item.maxUnknown)||
+      !safeInt(item.minDistinctEmbodiments,1)||!safeInt(item.minDistinctSources,1))
       throw new Error('computer-use-production-stratum-threshold-invalid');
   }
   if(!Array.isArray(policy.claimRequirements)||policy.claimRequirements.length!==COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.length)
@@ -161,6 +166,12 @@ export function evaluateComputerUseProductionGate(
     if(summary.successRate<requirement.minSuccessRate)blockers.push(`stratum:${requirement.stratum}:success-rate-below-threshold`);
     if(summary.failed>requirement.maxFailed)blockers.push(`stratum:${requirement.stratum}:failures-above-threshold`);
     if(summary.unknown>requirement.maxUnknown)blockers.push(`stratum:${requirement.stratum}:unknown-above-threshold`);
+    const attempted=cases.filter((entry)=>entry.stratum===requirement.stratum&&entry.outcome!=='skipped');
+    const embodiments=new Set(attempted.map((entry)=>entry.embodiment).filter((value):value is string=>value!==undefined));
+    const sources=new Set<string>();
+    for(const entry of attempted)for(const source of entry.sources??[])sources.add(`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
+    if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
+    if(sources.size<requirement.minDistinctSources)blockers.push(`stratum:${requirement.stratum}:source-breadth-below-threshold`);
   }
 
   const observedSourceKinds=new Set<ComputerUseEvaluationSourceKind>();

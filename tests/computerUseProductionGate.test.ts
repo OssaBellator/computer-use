@@ -19,7 +19,7 @@ function policy(minAttempted=1):ComputerUseProductionGatePolicy{
   return {
     policyId:'test-production-policy',
     stratumRequirements:COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({
-      stratum,minAttempted,minSuccessRate:1,maxFailed:0,maxUnknown:0,
+      stratum,minAttempted,minSuccessRate:1,maxFailed:0,maxUnknown:0,minDistinctEmbodiments:1,minDistinctSources:1,
     })),
     claimRequirements:COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.map((claim)=>({claim,minPassingCases:1})),
     requiredSourceKinds:['automated-test','execution-receipt'],
@@ -31,6 +31,7 @@ function corpus():ComputerUseEvaluationCaseResult[]{
     caseId:`prod-case-${index}`,
     stratum,
     outcome:'passed' as const,
+    embodiment:'semantic-ui',
     sources:[
       {kind:'automated-test' as const,sourceId:`test-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'},
       {kind:'execution-receipt' as const,sourceId:`receipt-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'},
@@ -68,6 +69,18 @@ test('current DP11 empirical baseline stays blocked by stricter quantitative bre
   assert.equal(decision.eligible,false);
   assert.equal(decision.authorityGranted,false);
   for(const stratum of COMPUTER_USE_EVALUATION_STRATA)assert.ok(decision.blockers.includes(`stratum:${stratum}:attempted-below-threshold`));
+});
+
+test('production breadth policy rejects repeated single-embodiment or single-source evidence',()=>{
+  const cases=corpus();
+  const strict={
+    ...policy(),
+    stratumRequirements:policy().stratumRequirements.map((entry)=>entry.stratum==='primitive-action'?{...entry,minDistinctEmbodiments:2,minDistinctSources:3}:entry),
+  };
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId));
+  assert.equal(decision.eligible,false);
+  assert.ok(decision.blockers.includes('stratum:primitive-action:embodiment-breadth-below-threshold'));
+  assert.ok(decision.blockers.includes('stratum:primitive-action:source-breadth-below-threshold'));
 });
 
 test('zero-tolerance safety incidents block release regardless of quantitative policy thresholds',()=>{
