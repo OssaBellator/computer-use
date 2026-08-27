@@ -27,9 +27,15 @@ export interface GroundingCandidate {
   readonly evidence?: readonly string[];
 }
 
+export interface GroundingConflict {
+  readonly candidateIds:readonly string[];
+  readonly reason:'authoritative-target-conflict';
+}
+
 export interface GroundingResolution {
   readonly selected?: GroundingCandidate;
   readonly rejected: readonly { readonly id: string; readonly reason: string }[];
+  readonly conflicts:readonly GroundingConflict[];
 }
 
 const PRIORITY: Readonly<Record<GroundingKind, number>> = Object.freeze({
@@ -64,6 +70,28 @@ function compareCandidates(a: GroundingCandidate, b: GroundingCandidate): number
   if (confidence !== 0) return confidence;
   return a.id.localeCompare(b.id);
 }
+function sameTarget(a:ComputerEntityRef,b:ComputerEntityRef):boolean {
+  return a.adapterId===b.adapterId&&a.environment===b.environment&&a.kind===b.kind&&a.entityId===b.entityId&&
+    a.surfaceId===b.surfaceId&&a.generation===b.generation;
+}
+function authoritative(candidate:GroundingCandidate):boolean {
+  return candidate.kind==='native-api'||candidate.kind==='semantic-ui';
+}
+function authoritativeConflicts(candidates:readonly GroundingCandidate[]):readonly GroundingConflict[]{
+  const withTargets=candidates.filter((candidate)=>authoritative(candidate)&&candidate.target!==undefined);
+  const conflicting=new Set<string>();
+  for(let i=0;i<withTargets.length;i+=1){
+    for(let j=i+1;j<withTargets.length;j+=1){
+      if(!sameTarget(withTargets[i]!.target!,withTargets[j]!.target!)){
+        conflicting.add(withTargets[i]!.id);
+        conflicting.add(withTargets[j]!.id);
+      }
+    }
+  }
+  return conflicting.size===0?Object.freeze([]):Object.freeze([
+    Object.freeze({candidateIds:Object.freeze([...conflicting].sort()),reason:'authoritative-target-conflict' as const}),
+  ]);
+}
 
 /**
  * Chooses the strongest currently valid embodiment without pretending visual
@@ -81,8 +109,10 @@ export function resolveGrounding(candidates: readonly GroundingCandidate[]): Gro
   }
 
   accepted.sort(compareCandidates);
+  const conflicts=authoritativeConflicts(accepted);
   return Object.freeze({
-    ...(accepted[0] ? { selected: accepted[0] } : {}),
+    ...(conflicts.length===0&&accepted[0] ? { selected: accepted[0] } : {}),
     rejected: Object.freeze(rejected),
+    conflicts,
   });
 }

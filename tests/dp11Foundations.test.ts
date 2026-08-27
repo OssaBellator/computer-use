@@ -66,6 +66,28 @@ test('grounding resolver prefers semantic authority over higher-confidence pixel
   assert.equal(result.selected?.id,'uia-save');
 });
 
+test('authoritative cross-channel target conflict blocks selection instead of flattening disagreement',()=>{
+  const uiaTarget={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
+  const apiTarget={...uiaTarget,entityId:'document-persisted'};
+  const result=resolveGrounding([
+    {id:'uia-save',kind:'semantic-ui',confidence:0.99,supported:true,stale:false,target:uiaTarget},
+    {id:'app-state',kind:'native-api',confidence:0.80,supported:true,stale:false,target:apiTarget},
+  ]);
+  assert.equal(result.selected,undefined);
+  assert.deepEqual(result.conflicts,[{candidateIds:['app-state','uia-save'],reason:'authoritative-target-conflict'}]);
+});
+
+test('visual disagreement cannot veto a current semantic target',()=>{
+  const semanticTarget={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
+  const visualTarget={...semanticTarget,entityId:'export'};
+  const result=resolveGrounding([
+    {id:'uia-save',kind:'semantic-ui',confidence:0.72,supported:true,stale:false,target:semanticTarget},
+    {id:'visual-export',kind:'visual-grounded',confidence:0.999,supported:true,stale:false,target:visualTarget,frame:{surface,frameSequence:45,capturedAtMs:2}},
+  ]);
+  assert.equal(result.selected?.id,'uia-save');
+  assert.deepEqual(result.conflicts,[]);
+});
+
 test('visual and coordinate candidates fail closed unless frame and generation bound', () => {
   const noFrame: GroundingCandidate = {id:'pixel-1',kind:'raw-coordinate',confidence:1,supported:true,stale:false};
   const noGeneration: GroundingCandidate = {id:'visual-1',kind:'visual-grounded',confidence:1,supported:true,stale:false,frame:{surface:{...surface,generation:undefined},frameSequence:1,capturedAtMs:1}};
