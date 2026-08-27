@@ -193,7 +193,8 @@ export async function openWindowsNativeHostRuntime(
       close:async()=>{
         if(closed)return;
         closed=true;
-        if(retention)await retention.releaseExpired().catch(()=>undefined);
+        leases?.releaseAll();
+        if(retention)await retention.releaseAll().catch(()=>undefined);
         await apartment.dispose();
       },
     });
