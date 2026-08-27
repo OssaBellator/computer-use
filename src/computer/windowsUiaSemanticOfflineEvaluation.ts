@@ -7,6 +7,9 @@ const MAX_CASES=256;
 
 export interface WindowsUiaSemanticOfflineReplayCase {
   readonly caseId:string;
+  /** Measurement labels only; they carry no execution or promotion authority. */
+  readonly applicationId?:string;
+  readonly providerFamily?:string;
   readonly observation:WindowsUiaCachedObservation;
   readonly inputs?:WindowsUiaSemanticRecipeInputs;
 }
@@ -18,6 +21,18 @@ export interface WindowsUiaSemanticOfflineEvaluation {
   readonly regressions:number;
   readonly stableReady:number;
   readonly proposedUnresolved:number;
+  readonly generalization:Readonly<{
+    distinctApplications:number;
+    distinctProviderFamilies:number;
+    domains:readonly Readonly<{
+      domainId:string;
+      cases:number;
+      recoveries:number;
+      regressions:number;
+      stableReady:number;
+      proposedUnresolved:number;
+    }>[];
+  }>;
   readonly caseResults:readonly Readonly<{
     caseId:string;
     baseStatus:string;
@@ -42,26 +57,42 @@ export function evaluateWindowsUiaSemanticRecipeOffline(
   validateWindowsUiaSemanticRecipeRevision(base,proposed);
   if(!Array.isArray(cases)||cases.length===0||cases.length>MAX_CASES)throw new Error('windows-uia-semantic-offline-evaluation-cases-invalid');
   const seen=new Set<string>();
+  const applications=new Set<string>();
+  const providers=new Set<string>();
+  const domains=new Map<string,{cases:number;recoveries:number;regressions:number;stableReady:number;proposedUnresolved:number}>();
   let recoveries=0,regressions=0,stableReady=0,proposedUnresolved=0;
   const caseResults:Array<{caseId:string;baseStatus:string;proposedStatus:string}>=[];
   for(const entry of cases){
     if(!entry||typeof entry!=='object'||typeof entry.caseId!=='string'||!TOKEN.test(entry.caseId)||seen.has(entry.caseId))
       throw new Error('windows-uia-semantic-offline-evaluation-case-id-invalid');
     seen.add(entry.caseId);
+    if(entry.applicationId!==undefined&&(!TOKEN.test(entry.applicationId)))throw new Error('windows-uia-semantic-offline-evaluation-application-id-invalid');
+    if(entry.providerFamily!==undefined&&(!TOKEN.test(entry.providerFamily)))throw new Error('windows-uia-semantic-offline-evaluation-provider-family-invalid');
+    if(entry.applicationId!==undefined)applications.add(entry.applicationId);
+    if(entry.providerFamily!==undefined)providers.add(entry.providerFamily);
+    const domainId=`${entry.applicationId??'unknown-app'}:${entry.providerFamily??'unknown-provider'}`;
+    const domain=domains.get(domainId)??{cases:0,recoveries:0,regressions:0,stableReady:0,proposedUnresolved:0};
+    domain.cases+=1;
     const inputs=entry.inputs??Object.freeze({});
     const before=instantiateWindowsUiaSemanticRecipe(entry.observation,base.recipe,inputs);
     const after=instantiateWindowsUiaSemanticRecipe(entry.observation,proposed.recipe,inputs);
     const beforeReady=before.status==='ready';
     const afterReady=after.status==='ready';
-    if(!beforeReady&&afterReady)recoveries+=1;
-    else if(beforeReady&&!afterReady)regressions+=1;
-    else if(beforeReady&&afterReady)stableReady+=1;
-    if(!afterReady)proposedUnresolved+=1;
+    if(!beforeReady&&afterReady){recoveries+=1;domain.recoveries+=1;}
+    else if(beforeReady&&!afterReady){regressions+=1;domain.regressions+=1;}
+    else if(beforeReady&&afterReady){stableReady+=1;domain.stableReady+=1;}
+    if(!afterReady){proposedUnresolved+=1;domain.proposedUnresolved+=1;}
+    domains.set(domainId,domain);
     caseResults.push(Object.freeze({caseId:entry.caseId,baseStatus:before.status,proposedStatus:after.status}));
   }
   const status=regressions>0?'regressed':recoveries>0?'improved':'non-regressing';
+  const generalization=Object.freeze({
+    distinctApplications:applications.size,
+    distinctProviderFamilies:providers.size,
+    domains:Object.freeze([...domains.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([domainId,value])=>Object.freeze({domainId,...value}))),
+  });
   return Object.freeze({
-    status,cases:cases.length,recoveries,regressions,stableReady,proposedUnresolved,
+    status,cases:cases.length,recoveries,regressions,stableReady,proposedUnresolved,generalization,
     caseResults:Object.freeze(caseResults),promotionEligible:false as const,authorityGranted:false as const,
   });
 }

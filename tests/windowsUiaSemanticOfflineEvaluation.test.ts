@@ -78,6 +78,36 @@ test('offline semantic replay retains ambiguity as unresolved rather than treati
   assert.equal(result.promotionEligible,false);
 });
 
+test('offline semantic replay measures application/provider breadth and retains per-domain regressions',()=>{
+  const [base,proposed]=manifests(['Save','Store'],['Store']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'notepad-save',applicationId:'windows-notepad',providerFamily:'win32-richedit',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})])},
+    {caseId:'calculator-store',applicationId:'windows-calculator',providerFamily:'application-frame-uia',observation:observation([node([3],'Button',{name:'Store',patterns:['invoke']})])},
+  ]);
+  assert.deepEqual(result.generalization,{distinctApplications:2,distinctProviderFamilies:2,domains:[
+    {domainId:'windows-calculator:application-frame-uia',cases:1,recoveries:0,regressions:0,stableReady:1,proposedUnresolved:0},
+    {domainId:'windows-notepad:win32-richedit',cases:1,recoveries:0,regressions:1,stableReady:0,proposedUnresolved:1},
+  ]});
+  assert.equal(Object.prototype.hasOwnProperty.call(result.generalization,'eligible'),false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.generalization,'threshold'),false);
+});
+
+test('offline semantic replay counts only explicit bounded generalization labels',()=>{
+  const [base,proposed]=manifests(['Save'],['Save']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'unlabeled',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})])},
+  ]);
+  assert.equal(result.generalization.distinctApplications,0);
+  assert.equal(result.generalization.distinctProviderFamilies,0);
+  assert.equal(result.generalization.domains[0]?.domainId,'unknown-app:unknown-provider');
+  assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'bad-app',applicationId:'bad app',observation:observation([])},
+  ]),/application-id-invalid/);
+  assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'bad-provider',providerFamily:'bad provider',observation:observation([])},
+  ]),/provider-family-invalid/);
+});
+
 test('offline semantic replay requires exact revision lineage and bounded unique case identities',()=>{
   const [base,proposed]=manifests(['Save'],['Save','Store']);
   const bad=Object.freeze({...proposed,parentDigest:`sha256:${'0'.repeat(64)}`});

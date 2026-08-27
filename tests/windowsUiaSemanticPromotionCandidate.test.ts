@@ -9,7 +9,7 @@ function manifest(revision:number,names:readonly string[],parentDigest?:string):
   return Object.freeze({schemaVersion:1,revision,...(parentDigest?{parentDigest}:{}),evidenceIds:Object.freeze([`evidence-${revision}`]),recipe:Object.freeze({id:'save-skill',locator:Object.freeze({id:'save-target',names:Object.freeze(names),controlTypes:Object.freeze(['Button']),requiredPatterns:Object.freeze(['invoke'] as const)}),action:Object.freeze({kind:'invoke' as const})})});
 }
 function evaluation(input:Partial<WindowsUiaSemanticOfflineEvaluation>={}):WindowsUiaSemanticOfflineEvaluation {
-  return Object.freeze({status:'improved',cases:2,recoveries:1,regressions:0,stableReady:1,proposedUnresolved:0,caseResults:Object.freeze([]),promotionEligible:false,authorityGranted:false,...input});
+  return Object.freeze({status:'improved',cases:2,recoveries:1,regressions:0,stableReady:1,proposedUnresolved:0,generalization:Object.freeze({distinctApplications:0,distinctProviderFamilies:0,domains:Object.freeze([])}),caseResults:Object.freeze([]),promotionEligible:false,authorityGranted:false,...input});
 }
 function registryPair(){
   const registry=new WindowsUiaSemanticRecipeRegistry();
