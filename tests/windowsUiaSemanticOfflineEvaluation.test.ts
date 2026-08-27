@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { WindowsUiaCachedObservation, WindowsUiaControlSnapshot, WindowsUiaWindowRef } from '../src/computer/windowsUiaContract.js';
-import { evaluateWindowsUiaSemanticRecipeOffline } from '../src/computer/windowsUiaSemanticOfflineEvaluation.js';
+import { evaluateWindowsUiaSemanticRecipeOffline, type WindowsUiaSemanticOfflineReplayCase } from '../src/computer/windowsUiaSemanticOfflineEvaluation.js';
 import { digestWindowsUiaSemanticRecipeManifest, type WindowsUiaSemanticRecipeManifest } from '../src/computer/windowsUiaSemanticRecipeManifest.js';
 import { digestWindowsUiaSemanticReplayCorpus } from '../src/computer/windowsUiaSemanticReplayCorpus.js';
 
@@ -126,6 +126,18 @@ test('offline semantic replay separates development recovery from held-out regre
   ]);
   assert.equal(result.promotionEligible,false);
   assert.equal(result.authorityGranted,false);
+});
+
+test('offline replay evaluates the same captured metadata that defines corpus identity',()=>{
+  const [base,proposed]=manifests(['Save'],['Save']);
+  let applicationReads=0;
+  const replayCase={caseId:'capture-once',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})])} as WindowsUiaSemanticOfflineReplayCase;
+  Object.defineProperty(replayCase,'applicationId',{enumerable:true,get(){applicationReads+=1;return applicationReads===1?'app-first':'app-second';}});
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[replayCase]);
+  assert.equal(applicationReads,1);
+  assert.equal(result.generalization.distinctApplications,1);
+  assert.equal(result.generalization.domains[0]?.domainId,'app-first:unknown-provider');
+  assert.equal(result.caseResults[0]?.proposedStatus,'ready');
 });
 
 test('offline replay corpus digest is order-independent but content-sensitive',()=>{

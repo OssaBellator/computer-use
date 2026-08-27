@@ -1,21 +1,9 @@
-import type { WindowsUiaCachedObservation } from './windowsUiaContract.js';
-import { instantiateWindowsUiaSemanticRecipe, type WindowsUiaSemanticRecipeInputs } from './windowsUiaSemanticRecipe.js';
+import { instantiateWindowsUiaSemanticRecipe } from './windowsUiaSemanticRecipe.js';
 import { validateWindowsUiaSemanticRecipeRevision, type WindowsUiaSemanticRecipeManifest } from './windowsUiaSemanticRecipeManifest.js';
-import { digestWindowsUiaSemanticReplayCorpus } from './windowsUiaSemanticReplayCorpus.js';
+import { captureWindowsUiaSemanticReplayCorpus, type WindowsUiaSemanticOfflineReplayCase } from './windowsUiaSemanticReplayCorpus.js';
+export type { WindowsUiaSemanticOfflineReplayCase } from './windowsUiaSemanticReplayCorpus.js';
 
-const TOKEN=/^[a-z0-9][a-z0-9._:-]{0,127}$/i;
 const MAX_CASES=256;
-
-export interface WindowsUiaSemanticOfflineReplayCase {
-  readonly caseId:string;
-  /** Measurement labels only; they carry no execution or promotion authority. */
-  readonly applicationId?:string;
-  readonly providerFamily?:string;
-  /** Explicit replay split; defaults to development when omitted. */
-  readonly partition?:'development'|'holdout';
-  readonly observation:WindowsUiaCachedObservation;
-  readonly inputs?:WindowsUiaSemanticRecipeInputs;
-}
 
 export interface WindowsUiaSemanticOfflineEvaluation {
   readonly status:'improved'|'non-regressing'|'regressed';
@@ -70,24 +58,18 @@ export function evaluateWindowsUiaSemanticRecipeOffline(
 ):WindowsUiaSemanticOfflineEvaluation {
   validateWindowsUiaSemanticRecipeRevision(base,proposed);
   if(!Array.isArray(cases)||cases.length===0||cases.length>MAX_CASES)throw new Error('windows-uia-semantic-offline-evaluation-cases-invalid');
-  const corpusDigest=digestWindowsUiaSemanticReplayCorpus(cases);
-  const seen=new Set<string>();
+  const capturedCorpus=captureWindowsUiaSemanticReplayCorpus(cases);
+  const corpusDigest=capturedCorpus.digest;
   const applications=new Set<string>();
   const providers=new Set<string>();
   const domains=new Map<string,{cases:number;recoveries:number;regressions:number;stableReady:number;proposedUnresolved:number}>();
   const partitions=new Map<'development'|'holdout',{cases:number;recoveries:number;regressions:number;stableReady:number;proposedUnresolved:number;applications:Set<string>;providers:Set<string>}>();
   let recoveries=0,regressions=0,stableReady=0,proposedUnresolved=0;
   const caseResults:Array<{caseId:string;baseStatus:string;proposedStatus:string}>=[];
-  for(const entry of cases){
-    if(!entry||typeof entry!=='object'||typeof entry.caseId!=='string'||!TOKEN.test(entry.caseId)||seen.has(entry.caseId))
-      throw new Error('windows-uia-semantic-offline-evaluation-case-id-invalid');
-    seen.add(entry.caseId);
-    if(entry.applicationId!==undefined&&(!TOKEN.test(entry.applicationId)))throw new Error('windows-uia-semantic-offline-evaluation-application-id-invalid');
-    if(entry.providerFamily!==undefined&&(!TOKEN.test(entry.providerFamily)))throw new Error('windows-uia-semantic-offline-evaluation-provider-family-invalid');
-    if(entry.partition!==undefined&&entry.partition!=='development'&&entry.partition!=='holdout')throw new Error('windows-uia-semantic-offline-evaluation-partition-invalid');
+  for(const entry of capturedCorpus.cases){
     if(entry.applicationId!==undefined)applications.add(entry.applicationId);
     if(entry.providerFamily!==undefined)providers.add(entry.providerFamily);
-    const partition=entry.partition??'development';
+    const partition=entry.partition;
     const partitionStats=partitions.get(partition)??{cases:0,recoveries:0,regressions:0,stableReady:0,proposedUnresolved:0,applications:new Set<string>(),providers:new Set<string>()};
     partitionStats.cases+=1;
     if(entry.applicationId!==undefined)partitionStats.applications.add(entry.applicationId);
@@ -95,9 +77,8 @@ export function evaluateWindowsUiaSemanticRecipeOffline(
     const domainId=`${entry.applicationId??'unknown-app'}:${entry.providerFamily??'unknown-provider'}`;
     const domain=domains.get(domainId)??{cases:0,recoveries:0,regressions:0,stableReady:0,proposedUnresolved:0};
     domain.cases+=1;
-    const inputs=entry.inputs??Object.freeze({});
-    const before=instantiateWindowsUiaSemanticRecipe(entry.observation,base.recipe,inputs);
-    const after=instantiateWindowsUiaSemanticRecipe(entry.observation,proposed.recipe,inputs);
+    const before=instantiateWindowsUiaSemanticRecipe(entry.observation,base.recipe,entry.inputs);
+    const after=instantiateWindowsUiaSemanticRecipe(entry.observation,proposed.recipe,entry.inputs);
     const beforeReady=before.status==='ready';
     const afterReady=after.status==='ready';
     if(!beforeReady&&afterReady){recoveries+=1;domain.recoveries+=1;partitionStats.recoveries+=1;}
@@ -119,7 +100,7 @@ export function evaluateWindowsUiaSemanticRecipeOffline(
     })),
   });
   return Object.freeze({
-    status,cases:cases.length,corpusDigest,recoveries,regressions,stableReady,proposedUnresolved,generalization,
+    status,cases:capturedCorpus.cases.length,corpusDigest,recoveries,regressions,stableReady,proposedUnresolved,generalization,
     caseResults:Object.freeze(caseResults),promotionEligible:false as const,authorityGranted:false as const,
   });
 }
