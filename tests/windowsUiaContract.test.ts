@@ -129,6 +129,22 @@ test('target action support assessment exposes exact required and observed UIA p
   assert.equal(dispatches,0);
 });
 
+test('target action support assessment classifies pre-dispatch provider inaccessibility as unsupported', async () => {
+  let dispatches = 0;
+  const inaccessible = new WindowsUiaSemanticRuntime(provider({
+    revalidateControl:async()=>({status:'inaccessible',evidence:['windows-uia-provider-inaccessible-before-dispatch']}),
+    performSemanticAction:async()=>{dispatches+=1;return {status:'completed',dispatched:true};},
+  }));
+  const support=await inaccessible.assessActionSupport(ref,{kind:'invoke'});
+  assert.deepEqual(support,{
+    status:'unsupported',requiredPattern:'invoke',evidence:['windows-uia-inaccessible','windows-uia-provider-inaccessible-before-dispatch'],
+  });
+  const action=await inaccessible.act(ref,{kind:'invoke'},'local-reversible');
+  assert.equal(action.status,'unsupported');
+  assert.equal(action.dispatch,'not-dispatched');
+  assert.equal(dispatches,0);
+});
+
 test('target action support assessment fails closed on stale or disabled exact targets', async () => {
   const stale = new WindowsUiaSemanticRuntime(provider({revalidateControl:async()=>({status:'stale',evidence:['provider-stale']})}));
   assert.deepEqual(await stale.assessActionSupport(ref,{kind:'invoke'}),{

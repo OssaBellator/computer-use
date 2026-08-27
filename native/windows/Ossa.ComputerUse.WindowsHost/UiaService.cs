@@ -39,6 +39,10 @@ internal sealed class UiaService
         {
             return new { status = "inaccessible" };
         }
+        catch (COMException)
+        {
+            return new { status = "inaccessible" };
+        }
 
         if (CurrentInt(element, AutomationElement.ProcessIdProperty) != request.Window.Process.ProcessId)
         {
@@ -73,13 +77,28 @@ internal sealed class UiaService
     {
         RequireThread(request.ThreadToken);
         ValidateWindowGeneration(request.Ref.Window);
-        var root = ResolveWindowElement(request.Ref.Window);
-        var resolved = FindByRuntimeId(root, request.Ref.RuntimeId, 10_000);
-        if (resolved is null) return new { status = "missing" };
+        try
+        {
+            var root = ResolveWindowElement(request.Ref.Window);
+            var resolved = FindByRuntimeId(root, request.Ref.RuntimeId, 10_000);
+            if (resolved is null) return new { status = "missing" };
 
-        var snapshot = Snapshot(resolved, request.Ref.Window);
-        if (snapshot.Ref.Generation != request.Ref.Generation) return new { status = "missing" };
-        return new { status = "candidate", element = RegisterHandle(resolved, request.Ref.Window) };
+            var snapshot = Snapshot(resolved, request.Ref.Window);
+            if (snapshot.Ref.Generation != request.Ref.Generation) return new { status = "missing" };
+            return new { status = "candidate", element = RegisterHandle(resolved, request.Ref.Window) };
+        }
+        catch (ElementNotAvailableException)
+        {
+            return new { status = "missing" };
+        }
+        catch (InvalidOperationException)
+        {
+            return new { status = "inaccessible" };
+        }
+        catch (COMException)
+        {
+            return new { status = "inaccessible" };
+        }
     }
 
     internal object CompareElements(CompareElementsRequest request)
@@ -101,18 +120,33 @@ internal sealed class UiaService
     {
         RequireThread(request.ThreadToken);
         ValidateWindowGeneration(request.Ref.Window);
-        var expected = GetHandle(request.Element);
-        if (!SameWindow(expected.Window, request.Ref.Window)) return new { status = "stale" };
+        try
+        {
+            var expected = GetHandle(request.Element);
+            if (!SameWindow(expected.Window, request.Ref.Window)) return new { status = "stale" };
 
-        var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
-        if (current is null) return new { status = "missing" };
-        if (!SafeCompare(expected.Element, current))
-            return new { status = "stale", evidence = new[] { "windows-uia-compare-elements-mismatch" } };
+            var current = FindByRuntimeId(ResolveWindowElement(request.Ref.Window), request.Ref.RuntimeId, 10_000);
+            if (current is null) return new { status = "missing" };
+            if (!SafeCompare(expected.Element, current))
+                return new { status = "stale", evidence = new[] { "windows-uia-compare-elements-mismatch" } };
 
-        var control = Snapshot(current, request.Ref.Window);
-        if (control.Ref.Generation != request.Ref.Generation)
-            return new { status = "stale", evidence = new[] { "windows-uia-control-generation-mismatch" } };
-        return new { status = "current", control };
+            var control = Snapshot(current, request.Ref.Window);
+            if (control.Ref.Generation != request.Ref.Generation)
+                return new { status = "stale", evidence = new[] { "windows-uia-control-generation-mismatch" } };
+            return new { status = "current", control };
+        }
+        catch (ElementNotAvailableException)
+        {
+            return new { status = "missing" };
+        }
+        catch (InvalidOperationException)
+        {
+            return new { status = "inaccessible", evidence = new[] { "windows-uia-provider-inaccessible-before-dispatch" } };
+        }
+        catch (COMException)
+        {
+            return new { status = "inaccessible", evidence = new[] { "windows-uia-provider-inaccessible-before-dispatch" } };
+        }
     }
 
     internal object PerformPattern(PerformPatternRequest request)
