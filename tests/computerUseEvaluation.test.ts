@@ -108,16 +108,16 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
 });
 
 test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,47);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,50);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.failedCases,1);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.failedCases,2);
   const primitive=DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='primitive-action')!;
   const verification=DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='state-transition-verification')!;
-  assert.equal(primitive.attempted,15);
-  assert.equal(verification.attempted,8);
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='grounding')!.attempted,6);
+  assert.equal(primitive.attempted,16);
+  assert.equal(verification.attempted,9);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='grounding')!.attempted,7);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!.attempted,9);
   const foregroundRefusal=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-provider-unavailable-foreground-refusal')!;
   assert.equal(foregroundRefusal.outcome,'passed');
@@ -149,6 +149,18 @@ test('DKG85 expanded provider-diversity corpus retains protected-VM WPF groundin
   assert.equal(win32Vm.sources?.[0]?.sourceId,'uca_dp11_win32_pinned_vm_0827_01');
   const win32Verification=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-win32-host-vm-state-verification')!;
   assert.deepEqual(win32Verification.sources?.map((source)=>source.kind),['windows-host-smoke','windows-vm-smoke']);
+  const notepadAction=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-notepad-real-app-semantic-value')!;
+  const notepadVerification=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-notepad-real-app-state-verification')!;
+  const calculatorGap=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-calculator-real-app-content-grounding-blocked')!;
+  assert.equal(notepadAction.outcome,'passed');
+  assert.equal(notepadAction.applicationId,'windows-notepad');
+  assert.equal(notepadAction.providerFamily,'win32-richedit-uia');
+  assert.equal(notepadAction.sources?.[0]?.sourceId,'xrc_mtbe4tif_fc491915f912baad0475752e');
+  assert.equal(notepadVerification.outcome,'passed');
+  assert.ok(notepadVerification.evidence?.includes('value-readback-verified'));
+  assert.equal(calculatorGap.outcome,'failed');
+  assert.equal(calculatorGap.applicationId,'windows-calculator');
+  assert.ok(calculatorGap.evidence?.includes('no-semantic-action-dispatch'));
   const campaign=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.filter((entry)=>entry.caseId.startsWith('dp11-campaign-'));
   assert.equal(campaign.length,14);
   assert.ok(campaign.every((entry)=>entry.outcome==='passed'&&entry.sources?.some((source)=>source.kind==='automated-test')&&entry.sources?.some((source)=>source.kind==='execution-receipt')));

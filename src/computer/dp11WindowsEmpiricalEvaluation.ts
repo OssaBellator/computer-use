@@ -17,6 +17,8 @@ const CAMPAIGN_EVIDENCE_SHA='f0b429e13a3ddca588804298feb7450859c6a6c6';
 const CAMPAIGN_RECEIPT='xrc_mtb6ibe2_e68af5f20368acfe237072ca';
 const CLAIM_EVIDENCE_SHA='2bcc3d9b4b4b7d5b4347378c50556953a25d22ac';
 const CLAIM_EVIDENCE_RECEIPT='xrc_mtb8h1pg_e704e9a651be9393ad4bd90a';
+const REAL_APP_EVIDENCE_SHA='86f97cf2550ee65662623a1948d5f95f879d7936';
+const REAL_APP_EVIDENCE_RECEIPT='xrc_mtbe4tif_fc491915f912baad0475752e';
 
 function automated(sourceId:string){
   return Object.freeze([
@@ -215,6 +217,24 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
       Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_dp11_win32_pinned_host_0827_02',gitSha:WIN32_EVIDENCE_SHA}),
       Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_win32_pinned_vm_0827_01',gitSha:WIN32_EVIDENCE_SHA}),
     ]),
+  }),
+  Object.freeze({
+    caseId:'dp11-notepad-real-app-semantic-value',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-notepad',providerFamily:'win32-richedit-uia',
+    evidence:Object.freeze(['real-application','value-pattern-supported','semantic-dispatched-once','no-raw-fallback']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_EVIDENCE_RECEIPT,gitSha:REAL_APP_EVIDENCE_SHA,independenceId:REAL_APP_EVIDENCE_RECEIPT})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-notepad-real-app-state-verification',
+    stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-notepad',providerFamily:'win32-richedit-uia',
+    evidence:Object.freeze(['real-application','value-readback-verified','semantic-state-transition-verified']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_EVIDENCE_RECEIPT,gitSha:REAL_APP_EVIDENCE_SHA,independenceId:REAL_APP_EVIDENCE_RECEIPT})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-calculator-real-app-content-grounding-blocked',
+    stratum:'grounding',outcome:'failed',embodiment:'semantic-ui',applicationId:'windows-calculator',providerFamily:'application-frame-uia-shell',
+    evidence:Object.freeze(['real-application','calculator-content-controls-unavailable','application-frame-shell-only','no-semantic-action-dispatch']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_EVIDENCE_RECEIPT,gitSha:REAL_APP_EVIDENCE_SHA,independenceId:REAL_APP_EVIDENCE_RECEIPT})]),
   }),
 ]);
 
