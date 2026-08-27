@@ -56,6 +56,7 @@ function validCandidate(candidate: GroundingCandidate): string | undefined {
   if (candidate.stale) return 'stale';
 
   if (candidate.kind === 'visual-grounded' || candidate.kind === 'raw-coordinate') {
+    if (candidate.target!==undefined) return 'visual-candidate-semantic-target-forbidden';
     if (!candidate.frame) return 'visual-candidate-not-frame-bound';
     if (candidate.frame.surface.generation === undefined) return 'visual-candidate-not-generation-bound';
     if (!Number.isSafeInteger(candidate.frame.frameSequence) || candidate.frame.frameSequence < 0) return 'invalid-frame-sequence';

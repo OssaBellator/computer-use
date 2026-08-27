@@ -77,7 +77,7 @@ test('authoritative cross-channel target conflict blocks selection instead of fl
   assert.deepEqual(result.conflicts,[{candidateIds:['app-state','uia-save'],reason:'authoritative-target-conflict'}]);
 });
 
-test('visual disagreement cannot veto a current semantic target',()=>{
+test('visual candidates cannot manufacture semantic identity or veto current semantic authority',()=>{
   const semanticTarget={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
   const visualTarget={...semanticTarget,entityId:'export'};
   const result=resolveGrounding([
@@ -86,6 +86,7 @@ test('visual disagreement cannot veto a current semantic target',()=>{
   ]);
   assert.equal(result.selected?.id,'uia-save');
   assert.deepEqual(result.conflicts,[]);
+  assert.deepEqual(result.rejected,[{id:'visual-export',reason:'visual-candidate-semantic-target-forbidden'}]);
 });
 
 test('visual and coordinate candidates fail closed unless frame and generation bound', () => {
