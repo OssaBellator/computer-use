@@ -3,7 +3,10 @@ import {
   validateEmpiricalComputerUseEvaluationCases,
   type ComputerUseEvaluationCaseResult,
 } from './computerUseEvaluation.js';
-import type { ComputerUseProductionClaimEvidence } from './computerUseProductionGate.js';
+import {
+  COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS,
+  type ComputerUseProductionClaimEvidence,
+} from './computerUseProductionGate.js';
 
 const EVIDENCE_SHA='a43015db804b28b338af1a9cd76c00e1df860895';
 const FULL_SUITE_RECEIPT='xrc_mtb427va_f0d5d32d439491bc154a01b7';
@@ -230,6 +233,32 @@ export const DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE:readonly ComputerUseProducti
   Object.freeze({claim:'long-horizon-auth-anti-rollback',caseIds:Object.freeze(['dp11-campaign-long-reauth-suspend','dp11-campaign-long-hierarchy-rollback'])}),
   Object.freeze({claim:'disablement-no-authority-inheritance',caseIds:Object.freeze(['dp11-release-disablement-no-authority-inheritance'])}),
 ]);
+
+export function validateDP11WindowsProductionClaimEvidence(
+  cases:readonly ComputerUseEvaluationCaseResult[]=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,
+  evidence:readonly ComputerUseProductionClaimEvidence[]=DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,
+):void {
+  if(!Array.isArray(evidence)||evidence.length!==COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS.length)
+    throw new Error('dp11-production-claim-evidence-incomplete');
+  const expected=new Set(COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS);
+  const seen=new Set<string>();
+  const byId=new Map(cases.map((entry)=>[entry.caseId,entry] as const));
+  for(const item of evidence){
+    if(!item||!expected.has(item.claim)||seen.has(item.claim))throw new Error('dp11-production-claim-evidence-invalid');
+    seen.add(item.claim);
+    if(!Array.isArray(item.caseIds)||item.caseIds.length===0||new Set(item.caseIds).size!==item.caseIds.length)
+      throw new Error(`dp11-production-claim-evidence-invalid:${item.claim}`);
+    for(const caseId of item.caseIds){
+      const entry=byId.get(caseId);
+      if(!entry)throw new Error(`dp11-production-claim-case-missing:${item.claim}:${caseId}`);
+      if(entry.outcome!=='passed')throw new Error(`dp11-production-claim-case-not-passed:${item.claim}:${caseId}:${entry.outcome}`);
+      if(!entry.sources||entry.sources.length===0)throw new Error(`dp11-production-claim-case-unsourced:${item.claim}:${caseId}`);
+    }
+  }
+  for(const claim of expected)if(!seen.has(claim))throw new Error(`dp11-production-claim-evidence-missing:${claim}`);
+}
+
+validateDP11WindowsProductionClaimEvidence();
 
 export const DP11_WINDOWS_EMPIRICAL_EXPANDED=Object.freeze({
   scope:'provider-diversity-evidence' as const,

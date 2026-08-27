@@ -12,6 +12,7 @@ import {
   DP11_WINDOWS_EMPIRICAL_EXPANDED,
   DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,
   DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,
+  validateDP11WindowsProductionClaimEvidence,
 } from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
 import { COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS } from '../src/computer/computerUseProductionGate.js';
 
@@ -156,6 +157,22 @@ test('DP11 production claim evidence covers every hard safety claim with passing
   assert.ok(privacy.evidence?.includes('credential-response-secret-rejected'));
   const disablement=byId.get('dp11-release-disablement-no-authority-inheritance')!;
   assert.ok(disablement.evidence?.includes('cu-level-authority-never-granted'));
+});
+
+test('DP11 production claim evidence validator fails closed on missing, failed, UNKNOWN, or unsourced cases',()=>{
+  assert.throws(
+    ()=>validateDP11WindowsProductionClaimEvidence(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE.slice(1)),
+    /dp11-production-claim-evidence-incomplete/,
+  );
+  const privacyId='dp11-release-privacy-credential-retention';
+  for(const outcome of ['failed','unknown','skipped'] as const){
+    const mutated=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.map((entry)=>entry.caseId===privacyId?{...entry,outcome}:entry);
+    assert.throws(()=>validateDP11WindowsProductionClaimEvidence(mutated,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE),new RegExp(`dp11-production-claim-case-not-passed:privacy-secret-retention:${privacyId}:${outcome}`));
+  }
+  const missing=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.filter((entry)=>entry.caseId!==privacyId);
+  assert.throws(()=>validateDP11WindowsProductionClaimEvidence(missing,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE),/dp11-production-claim-case-missing:privacy-secret-retention/);
+  const unsourced=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.map((entry)=>entry.caseId===privacyId?{...entry,sources:[]}:entry);
+  assert.throws(()=>validateDP11WindowsProductionClaimEvidence(unsourced,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE),/dp11-production-claim-case-unsourced:privacy-secret-retention/);
 });
 
 test('DKG85 repeated trials are counted quantitatively without manufacturing case breadth',()=>{

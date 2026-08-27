@@ -13,7 +13,11 @@ import {
   type ComputerUseEvaluationCaseResult,
 } from '../src/computer/computerUseEvaluation.js';
 import { COMPUTER_USE_ENABLEMENT_LEVELS, type ComputerUseEnablementLevelPolicy } from '../src/computer/computerUseProgressiveEnablement.js';
-import { DP11_WINDOWS_EMPIRICAL_BASELINE_CASES } from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
+import {
+  DP11_WINDOWS_EMPIRICAL_BASELINE_CASES,
+  DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,
+  DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,
+} from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
 
 function policy(minAttempted=1):ComputerUseProductionGatePolicy{
   return {
@@ -71,6 +75,16 @@ test('current DP11 empirical baseline stays blocked by stricter quantitative bre
   assert.equal(decision.eligible,false);
   assert.equal(decision.authorityGranted,false);
   for(const stratum of COMPUTER_USE_EVALUATION_STRATA)assert.ok(decision.blockers.includes(`stratum:${stratum}:attempted-below-threshold`));
+});
+
+test('current DP11 expanded corpus and claim map remain production-blocked under strict quantitative policy',()=>{
+  const disablement='dp11-release-disablement-no-authority-inheritance';
+  const decision=evaluateComputerUseProductionGate(
+    policy(2),DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,DP11_WINDOWS_PRODUCTION_CLAIM_EVIDENCE,runtimeProof(disablement),
+  );
+  assert.equal(decision.eligible,false);
+  assert.equal(decision.authorityGranted,false);
+  assert.ok(decision.blockers.includes('stratum:grounding:failures-above-threshold'));
 });
 
 test('production breadth policy rejects repeated single-embodiment or single-source evidence',()=>{
