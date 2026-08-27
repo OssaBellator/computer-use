@@ -84,6 +84,13 @@ export class DesktopInteractionLeaseManager {
     this.active.delete(leaseId);
   }
 
+  /** Revokes every locally active lease immediately. Returns the revoked count. */
+  releaseAll(): number {
+    const count=this.active.size;
+    this.active.clear();
+    return count;
+  }
+
   async validate(
     lease: DesktopInteractionLease,
     expected: { targetDesktop: string; targetSurface?: ComputerSurfaceRef },
