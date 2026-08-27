@@ -1,20 +1,103 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Threading;
 
 internal static class Program
 {
-    [STAThread]
-    private static void Main()
+    private const uint KeyEventKeyUp = 0x0002;
+    private const uint KeyEventUnicode = 0x0004;
+    private const uint MouseLeftDown = 0x0002;
+    private const uint MouseLeftUp = 0x0004;
+    private const int SwMinimize = 6;
+    private const int SwRestore = 9;
+    private const byte VkControl = 0x11;
+    private const byte VkA = 0x41;
+    private const byte VkTab = 0x09;
+    private const byte VkReturn = 0x0D;
+    private const byte VkSpace = 0x20;
+    private const byte VkHome = 0x24;
+    private const byte VkEnd = 0x23;
+    private const byte VkRight = 0x27;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point { public int X; public int Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input
     {
+        public uint Type;
+        public InputUnion Union;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public KeybdInput Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KeybdInput
+    {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint Flags;
+        public uint Time;
+        public nuint ExtraInfo;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(nint hwnd);
+
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ClientToScreen(nint hwnd, ref Point point);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, nuint extraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, nuint extraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern uint SendInput(uint count, Input[] inputs, int size);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(nint hwnd, int command);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(nint hwnd);
+
+    [STAThread]
+    private static void Main(string[] args)
+    {
+        var mode = args.Length == 0 ? "semantic-then-raw" : args[0];
+        if (mode is not ("semantic-only" or "raw-only" or "semantic-then-raw"))
+        {
+            Console.Error.WriteLine("usage: [semantic-only|raw-only|semantic-then-raw]");
+            Environment.ExitCode = 64;
+            return;
+        }
+
         var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-        var window = BuildWindow();
+        var window = BuildWindow(mode);
         app.Run(window);
     }
 
-    private static Window BuildWindow()
+    private static Window BuildWindow(string mode)
     {
         var window = new Window
         {
@@ -71,14 +154,46 @@ internal static class Program
         window.ContentRendered += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(window).Handle;
-            var worker = new Thread(() => RunSemanticTasks(window.Dispatcher, hwnd));
+            var worker = new Thread(() => RunTasks(window.Dispatcher, hwnd, mode, input, result, check, slider, beta));
             worker.SetApartmentState(ApartmentState.MTA);
             worker.Start();
         };
         return window;
     }
 
-    private static void RunSemanticTasks(Dispatcher dispatcher, nint hwnd)
+    private static void RunTasks(Dispatcher dispatcher, nint hwnd, string mode, TextBox input, TextBlock result, CheckBox check, Slider slider, ListBoxItem beta)
+    {
+        try
+        {
+            if (mode != "raw-only")
+            {
+                var semantic = RunSemanticTasks(hwnd);
+                if (semantic)
+                {
+                    Environment.ExitCode = 0;
+                    return;
+                }
+                if (mode == "semantic-only")
+                {
+                    Environment.ExitCode = 4;
+                    return;
+                }
+            }
+
+            Environment.ExitCode = RunRawTasks(dispatcher, hwnd, input, result, check, slider, beta) ? 0 : 3;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            Environment.ExitCode = 2;
+        }
+        finally
+        {
+            dispatcher.BeginInvokeShutdown(DispatcherPriority.Normal);
+        }
+    }
+
+    private static bool RunSemanticTasks(nint hwnd)
     {
         try
         {
@@ -166,24 +281,97 @@ internal static class Program
             var allSupported = hasValue && hasInvoke && hasToggle && hasRange && hasSelection && hasWindow;
             var allPassed = allSupported && textPassed && togglePassed && rangePassed && selectionPassed && windowPassed;
             Console.WriteLine(allPassed ? "WPF_STATUS=completed" : allSupported ? "WPF_STATUS=verification-mismatch" : "WPF_STATUS=pattern-unavailable");
-            Environment.ExitCode = allPassed ? 0 : 4;
+            return allPassed;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"WPF_STATUS=blocked:{ex.GetType().Name}:0x{ex.HResult:X8}");
-            Environment.ExitCode = 2;
+            return false;
         }
-        finally
+    }
+
+    private static bool RunRawTasks(Dispatcher dispatcher, nint hwnd, TextBox input, TextBlock result, CheckBox check, Slider slider, ListBoxItem beta)
+    {
+        var foregroundSet = SetForegroundWindow(hwnd);
+        if (!foregroundSet && GetForegroundWindow() != hwnd)
         {
-            dispatcher.BeginInvokeShutdown(DispatcherPriority.Normal);
+            Console.WriteLine("RAW_WPF_STATUS=foreground-failed");
+            return false;
         }
+        Thread.Sleep(150);
+        var origin = new Point();
+        if (!ClientToScreen(hwnd, ref origin) || !SetCursorPos(origin.X + 100, origin.Y + 32))
+        {
+            Console.WriteLine("RAW_WPF_STATUS=input-origin-failed");
+            return false;
+        }
+        mouse_event(MouseLeftDown, 0, 0, 0, 0);
+        mouse_event(MouseLeftUp, 0, 0, 0, 0);
+        Thread.Sleep(100);
+
+        KeyDown(VkControl); Press(VkA); KeyUp(VkControl);
+        TypeUnicode("WPF-RAW-TASK");
+        Press(VkTab); Press(VkReturn);
+        Thread.Sleep(100);
+        Press(VkTab); Press(VkSpace);
+        Press(VkTab); Press(VkHome);
+        for (var i = 0; i < 73; i++) Press(VkRight);
+        Press(VkTab); Press(VkEnd);
+        Thread.Sleep(150);
+
+        ShowWindow(hwnd, SwMinimize);
+        Thread.Sleep(100);
+        var minimized = IsIconic(hwnd);
+        ShowWindow(hwnd, SwRestore);
+        Thread.Sleep(120);
+        var restored = !IsIconic(hwnd);
+
+        var state = dispatcher.Invoke(() => new
+        {
+            Input = input.Text,
+            Result = result.Text,
+            Checked = check.IsChecked == true,
+            Range = slider.Value,
+            Selected = beta.IsSelected,
+        });
+        var textPassed = state.Input == "WPF-RAW-TASK" && state.Result == "RESULT:WPF-RAW-TASK";
+        var rangePassed = Math.Abs(state.Range - 73) < 0.001;
+        var windowPassed = minimized && restored;
+        Console.WriteLine($"RAW_WPF_TEXT_BUTTON={(textPassed ? "pass" : "fail")}:value={state.Input}:result={state.Result}");
+        Console.WriteLine($"RAW_WPF_TOGGLE={(state.Checked ? "pass" : "fail")}:checked={state.Checked}");
+        Console.WriteLine($"RAW_WPF_RANGE={(rangePassed ? "pass" : "fail")}:value={state.Range}");
+        Console.WriteLine($"RAW_WPF_SELECTION={(state.Selected ? "pass" : "fail")}:selected={state.Selected}");
+        Console.WriteLine($"RAW_WPF_WINDOW={(windowPassed ? "pass" : "fail")}:minimized={minimized}:restored={restored}");
+        var allPassed = textPassed && state.Checked && rangePassed && state.Selected && windowPassed;
+        Console.WriteLine(allPassed ? "RAW_WPF_STATUS=completed" : "RAW_WPF_STATUS=verification-mismatch");
+        return allPassed;
     }
 
     private static AutomationElement Find(AutomationElement root, string automationId)
     {
-        return root.FindFirst(
-            TreeScope.Descendants,
-            new PropertyCondition(AutomationElement.AutomationIdProperty, automationId))
+        return root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, automationId))
             ?? throw new InvalidOperationException($"uia-element-not-found:{automationId}");
+    }
+
+    private static void Press(byte key)
+    {
+        KeyDown(key);
+        KeyUp(key);
+        Thread.Sleep(8);
+    }
+
+    private static void KeyDown(byte key) => keybd_event(key, 0, 0, 0);
+    private static void KeyUp(byte key) => keybd_event(key, 0, KeyEventKeyUp, 0);
+
+    private static void TypeUnicode(string value)
+    {
+        foreach (var character in value)
+        {
+            var down = new Input { Type = 1, Union = new InputUnion { Keyboard = new KeybdInput { ScanCode = character, Flags = KeyEventUnicode } } };
+            var up = new Input { Type = 1, Union = new InputUnion { Keyboard = new KeybdInput { ScanCode = character, Flags = KeyEventUnicode | KeyEventKeyUp } } };
+            var inputs = new[] { down, up };
+            if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
+                throw new InvalidOperationException("raw-wpf-send-input-failed");
+        }
     }
 }
