@@ -74,11 +74,18 @@ export interface ComputerUseProductionRuntimeProof {
   readonly zeroToleranceIncidents:ComputerUseZeroToleranceIncidentCounts;
   readonly enablement:ComputerUseProductionEnablementProof;
 }
+export interface ComputerUseProductionStratumBreadth {
+  readonly stratum:ComputerUseEvaluationStratum;
+  readonly attempted:number;
+  readonly distinctEmbodiments:number;
+  readonly distinctSources:number;
+}
 export interface ComputerUseProductionGateDecision {
   readonly eligible:boolean;
   readonly authorityGranted:false;
   readonly blockers:readonly string[];
   readonly evaluation:ReturnType<typeof summarizeComputerUseEvaluation>;
+  readonly stratumBreadth:readonly ComputerUseProductionStratumBreadth[];
   readonly satisfiedSourceKinds:readonly ComputerUseEvaluationSourceKind[];
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
   readonly targetEnablement:ReturnType<typeof assessComputerUseEnablement>;
@@ -159,6 +166,7 @@ export function evaluateComputerUseProductionGate(
   validateRuntimeProof(runtimeProof);
   const evaluation=summarizeComputerUseEvaluation(cases);
   const blockers:string[]=[];
+  const stratumBreadth:ComputerUseProductionStratumBreadth[]=[];
 
   for(const requirement of policy.stratumRequirements){
     const summary=evaluation.strata.find((entry)=>entry.stratum===requirement.stratum)!;
@@ -170,6 +178,7 @@ export function evaluateComputerUseProductionGate(
     const embodiments=new Set(attempted.map((entry)=>entry.embodiment).filter((value):value is string=>value!==undefined));
     const sources=new Set<string>();
     for(const entry of attempted)for(const source of entry.sources??[])sources.add(`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
+    stratumBreadth.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
     if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
     if(sources.size<requirement.minDistinctSources)blockers.push(`stratum:${requirement.stratum}:source-breadth-below-threshold`);
   }
@@ -216,6 +225,7 @@ export function evaluateComputerUseProductionGate(
     authorityGranted:false as const,
     blockers:Object.freeze(blockers),
     evaluation,
+    stratumBreadth:Object.freeze(stratumBreadth),
     satisfiedSourceKinds:Object.freeze([...observedSourceKinds].sort()),
     satisfiedClaims:Object.freeze(satisfiedClaims),
     targetEnablement,

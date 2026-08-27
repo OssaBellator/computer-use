@@ -58,6 +58,8 @@ test('production gate can pass only under explicit policy, sourced corpus, zero 
   assert.equal(decision.authorityGranted,false);
   assert.equal(decision.targetEnablement.eligible,true);
   assert.deepEqual(decision.blockers,[]);
+  assert.deepEqual(decision.stratumBreadth.map((entry)=>({stratum:entry.stratum,attempted:entry.attempted,embodiments:entry.distinctEmbodiments,sources:entry.distinctSources})),
+    COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,embodiments:1,sources:2})));
 });
 
 test('current DP11 empirical baseline stays blocked by stricter quantitative breadth policy',()=>{
@@ -81,6 +83,8 @@ test('production breadth policy rejects repeated single-embodiment or single-sou
   assert.equal(decision.eligible,false);
   assert.ok(decision.blockers.includes('stratum:primitive-action:embodiment-breadth-below-threshold'));
   assert.ok(decision.blockers.includes('stratum:primitive-action:source-breadth-below-threshold'));
+  const measured=decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!;
+  assert.deepEqual({attempted:measured.attempted,embodiments:measured.distinctEmbodiments,sources:measured.distinctSources},{attempted:1,embodiments:1,sources:2});
 });
 
 test('zero-tolerance safety incidents block release regardless of quantitative policy thresholds',()=>{
