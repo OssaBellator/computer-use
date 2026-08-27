@@ -212,7 +212,8 @@ export function evaluateComputerUseProductionGate(
     const attempted=cases.filter((entry)=>entry.stratum===requirement.stratum&&entry.outcome!=='skipped');
     const embodiments=new Set(attempted.map((entry)=>entry.embodiment).filter((value):value is string=>value!==undefined));
     const sources=new Set<string>();
-    for(const entry of attempted)for(const source of entry.sources??[])sources.add(`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
+    for(const entry of attempted)for(const source of entry.sources??[])
+      sources.add(source.independenceId??`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
     stratumBreadth.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials:summary.attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
     if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
     if(sources.size<requirement.minDistinctSources)blockers.push(`stratum:${requirement.stratum}:source-breadth-below-threshold`);

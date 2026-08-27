@@ -61,6 +61,14 @@ test('DKG85 skipped-only stratum stays missing rather than becoming coverage',()
   assert.deepEqual({attempted:equivalence.attempted,skipped:equivalence.skipped,complete:equivalence.complete},{attempted:0,skipped:1,complete:false});
 });
 
+test('DKG85 empirical source independence identities are bounded tokens when supplied',()=>{
+  const cases=passingCases().map((entry,index)=>({...entry,sources:[{kind:'automated-test' as const,sourceId:`source-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`}]}));
+  cases[0]={...cases[0]!,sources:[{kind:'automated-test',sourceId:'source-a',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:'run-a'}]};
+  assert.doesNotThrow(()=>validateEmpiricalComputerUseEvaluationCases(cases));
+  cases[0]={...cases[0]!,sources:[{kind:'automated-test',sourceId:'source-a',gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:'bad id'}]};
+  assert.throws(()=>validateEmpiricalComputerUseEvaluationCases(cases),/computer-use-evaluation-source-independence-id-invalid/);
+});
+
 test('DKG85 empirical cases require bounded replay-identifiable provenance',()=>{
   assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{
     caseId:'empirical-without-source',stratum:'primitive-action',outcome:'passed',evidence:['uia-invoke'],

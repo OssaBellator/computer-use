@@ -39,8 +39,8 @@ function corpus():ComputerUseEvaluationCaseResult[]{
     outcome:'passed' as const,
     embodiment:'semantic-ui',
     sources:[
-      {kind:'automated-test' as const,sourceId:`test-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'},
-      {kind:'execution-receipt' as const,sourceId:`receipt-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'},
+      {kind:'automated-test' as const,sourceId:`test-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`},
+      {kind:'execution-receipt' as const,sourceId:`receipt-${index}`,gitSha:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',independenceId:`run-${index}`},
     ],
   }));
 }
@@ -68,7 +68,7 @@ test('production gate can pass only under explicit policy, sourced corpus, zero 
   assert.equal(decision.targetEnablement.eligible,true);
   assert.deepEqual(decision.blockers,[]);
   assert.deepEqual(decision.stratumBreadth.map((entry)=>({stratum:entry.stratum,attempted:entry.attempted,trials:entry.attemptedTrials,embodiments:entry.distinctEmbodiments,sources:entry.distinctSources})),
-    COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,trials:1,embodiments:1,sources:2})));
+    COMPUTER_USE_EVALUATION_STRATA.map((stratum)=>({stratum,attempted:1,trials:1,embodiments:1,sources:1})));
 });
 
 test('current DP11 empirical baseline stays blocked by stricter quantitative breadth policy',()=>{
@@ -108,7 +108,20 @@ test('production breadth policy rejects repeated single-embodiment or single-sou
   assert.ok(decision.blockers.includes('stratum:primitive-action:embodiment-breadth-below-threshold'));
   assert.ok(decision.blockers.includes('stratum:primitive-action:source-breadth-below-threshold'));
   const measured=decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!;
-  assert.deepEqual({attempted:measured.attempted,trials:measured.attemptedTrials,embodiments:measured.distinctEmbodiments,sources:measured.distinctSources},{attempted:1,trials:1,embodiments:1,sources:2});
+  assert.deepEqual({attempted:measured.attempted,trials:measured.attemptedTrials,embodiments:measured.distinctEmbodiments,sources:measured.distinctSources},{attempted:1,trials:1,embodiments:1,sources:1});
+});
+
+test('production source breadth counts independent executions rather than metadata records from the same run',()=>{
+  const cases=corpus();
+  const base=cases[1]!;
+  cases.push({...base,caseId:'prod-independent-peer',sources:[
+    {kind:'automated-test',sourceId:'peer-test',gitSha:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',independenceId:'peer-run'},
+    {kind:'execution-receipt',sourceId:'peer-receipt',gitSha:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',independenceId:'peer-run'},
+  ]});
+  const strict={...policy(),stratumRequirements:policy().stratumRequirements.map((entry)=>entry.stratum==='primitive-action'?{...entry,minDistinctSources:2}:entry)};
+  const decision=evaluateComputerUseProductionGate(strict,cases,claimEvidence(cases[0]!.caseId),runtimeProof(cases[0]!.caseId),releaseEnvironmentEvidence(cases[0]!.caseId));
+  assert.equal(decision.stratumBreadth.find((entry)=>entry.stratum==='primitive-action')!.distinctSources,2);
+  assert.ok(!decision.blockers.includes('stratum:primitive-action:source-breadth-below-threshold'));
 });
 
 test('production repetition threshold is independent from case/source/embodiment breadth',()=>{
@@ -120,7 +133,7 @@ test('production repetition threshold is independent from case/source/embodiment
   assert.equal(measured.attempted,1);
   assert.equal(measured.attemptedTrials,10);
   assert.equal(measured.distinctEmbodiments,1);
-  assert.equal(measured.distinctSources,2);
+  assert.equal(measured.distinctSources,1);
   assert.ok(!decision.blockers.includes('stratum:primitive-action:trials-below-threshold'));
 });
 

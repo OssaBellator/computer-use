@@ -24,6 +24,8 @@ export interface ComputerUseEvaluationEvidenceSource {
   readonly kind:ComputerUseEvaluationSourceKind;
   readonly sourceId:string;
   readonly gitSha?:string;
+  /** Records from the same empirical execution share this identity for breadth accounting. */
+  readonly independenceId?:string;
 }
 
 export interface ComputerUseEvaluationCaseResult {
@@ -94,6 +96,7 @@ function validateCase(entry:ComputerUseEvaluationCaseResult):void{
       if(!source||typeof source!=='object'||!COMPUTER_USE_EVALUATION_SOURCE_KINDS.includes(source.kind)||!EVIDENCE.test(source.sourceId))
         throw new Error('computer-use-evaluation-source-invalid');
       if(source.gitSha!==undefined&&!GIT_SHA.test(source.gitSha))throw new Error('computer-use-evaluation-source-git-sha-invalid');
+      if(source.independenceId!==undefined&&!EVIDENCE.test(source.independenceId))throw new Error('computer-use-evaluation-source-independence-id-invalid');
       const identity=`${source.kind}:${source.sourceId}:${source.gitSha??''}`;
       if(sourceIds.has(identity))throw new Error('computer-use-evaluation-source-duplicate');
       sourceIds.add(identity);

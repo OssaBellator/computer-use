@@ -20,8 +20,8 @@ const CLAIM_EVIDENCE_RECEIPT='xrc_mtb8h1pg_e704e9a651be9393ad4bd90a';
 
 function automated(sourceId:string){
   return Object.freeze([
-    Object.freeze({kind:'automated-test' as const,sourceId,gitSha:EVIDENCE_SHA}),
-    Object.freeze({kind:'execution-receipt' as const,sourceId:FULL_SUITE_RECEIPT,gitSha:EVIDENCE_SHA}),
+    Object.freeze({kind:'automated-test' as const,sourceId,gitSha:EVIDENCE_SHA,independenceId:FULL_SUITE_RECEIPT}),
+    Object.freeze({kind:'execution-receipt' as const,sourceId:FULL_SUITE_RECEIPT,gitSha:EVIDENCE_SHA,independenceId:FULL_SUITE_RECEIPT}),
   ]);
 }
 
@@ -121,14 +121,14 @@ const repeatedRawPrimitive=Object.freeze(Array.from({length:5},(_,index)=>Object
 })));
 function campaignSources(sourceId:string){
   return Object.freeze([
-    Object.freeze({kind:'automated-test' as const,sourceId,gitSha:CAMPAIGN_EVIDENCE_SHA}),
-    Object.freeze({kind:'execution-receipt' as const,sourceId:CAMPAIGN_RECEIPT,gitSha:CAMPAIGN_EVIDENCE_SHA}),
+    Object.freeze({kind:'automated-test' as const,sourceId,gitSha:CAMPAIGN_EVIDENCE_SHA,independenceId:CAMPAIGN_RECEIPT}),
+    Object.freeze({kind:'execution-receipt' as const,sourceId:CAMPAIGN_RECEIPT,gitSha:CAMPAIGN_EVIDENCE_SHA,independenceId:CAMPAIGN_RECEIPT}),
   ]);
 }
 function claimSources(sourceId:string){
   return Object.freeze([
-    Object.freeze({kind:'automated-test' as const,sourceId,gitSha:CLAIM_EVIDENCE_SHA}),
-    Object.freeze({kind:'execution-receipt' as const,sourceId:CLAIM_EVIDENCE_RECEIPT,gitSha:CLAIM_EVIDENCE_SHA}),
+    Object.freeze({kind:'automated-test' as const,sourceId,gitSha:CLAIM_EVIDENCE_SHA,independenceId:CLAIM_EVIDENCE_RECEIPT}),
+    Object.freeze({kind:'execution-receipt' as const,sourceId:CLAIM_EVIDENCE_RECEIPT,gitSha:CLAIM_EVIDENCE_SHA,independenceId:CLAIM_EVIDENCE_RECEIPT}),
   ]);
 }
 const campaignCases:readonly ComputerUseEvaluationCaseResult[]=Object.freeze([
