@@ -58,6 +58,27 @@ test('lease cannot authorize a different frame sharing copied metadata', () => {
   assert.deepEqual(manager.validate(lease,different),{status:'frame-mismatch'});
 });
 
+test('releaseAll revokes local artifact authority before reporting backend cleanup uncertainty',async()=>{
+  const second:WindowsGraphicsCaptureObservation=Object.freeze({
+    ...observation,
+    frame:Object.freeze({...observation.frame,frameSequence:11}),
+    artifact:Object.freeze({token:'artifact-2-11',mediaType:'image/png',byteLength:50_000}),
+  });
+  const attempted:string[]=[];
+  const manager=new WindowsVisualArtifactRetentionManager({releaseArtifact:async token=>{
+    attempted.push(token);
+    if(token==='artifact-2-10')throw new Error('destroy failed');
+  }},()=>100);
+  const firstLease=manager.acquire(observation,{sensitivity:'normal',ttlMs:5_000});
+  const secondLease=manager.acquire(second,{sensitivity:'normal',ttlMs:5_000});
+  await assert.rejects(()=>manager.releaseAll(),/release-uncertain/);
+  assert.deepEqual(attempted,['artifact-2-10','artifact-2-11']);
+  assert.equal(manager.activeCount(),0);
+  assert.equal(manager.activeBytes(),0);
+  assert.deepEqual(manager.validate(firstLease,observation),{status:'released'});
+  assert.deepEqual(manager.validate(secondLease,second),{status:'released'});
+});
+
 function captureHarness(releaseArtifact:(token:string)=>Promise<void>){
   const bridge={
     captureNextFrame:async()=>({
