@@ -229,6 +229,8 @@ test('release-environment proof must bind a required environment to a passing ca
   assert.equal(good.releaseEnvironmentCoverage[0]?.attemptedCases,COMPUTER_USE_EVALUATION_STRATA.length);
   assert.ok(good.releaseEnvironmentCoverage[0]?.stratumBreadth.every((entry)=>entry.attempted===1&&entry.distinctSources===1));
   assert.deepEqual(good.releaseEnvironmentCoverage[0]?.satisfiedClaims,COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS);
+  assert.equal(good.releaseEnvironmentCoverage[0]?.rolloutEvidenceSatisfied,true);
+  assert.equal(good.releaseEnvironmentCoverage[0]?.disablementEvidenceSatisfied,true);
   const partial=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[{environmentId:'test-release-environment',bindings:[{caseId,sourceId:'test-0'}]}]);
   assert.ok(partial.blockers.includes('release-environment:test-release-environment:case-unbound:prod-case-1'));
   const outsideClaimCase={...cases[0]!,caseId:'outside-claim-case',sources:cases[0]!.sources?.map((source)=>({...source,sourceId:`outside-${source.sourceId}`,environmentId:'other-environment'}))};
@@ -237,8 +239,13 @@ test('release-environment proof must bind a required environment to a passing ca
   const environmentClaimGap=evaluateComputerUseProductionGate(policy(),mixedCases,mixedClaims,runtimeProof(caseId),releaseEnvironmentEvidence(mixedCases));
   assert.ok(!environmentClaimGap.blockers.includes('claim:no-blind-retry-after-possible-dispatch:passing-cases-below-threshold'));
   assert.ok(environmentClaimGap.blockers.includes('release-environment:test-release-environment:claim:no-blind-retry-after-possible-dispatch:passing-cases-below-threshold'));
+  const environmentEnablementProof=runtimeProof(outsideClaimCase.caseId);
+  const environmentEnablementGap=evaluateComputerUseProductionGate(policy(),mixedCases,claimEvidence(caseId),environmentEnablementProof,releaseEnvironmentEvidence(mixedCases));
+  assert.ok(!environmentEnablementGap.blockers.includes(`enablement:CU-0:rollout-case-not-passed:${outsideClaimCase.caseId}`));
+  assert.ok(environmentEnablementGap.blockers.includes('release-environment:test-release-environment:enablement:CU-0:rollout-evidence-missing'));
+  assert.ok(environmentEnablementGap.blockers.includes('release-environment:test-release-environment:enablement:CU-0:disablement-evidence-missing'));
   const strict=evaluateComputerUseProductionGate(policy(2),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(cases));
-  assert.ok(strict.blockers.includes('release-environment:test-release-environment:stratum:grounding:attempted-below-threshold'));
+  assert.ok(strict.blockers.includes('release-environment:test-release-environment:stratum:grounding:attempted-below-threshold')); 
   const missing=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[]);
   assert.ok(missing.blockers.includes('release-environment:test-release-environment:evidence-missing'));
   const wrongSource=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(cases,{caseId,sourceId:'not-a-source'}));

@@ -114,6 +114,8 @@ export interface ComputerUseProductionReleaseEnvironmentCoverage {
   readonly distinctProviderFamilies:number;
   readonly sourceKinds:readonly ComputerUseEvaluationSourceKind[];
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
+  readonly rolloutEvidenceSatisfied:boolean;
+  readonly disablementEvidenceSatisfied:boolean;
 }
 export interface ComputerUseProductionGateDecision {
   readonly eligible:boolean;
@@ -378,10 +380,21 @@ export function evaluateComputerUseProductionGate(
       if(passing<requirement.minPassingCases)blockers.push(`release-environment:${environmentId}:claim:${requirement.claim}:passing-cases-below-threshold`);
       else environmentSatisfiedClaims.push(requirement.claim);
     }
+    const rolloutEvidenceSatisfied=runtimeProof.enablement.rolloutCaseIds.some((caseId)=>{
+      const entry=byId.get(caseId);
+      return boundCaseIds.has(caseId)&&entry?.outcome==='passed'&&entry.enablementLevel===runtimeProof.enablement.targetLevel;
+    });
+    if(!rolloutEvidenceSatisfied)blockers.push(`release-environment:${environmentId}:enablement:${runtimeProof.enablement.targetLevel}:rollout-evidence-missing`);
+    const disablementEvidenceSatisfied=runtimeProof.enablement.disablementCaseIds.some((caseId)=>{
+      const entry=byId.get(caseId);
+      return boundCaseIds.has(caseId)&&entry?.outcome==='passed'&&entry.enablementLevel===runtimeProof.enablement.targetLevel;
+    });
+    if(!disablementEvidenceSatisfied)blockers.push(`release-environment:${environmentId}:enablement:${runtimeProof.enablement.targetLevel}:disablement-evidence-missing`);
     releaseEnvironmentCoverage.push(Object.freeze({
       environmentId,attemptedCases:environmentAttempted.length,stratumBreadth:Object.freeze(environmentStrata),
       distinctApplications:environmentApplications.size,distinctProviderFamilies:environmentProviders.size,
       sourceKinds:Object.freeze([...environmentSourceKinds].sort()),satisfiedClaims:Object.freeze(environmentSatisfiedClaims),
+      rolloutEvidenceSatisfied,disablementEvidenceSatisfied,
     }));
     if(blockers.length===environmentBlockerStart)satisfiedReleaseEnvironments.push(environmentId);
   }
