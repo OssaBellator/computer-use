@@ -7,6 +7,7 @@ import {
 const EVIDENCE_SHA='a43015db804b28b338af1a9cd76c00e1df860895';
 const FULL_SUITE_RECEIPT='xrc_mtb427va_f0d5d32d439491bc154a01b7';
 const WPF_EVIDENCE_SHA='ce14a09a64de03862226b945ff7d4d2bfb827e79';
+const WIN32_EVIDENCE_SHA='15b59d668456a0b34cd96edb5f8a324264c4e3c7';
 const REPEAT_EVIDENCE_SHA='2af373cf4375c2d4a9ff73a35900f5dfbb27ee93';
 const CAMPAIGN_EVIDENCE_SHA='f0b429e13a3ddca588804298feb7450859c6a6c6';
 const CAMPAIGN_RECEIPT='xrc_mtb6ibe2_e68af5f20368acfe237072ca';
@@ -166,6 +167,27 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
     stratum:'grounding',outcome:'failed',embodiment:'semantic-ui',
     evidence:Object.freeze(['wpf-uia-tree-discovery-blocked','com-8000401a','no-semantic-action-dispatch']),
     sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_wpf_exact_vm_27aug26_z62b',gitSha:WPF_EVIDENCE_SHA})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-win32-host-primitive-actions',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    evidence:Object.freeze(['win32-value-pass','win32-invoke-pass','win32-toggle-pass','win32-window-pass']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_dp11_win32_pinned_host_0827_02',gitSha:WIN32_EVIDENCE_SHA})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-win32-vm-primitive-actions',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',
+    evidence:Object.freeze(['win32-value-pass','win32-invoke-pass','win32-toggle-pass','win32-window-pass','protected-vm']),
+    sources:Object.freeze([Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_win32_pinned_vm_0827_01',gitSha:WIN32_EVIDENCE_SHA})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-win32-host-vm-state-verification',
+    stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',
+    evidence:Object.freeze(['win32-text-readback-verified','win32-result-transition-verified','win32-toggle-state-verified','win32-window-state-verified']),
+    sources:Object.freeze([
+      Object.freeze({kind:'windows-host-smoke' as const,sourceId:'uca_dp11_win32_pinned_host_0827_02',gitSha:WIN32_EVIDENCE_SHA}),
+      Object.freeze({kind:'windows-vm-smoke' as const,sourceId:'uca_dp11_win32_pinned_vm_0827_01',gitSha:WIN32_EVIDENCE_SHA}),
+    ]),
   }),
 ]);
 
