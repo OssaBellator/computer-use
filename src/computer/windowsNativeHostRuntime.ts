@@ -29,7 +29,9 @@ class SequentialWindowsNativeHostRequestIds implements WindowsNativeHostRequestI
 }
 
 function capability(support:WindowsProviderCapabilitySupport,reason?:string):WindowsProviderCapabilitySupport|WindowsProviderCapabilityState {
-  return reason===undefined?support:Object.freeze({support,reason});
+  // A reason explains degraded/unavailable support. Never attach an unavailable
+  // explanation to a capability that the live handshake proves is supported.
+  return reason===undefined||support==='supported'?support:Object.freeze({support,reason});
 }
 function has(implemented:ReadonlySet<WindowsNativeHostOperation>,...operations:WindowsNativeHostOperation[]):boolean {
   return operations.every(operation=>implemented.has(operation));

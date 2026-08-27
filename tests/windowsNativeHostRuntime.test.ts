@@ -56,6 +56,17 @@ test('capture is supported only when both frame production and artifact release 
   assert.equal(support(complete,'transient-capture-retention'),'supported');
 });
 
+test('supported live capabilities never retain stale unavailable reasons',()=>{
+  const profile=deriveWindowsNativeHostCapabilityProfile([
+    'hello','system.windows','capture.next-frame','artifact.release','input.send','input.human-sequence',
+  ]);
+  assert.equal(profile.capabilities['wgc-hwnd-capture'],'supported');
+  assert.equal(profile.capabilities['visual-frame-binding'],'supported');
+  assert.equal(profile.capabilities['human-interference-detection'],'supported');
+  assert.equal(profile.capabilities['transient-capture-retention'],'supported');
+  assert.equal(profile.capabilities['foreground-interaction-lease'],'supported');
+});
+
 test('missing integrity operations cannot advertise guarded native input',()=>{
   const profile=deriveWindowsNativeHostCapabilityProfile(['hello','input.send']);
   assert.equal(support(profile,'keyboard-input'),'supported');
