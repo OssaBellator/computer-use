@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WindowsVisualGroundingProvider } from '../src/computer/windowsVisualGroundingProvider.js';
+import { WindowsRetainedVisualGroundingRuntime, WindowsVisualGroundingProvider } from '../src/computer/windowsVisualGroundingProvider.js';
+import { WindowsVisualArtifactRetentionManager } from '../src/computer/windowsVisualArtifactRetention.js';
 import type { WindowsGraphicsCaptureObservation } from '../src/computer/windowsGraphicsCaptureRuntime.js';
 
 const windowRef=Object.freeze({
@@ -46,6 +47,41 @@ test('visual grounding rejects out-of-bounds regions and duplicate candidate ids
     candidates:[{id:'same',confidence:0.5,x:1,y:1},{id:'same',confidence:0.6,x:2,y:2}],
   })});
   await assert.rejects(()=>duplicate.ground(observation,query),/response-invalid/);
+});
+
+test('retained grounding consumes screenshot authority once and zeroes ephemeral bytes afterward',async()=>{
+  let backendBytes:Uint8Array|undefined;
+  const provider=new WindowsVisualGroundingProvider({ground:async(request)=>{
+    backendBytes=request.artifactBytes;
+    assert.deepEqual([...(request.artifactBytes??[])],[1,2,3,4]);
+    return {artifactToken:'capture-4-7',captureGeneration:4,frameSequence:7,candidates:[]};
+  }});
+  const bridge={
+    releaseArtifact:async()=>undefined,
+    consumeArtifact:async()=>Object.freeze({mediaType:'image/png',bytes:new Uint8Array([1,2,3,4])}),
+  };
+  const retention=new WindowsVisualArtifactRetentionManager(bridge,()=>100);
+  const smallObservation={...observation,artifact:{...observation.artifact,byteLength:4}};
+  const lease=retention.acquire(smallObservation,{sensitivity:'normal',ttlMs:1_000});
+  const runtime=new WindowsRetainedVisualGroundingRuntime(provider,retention);
+  await runtime.ground({observation:smallObservation,lease},query,16);
+  assert.equal(retention.activeCount(),0);
+  assert.deepEqual(retention.validate(lease,smallObservation),{status:'released'});
+  assert.deepEqual([...(backendBytes??[])],[0,0,0,0]);
+  await assert.rejects(()=>runtime.ground({observation:smallObservation,lease},query,16),/released/);
+});
+
+test('retained grounding rejects oversized payload before consuming authority',async()=>{
+  let consumes=0;
+  const retention=new WindowsVisualArtifactRetentionManager({
+    releaseArtifact:async()=>undefined,
+    consumeArtifact:async()=>{consumes+=1;return {mediaType:'image/png',bytes:new Uint8Array()};},
+  },()=>100);
+  const lease=retention.acquire(observation,{sensitivity:'normal',ttlMs:1_000});
+  const runtime=new WindowsRetainedVisualGroundingRuntime(new WindowsVisualGroundingProvider({ground:async()=>({artifactToken:'capture-4-7',captureGeneration:4,frameSequence:7,candidates:[]})}),retention);
+  await assert.rejects(()=>runtime.ground({observation,lease},query,999),/consume-limit/);
+  assert.equal(consumes,0);
+  assert.equal(retention.activeCount(),1);
 });
 
 test('visual grounding rejects accessor-bearing provider responses without invoking them',async()=>{

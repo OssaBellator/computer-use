@@ -47,7 +47,7 @@ export class WindowsVisualArtifactRetentionManager {
   private totalBytes = 0;
 
   constructor(
-    readonly bridge:Pick<WindowsGraphicsCaptureNativeBridge,'releaseArtifact'>,
+    readonly bridge:Pick<WindowsGraphicsCaptureNativeBridge,'releaseArtifact'|'consumeArtifact'>,
     readonly now:()=>number = Date.now,
   ) {}
 
@@ -87,6 +87,17 @@ export class WindowsVisualArtifactRetentionManager {
       return Object.freeze({status:'frame-mismatch'});
     }
     return Object.freeze({status:'current'});
+  }
+
+  async consume(lease:WindowsVisualArtifactLease,maxBytes:number):Promise<Readonly<{mediaType:string;bytes:Uint8Array}>> {
+    const current=this.active.get(lease.token);
+    if(current!==lease)throw new Error('windows-visual-retention-released');
+    if(this.now()>=lease.expiresAtMs)throw new Error('windows-visual-retention-expired');
+    if(!this.bridge.consumeArtifact)throw new Error('windows-visual-retention-consume-unsupported');
+    this.active.delete(lease.token);
+    this.totalBytes-=lease.byteLength;
+    try{return await this.bridge.consumeArtifact(lease.token,maxBytes);}
+    catch{throw new Error('windows-visual-retention-consume-uncertain');}
   }
 
   async release(lease:WindowsVisualArtifactLease):Promise<void> {

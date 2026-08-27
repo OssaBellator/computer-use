@@ -72,6 +72,19 @@ test('capture adapter returns bounded frame structure for runtime revalidation',
   await client.releaseArtifact('capture-2-3');
 });
 
+test('capture adapter consumes one bounded artifact payload and validates exact base64 length',async()=>{
+  const data=Buffer.from([1,2,3,4]).toString('base64');
+  const client=new WindowsNativeHostCaptureBridge(protocol((operation)=>operation==='artifact.consume'
+    ? {mediaType:'image/png',byteLength:4,dataBase64:data}
+    : {}));
+  const consumed=await client.consumeArtifact('capture-1',16);
+  assert.equal(consumed.mediaType,'image/png');
+  assert.deepEqual([...consumed.bytes],[1,2,3,4]);
+
+  const malformed=new WindowsNativeHostCaptureBridge(protocol(()=>({mediaType:'image/png',byteLength:3,dataBase64:data})));
+  await assert.rejects(()=>malformed.consumeArtifact('capture-1',16),/consume-response-invalid/);
+});
+
 test('integrity and SendInput adapters require bounded numeric native results and exact authority payload', async () => {
   let inputBody:unknown;
   const p=protocol((operation,body)=>{

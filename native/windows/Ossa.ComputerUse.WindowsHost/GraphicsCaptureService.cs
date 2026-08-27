@@ -15,6 +15,7 @@ internal sealed class GraphicsCaptureService : IDisposable
     private const int MaxArtifacts = 64;
     private const long MaxRetainedBytes = 64L * 1024 * 1024;
     private const int MaxCaptureBytes = 64 * 1024 * 1024;
+    private const int MaxConsumableBytes = 512 * 1024;
     private const int MaxCapturePixels = 33_177_600;
     private const int FrameTimeoutMs = 2_000;
     private const long MaxArtifactLifetimeMs = 60_000;
@@ -167,6 +168,34 @@ internal sealed class GraphicsCaptureService : IDisposable
         ThrowIfDisposed();
         if (!ValidToken(request.Token)) throw new ProtocolException("capture.artifact-token-invalid");
         return new { released = ReleaseToken(request.Token) };
+    }
+
+    internal object Consume(ArtifactConsumeRequest request)
+    {
+        ThrowIfDisposed();
+        if (!ValidToken(request.Token) || request.MaxBytes is < 1 or > MaxConsumableBytes)
+            throw new ProtocolException("capture.artifact-consume-invalid");
+        byte[] bytes;
+        lock (_artifactLock)
+        {
+            PurgeExpiredLocked(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            if (!_artifacts.Remove(request.Token, out var entry)) throw new ProtocolException("capture.artifact-missing");
+            _retainedBytes -= entry.Bytes.LongLength;
+            if (entry.Bytes.Length > request.MaxBytes)
+            {
+                CryptographicOperations.ZeroMemory(entry.Bytes);
+                throw new ProtocolException("capture.artifact-consume-limit-exceeded");
+            }
+            bytes = entry.Bytes;
+        }
+        try
+        {
+            return new { mediaType = "image/png", byteLength = bytes.Length, dataBase64 = Convert.ToBase64String(bytes) };
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
     }
 
     internal void Revoke(CaptureResponse response)

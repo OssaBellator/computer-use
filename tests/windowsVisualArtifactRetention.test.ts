@@ -58,6 +58,26 @@ test('lease cannot authorize a different frame sharing copied metadata', () => {
   assert.deepEqual(manager.validate(lease,different),{status:'frame-mismatch'});
 });
 
+test('consume revokes local artifact authority before exposing one bounded payload',async()=>{
+  const consumed:string[]=[];
+  const manager=new WindowsVisualArtifactRetentionManager({
+    releaseArtifact:async()=>undefined,
+    consumeArtifact:async(token,maxBytes)=>{
+      consumed.push(`${token}:${maxBytes}`);
+      return Object.freeze({mediaType:'image/png',bytes:new Uint8Array([1,2,3])});
+    },
+  },()=>100);
+  const lease=manager.acquire(observation,{sensitivity:'normal',ttlMs:5_000});
+  const payload=await manager.consume(lease,100_000);
+  assert.deepEqual(consumed,['artifact-2-10:100000']);
+  assert.equal(payload.mediaType,'image/png');
+  assert.deepEqual([...payload.bytes],[1,2,3]);
+  assert.equal(manager.activeCount(),0);
+  assert.equal(manager.activeBytes(),0);
+  assert.deepEqual(manager.validate(lease,observation),{status:'released'});
+  await assert.rejects(()=>manager.consume(lease,100_000),/released/);
+});
+
 test('releaseAll revokes local artifact authority before reporting backend cleanup uncertainty',async()=>{
   const second:WindowsGraphicsCaptureObservation=Object.freeze({
     ...observation,

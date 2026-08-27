@@ -1,5 +1,6 @@
 import { TextEncoder } from 'node:util';
 import type { WindowsGraphicsCaptureObservation } from './windowsGraphicsCaptureRuntime.js';
+import type { WindowsRetainedGraphicsCapture, WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
 import type { WindowsVisualFrameRef, WindowsVisualPointBinding } from './windowsVisualFrame.js';
 
 const MAX_QUERY_BYTES=8_192;
@@ -20,6 +21,8 @@ export interface WindowsVisualGroundingBackendRequest {
   readonly artifact:WindowsGraphicsCaptureObservation['artifact'];
   readonly frame:WindowsVisualFrameRef;
   readonly query:WindowsVisualGroundingQuery;
+  /** Ephemeral one-shot bytes. Backends must not retain or reinterpret them as identity. */
+  readonly artifactBytes?:Uint8Array;
 }
 
 export interface WindowsVisualGroundingBackend {
@@ -109,13 +112,17 @@ export class WindowsVisualGroundingProvider {
   async ground(
     observation:WindowsGraphicsCaptureObservation,
     query:WindowsVisualGroundingQuery,
+    artifactBytes?:Uint8Array,
   ):Promise<readonly WindowsVisualGroundedCandidate[]> {
     if(!ID_PATTERN.test(query.id)||query.text.includes('\0')||encoder.encode(query.text).byteLength<1||encoder.encode(query.text).byteLength>MAX_QUERY_BYTES||
        !boundedInt(query.maxCandidates,1,MAX_CANDIDATES)){
       throw new Error('windows-visual-grounding-query-invalid');
     }
+    if(artifactBytes!==undefined&&artifactBytes.byteLength!==observation.artifact.byteLength){
+      throw new Error('windows-visual-grounding-artifact-bytes-invalid');
+    }
     const immutableQuery=Object.freeze({id:query.id,text:query.text,maxCandidates:query.maxCandidates});
-    const request=Object.freeze({artifact:observation.artifact,frame:observation.frame,query:immutableQuery});
+    const request=Object.freeze({artifact:observation.artifact,frame:observation.frame,query:immutableQuery,...(artifactBytes?{artifactBytes}:{})});
     const response=captureOwnDataObject(await this.backend.ground(request),[
       'artifactToken','captureGeneration','frameSequence','candidates',
     ]);
@@ -159,5 +166,36 @@ export class WindowsVisualGroundingProvider {
       }));
     }
     return Object.freeze(result);
+  }
+}
+
+/**
+ * Production-safe grounding path for retained WGC artifacts. Consumption revokes
+ * the screenshot lease/token before bytes reach the backend, and the local byte
+ * buffer is zeroed after the grounding call returns or throws.
+ */
+export class WindowsRetainedVisualGroundingRuntime {
+  constructor(
+    readonly grounding:WindowsVisualGroundingProvider,
+    readonly retention:WindowsVisualArtifactRetentionManager,
+  ) {}
+
+  async ground(
+    retained:WindowsRetainedGraphicsCapture,
+    query:WindowsVisualGroundingQuery,
+    maxBytes=512*1024,
+  ):Promise<readonly WindowsVisualGroundedCandidate[]> {
+    if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>512*1024||retained.lease.byteLength>maxBytes){
+      throw new Error('windows-visual-grounding-consume-limit');
+    }
+    const payload=await this.retention.consume(retained.lease,maxBytes);
+    try{
+      if(payload.mediaType!==(retained.observation.artifact.mediaType??'image/png')){
+        throw new Error('windows-visual-grounding-media-type-mismatch');
+      }
+      return await this.grounding.ground(retained.observation,query,payload.bytes);
+    }finally{
+      payload.bytes.fill(0);
+    }
   }
 }

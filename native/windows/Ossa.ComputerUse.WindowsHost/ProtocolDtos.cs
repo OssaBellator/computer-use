@@ -94,6 +94,7 @@ internal sealed record IntegrityProcessRequest(ProcessGenerationDto Process);
 internal sealed record CaptureLimitsDto(int MaxPixels, int MaxBytes);
 internal sealed record CaptureNextFrameRequest(WindowRefDto Window, CaptureLimitsDto Limits);
 internal sealed record ArtifactReleaseRequest(string Token);
+internal sealed record ArtifactConsumeRequest(string Token, int MaxBytes);
 
 internal sealed record SendInputEventDto(
     string Kind,

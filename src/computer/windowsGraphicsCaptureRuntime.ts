@@ -30,6 +30,8 @@ export interface WindowsGraphicsCaptureNativeBridge {
 
   /** Release backend-owned encoded/surface material for an artifact token. */
   releaseArtifact(token:string):Promise<void>;
+  /** Atomically revoke and return a bounded artifact payload for immediate perception. */
+  consumeArtifact?(token:string,maxBytes:number):Promise<Readonly<{mediaType:string;bytes:Uint8Array}>>;
 }
 
 export interface WindowsGraphicsCaptureObservation {

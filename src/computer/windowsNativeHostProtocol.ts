@@ -16,6 +16,7 @@ export const WINDOWS_NATIVE_HOST_OPERATIONS = [
   'uia.events.poll',
   'capture.next-frame',
   'artifact.release',
+  'artifact.consume',
   'integrity.current',
   'integrity.process',
   'input.send',

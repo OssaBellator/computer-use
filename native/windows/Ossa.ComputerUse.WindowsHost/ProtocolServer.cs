@@ -29,6 +29,7 @@ internal sealed class ProtocolServer : IDisposable
         "uia.events.poll",
         "capture.next-frame",
         "artifact.release",
+        "artifact.consume",
         "integrity.current",
         "integrity.process",
         "input.send",
@@ -140,7 +141,7 @@ internal sealed class ProtocolServer : IDisposable
         var result = new List<string>(Operations.Count);
         foreach (var operation in Operations.OrderBy(value => value, StringComparer.Ordinal))
         {
-            if (operation is "capture.next-frame" or "artifact.release")
+            if (operation is "capture.next-frame" or "artifact.release" or "artifact.consume")
             {
                 if (_captureAvailable) result.Add(operation);
                 continue;
@@ -189,6 +190,7 @@ internal sealed class ProtocolServer : IDisposable
             "uia.events.poll" => _mta.InvokeAsync(() => _events.Poll(ProtocolJson.DeserializeBody<UiaEventPollRequest>(request.Body))),
             "capture.next-frame" => CaptureFrameAsync(ProtocolJson.DeserializeBody<CaptureNextFrameRequest>(request.Body)),
             "artifact.release" => ReleaseArtifactAsync(ProtocolJson.DeserializeBody<ArtifactReleaseRequest>(request.Body)),
+            "artifact.consume" => ConsumeArtifactAsync(ProtocolJson.DeserializeBody<ArtifactConsumeRequest>(request.Body)),
             _ => throw new ProtocolException("protocol.operation-unsupported"),
         };
     }
@@ -245,6 +247,12 @@ internal sealed class ProtocolServer : IDisposable
     {
         if (!_captureAvailable) throw new ProtocolException("capture.unsupported");
         return _captureMta.InvokeAsync(() => _capture.Release(request));
+    }
+
+    private Task<object> ConsumeArtifactAsync(ArtifactConsumeRequest request)
+    {
+        if (!_captureAvailable) throw new ProtocolException("capture.unsupported");
+        return _captureMta.InvokeAsync(() => _capture.Consume(request));
     }
 
     private async Task WriteOkAsync(string id, object body)

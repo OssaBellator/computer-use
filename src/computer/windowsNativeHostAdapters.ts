@@ -161,6 +161,20 @@ export class WindowsNativeHostCaptureBridge implements WindowsGraphicsCaptureNat
     const raw=captureOwnDataObject(await this.protocol.call('artifact.release',Object.freeze({token})),['released']);
     if(!raw||raw.released!==true) throw new Error('windows-native-host-artifact-release-invalid');
   }
+  async consumeArtifact(token:string,maxBytes:number):Promise<Readonly<{mediaType:string;bytes:Uint8Array}>> {
+    if(!TOKEN_PATTERN.test(token)||!boundedInt(maxBytes,1,512*1024))throw new Error('windows-native-host-artifact-consume-invalid');
+    const raw=captureOwnDataObject(await this.protocol.call('artifact.consume',Object.freeze({token,maxBytes})),['mediaType','byteLength','dataBase64']);
+    if(!raw||raw.mediaType!=='image/png'||!boundedInt(raw.byteLength,0,maxBytes)||typeof raw.dataBase64!=='string'){
+      throw new Error('windows-native-host-artifact-consume-response-invalid');
+    }
+    let bytes:Buffer;
+    try{bytes=Buffer.from(raw.dataBase64,'base64');}catch{throw new Error('windows-native-host-artifact-consume-response-invalid');}
+    if(bytes.byteLength!==raw.byteLength||bytes.toString('base64')!==raw.dataBase64){
+      bytes.fill(0);
+      throw new Error('windows-native-host-artifact-consume-response-invalid');
+    }
+    return Object.freeze({mediaType:raw.mediaType,bytes:new Uint8Array(bytes.buffer,bytes.byteOffset,bytes.byteLength)});
+  }
 }
 
 export class WindowsNativeHostIntegrityReader implements WindowsProcessTokenIntegrityReader {
