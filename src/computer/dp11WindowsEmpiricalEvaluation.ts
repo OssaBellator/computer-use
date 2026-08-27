@@ -24,6 +24,8 @@ const REAL_APP_NOTEPAD_LIFECYCLE_RECEIPT='xrc_mtbema8r_7ee7370d2d2377f59bd4ef47'
 const REAL_APP_CALCULATOR_LIFECYCLE_RECEIPT='xrc_mtbemmqu_80c6b5ce2dbcd3d194065d30';
 const REAL_APP_EXPLORER_EVIDENCE_SHA='44c867c098b82ef33c7c3804d80a21a0c23238b0';
 const REAL_APP_EXPLORER_RECEIPT='xrc_mtbi8lrl_e5d9b80204456db1d1ba8908';
+const REAL_APP_TERMINAL_EVIDENCE_SHA='dd239ece29c603834ee218b7b7c8742a7f489238';
+const REAL_APP_TERMINAL_RECEIPT='xrc_mtbiu7gu_962beef7a68663d3a7ce55df';
 
 function automated(sourceId:string){
   return Object.freeze([
@@ -270,6 +272,18 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
     stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-file-explorer',providerFamily:'win32-explorer-uia',
     evidence:Object.freeze(['real-application','window-title-changed-after-add-tab','window-title-restored-after-selected-tab-close','semantic-state-transition-verified']),
     sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_EXPLORER_RECEIPT,gitSha:REAL_APP_EXPLORER_EVIDENCE_SHA,independenceId:REAL_APP_EXPLORER_RECEIPT})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-terminal-real-app-semantic-tab-actions',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-terminal',providerFamily:'cascadia-uia',
+    evidence:Object.freeze(['real-application','new-tab-invoke-dispatched-once','selected-tab-close-invoke-dispatched-once','no-raw-fallback']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_TERMINAL_RECEIPT,gitSha:REAL_APP_TERMINAL_EVIDENCE_SHA,independenceId:REAL_APP_TERMINAL_RECEIPT})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-terminal-real-app-state-verification',
+    stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-terminal',providerFamily:'cascadia-uia',
+    evidence:Object.freeze(['real-application','tab-strip-close-button-count-1-to-2','selected-tab-close-restored-count-1','semantic-state-transition-verified']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_TERMINAL_RECEIPT,gitSha:REAL_APP_TERMINAL_EVIDENCE_SHA,independenceId:REAL_APP_TERMINAL_RECEIPT})]),
   }),
 ]);
 

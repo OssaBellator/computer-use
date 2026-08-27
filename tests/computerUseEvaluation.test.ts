@@ -108,15 +108,15 @@ test('DKG85 DP11 Windows baseline covers all seven strata without claiming the p
 });
 
 test('DKG85 expanded provider-diversity corpus retains protected-VM WPF grounding failure instead of hiding it',()=>{
-  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,55);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.length,57);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.complete,true);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.passing,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.productionGateSatisfied,false);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.failedCases,2);
   const primitive=DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='primitive-action')!;
   const verification=DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='state-transition-verification')!;
-  assert.equal(primitive.attempted,18);
-  assert.equal(verification.attempted,11);
+  assert.equal(primitive.attempted,19);
+  assert.equal(verification.attempted,12);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='grounding')!.attempted,8);
   assert.equal(DP11_WINDOWS_EMPIRICAL_EXPANDED.summary.strata.find((entry)=>entry.stratum==='recovery-fault-injection')!.attempted,9);
   const foregroundRefusal=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-wpf-provider-unavailable-foreground-refusal')!;
@@ -179,6 +179,15 @@ test('DKG85 expanded provider-diversity corpus retains protected-VM WPF groundin
   assert.equal(explorerAction.sources?.[0]?.gitSha,'44c867c098b82ef33c7c3804d80a21a0c23238b0');
   assert.equal(explorerVerification.outcome,'passed');
   assert.ok(explorerVerification.evidence?.includes('window-title-restored-after-selected-tab-close'));
+  const terminalAction=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-terminal-real-app-semantic-tab-actions')!;
+  const terminalVerification=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.find((entry)=>entry.caseId==='dp11-terminal-real-app-state-verification')!;
+  assert.equal(terminalAction.outcome,'passed');
+  assert.equal(terminalAction.applicationId,'windows-terminal');
+  assert.equal(terminalAction.providerFamily,'cascadia-uia');
+  assert.equal(terminalAction.sources?.[0]?.sourceId,'xrc_mtbiu7gu_962beef7a68663d3a7ce55df');
+  assert.equal(terminalAction.sources?.[0]?.gitSha,'dd239ece29c603834ee218b7b7c8742a7f489238');
+  assert.equal(terminalVerification.outcome,'passed');
+  assert.ok(terminalVerification.evidence?.includes('selected-tab-close-restored-count-1'));
   const campaign=DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES.filter((entry)=>entry.caseId.startsWith('dp11-campaign-')); 
   assert.equal(campaign.length,14);
   assert.ok(campaign.every((entry)=>entry.outcome==='passed'&&entry.sources?.some((source)=>source.kind==='automated-test')&&entry.sources?.some((source)=>source.kind==='execution-receipt')));
