@@ -32,7 +32,7 @@ export type WindowsUiaSemanticRecipeInstantiation =
   | Readonly<{status:'input-invalid';recipeId:string;inputKey:string;evidence:readonly string[]}>;
 
 function validInputKey(value:unknown):value is string{return typeof value==='string'&&TOKEN.test(value);}
-function validateRecipe(recipe:WindowsUiaSemanticActionRecipe):void {
+export function validateWindowsUiaSemanticActionRecipe(recipe:WindowsUiaSemanticActionRecipe):void {
   if(!recipe||typeof recipe!=='object'||!TOKEN.test(recipe.id)||!recipe.locator||typeof recipe.locator!=='object'||!recipe.action||typeof recipe.action!=='object')
     throw new Error('windows-uia-semantic-recipe-invalid');
   const action=recipe.action;
@@ -87,7 +87,7 @@ export function instantiateWindowsUiaSemanticRecipe(
   recipe:WindowsUiaSemanticActionRecipe,
   inputs:WindowsUiaSemanticRecipeInputs=Object.freeze({}),
 ):WindowsUiaSemanticRecipeInstantiation {
-  validateRecipe(recipe);
+  validateWindowsUiaSemanticActionRecipe(recipe);
   const grounding=resolveWindowsUiaSemanticLocator(observation,recipe.locator);
   if(grounding.status==='missing')return Object.freeze({
     status:'grounding-missing' as const,recipeId:recipe.id,evidence:Object.freeze([...grounding.evidence,'windows-uia-semantic-recipe-no-dispatch']),
