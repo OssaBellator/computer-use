@@ -87,7 +87,7 @@ test('offline semantic replay measures application/provider breadth and retains 
   assert.deepEqual(result.generalization,{distinctApplications:2,distinctProviderFamilies:2,domains:[
     {domainId:'windows-calculator:application-frame-uia',cases:1,recoveries:0,regressions:0,stableReady:1,proposedUnresolved:0},
     {domainId:'windows-notepad:win32-richedit',cases:1,recoveries:0,regressions:1,stableReady:0,proposedUnresolved:1},
-  ]});
+  ],partitions:[{partition:'development',cases:2,recoveries:0,regressions:1,stableReady:1,proposedUnresolved:1,distinctApplications:2,distinctProviderFamilies:2}]});
   assert.equal(Object.prototype.hasOwnProperty.call(result.generalization,'eligible'),false);
   assert.equal(Object.prototype.hasOwnProperty.call(result.generalization,'threshold'),false);
 });
@@ -100,12 +100,28 @@ test('offline semantic replay counts only explicit bounded generalization labels
   assert.equal(result.generalization.distinctApplications,0);
   assert.equal(result.generalization.distinctProviderFamilies,0);
   assert.equal(result.generalization.domains[0]?.domainId,'unknown-app:unknown-provider');
+  assert.deepEqual(result.generalization.partitions,[{partition:'development',cases:1,recoveries:0,regressions:0,stableReady:1,proposedUnresolved:0,distinctApplications:0,distinctProviderFamilies:0}]);
   assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
     {caseId:'bad-app',applicationId:'bad app',observation:observation([])},
   ]),/application-id-invalid/);
   assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
     {caseId:'bad-provider',providerFamily:'bad provider',observation:observation([])},
   ]),/provider-family-invalid/);
+});
+
+test('offline semantic replay separates development recovery from held-out regression',()=>{
+  const [base,proposed]=manifests(['Save','Store'],['Store','Commit']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'development-commit',partition:'development',applicationId:'training-shell',providerFamily:'test-uia',observation:observation([node([2],'Button',{name:'Commit',patterns:['invoke']})])},
+    {caseId:'holdout-save',partition:'holdout',applicationId:'windows-notepad',providerFamily:'win32-richedit',observation:observation([node([3],'Button',{name:'Save',patterns:['invoke']})])},
+  ]);
+  assert.equal(result.status,'regressed');
+  assert.deepEqual(result.generalization.partitions,[
+    {partition:'development',cases:1,recoveries:1,regressions:0,stableReady:0,proposedUnresolved:0,distinctApplications:1,distinctProviderFamilies:1},
+    {partition:'holdout',cases:1,recoveries:0,regressions:1,stableReady:0,proposedUnresolved:1,distinctApplications:1,distinctProviderFamilies:1},
+  ]);
+  assert.equal(result.promotionEligible,false);
+  assert.equal(result.authorityGranted,false);
 });
 
 test('offline semantic replay requires exact revision lineage and bounded unique case identities',()=>{
