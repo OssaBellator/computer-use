@@ -169,7 +169,9 @@ export class WindowsNativeHostCaptureBridge implements WindowsGraphicsCaptureNat
     }
     let bytes:Buffer;
     try{bytes=Buffer.from(raw.dataBase64,'base64');}catch{throw new Error('windows-native-host-artifact-consume-response-invalid');}
-    if(bytes.byteLength!==raw.byteLength||bytes.toString('base64')!==raw.dataBase64){
+    const pngSignature=[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a] as const;
+    if(bytes.byteLength!==raw.byteLength||bytes.toString('base64')!==raw.dataBase64||bytes.byteLength<pngSignature.length||
+       pngSignature.some((value,index)=>bytes[index]!==value)){
       bytes.fill(0);
       throw new Error('windows-native-host-artifact-consume-response-invalid');
     }

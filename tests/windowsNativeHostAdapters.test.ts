@@ -72,17 +72,22 @@ test('capture adapter returns bounded frame structure for runtime revalidation',
   await client.releaseArtifact('capture-2-3');
 });
 
-test('capture adapter consumes one bounded artifact payload and validates exact base64 length',async()=>{
-  const data=Buffer.from([1,2,3,4]).toString('base64');
+test('capture adapter consumes one bounded canonical PNG payload',async()=>{
+  const bytes=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a,1,2,3,4]);
+  const data=bytes.toString('base64');
   const client=new WindowsNativeHostCaptureBridge(protocol((operation)=>operation==='artifact.consume'
-    ? {mediaType:'image/png',byteLength:4,dataBase64:data}
+    ? {mediaType:'image/png',byteLength:bytes.byteLength,dataBase64:data}
     : {}));
-  const consumed=await client.consumeArtifact('capture-1',16);
+  const consumed=await client.consumeArtifact('capture-1',32);
   assert.equal(consumed.mediaType,'image/png');
-  assert.deepEqual([...consumed.bytes],[1,2,3,4]);
+  assert.deepEqual([...consumed.bytes],[...bytes]);
 
-  const malformed=new WindowsNativeHostCaptureBridge(protocol(()=>({mediaType:'image/png',byteLength:3,dataBase64:data})));
-  await assert.rejects(()=>malformed.consumeArtifact('capture-1',16),/consume-response-invalid/);
+  const malformedLength=new WindowsNativeHostCaptureBridge(protocol(()=>({mediaType:'image/png',byteLength:bytes.byteLength-1,dataBase64:data})));
+  await assert.rejects(()=>malformedLength.consumeArtifact('capture-1',32),/consume-response-invalid/);
+
+  const fakePng=Buffer.from([1,2,3,4,5,6,7,8]).toString('base64');
+  const malformedSignature=new WindowsNativeHostCaptureBridge(protocol(()=>({mediaType:'image/png',byteLength:8,dataBase64:fakePng})));
+  await assert.rejects(()=>malformedSignature.consumeArtifact('capture-1',32),/consume-response-invalid/);
 });
 
 test('integrity and SendInput adapters require bounded numeric native results and exact authority payload', async () => {
