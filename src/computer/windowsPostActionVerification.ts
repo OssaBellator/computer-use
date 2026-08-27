@@ -20,6 +20,10 @@ export interface WindowsPostActionVerificationOptions {
   readonly pollIntervalMs?:number;
   readonly maxSamples?:number;
   readonly maxConsecutiveErrors?:number;
+  /** Require a sample sequence newer than the pre-action authoritative sample. */
+  readonly minimumSequenceExclusive?:number;
+  /** Require provider capture time at/after this action boundary. */
+  readonly notBeforeMs?:number;
   readonly sleep?:(milliseconds:number)=>Promise<void>;
   readonly now?:()=>number;
 }
@@ -71,9 +75,10 @@ function withVerification(
 
 /**
  * Bounded post-action verification over an authoritative Windows observation
- * source. Successful samples must advance monotonically; duplicate/regressed
- * sequence numbers are ignored as stale evidence. Missing evidence never becomes
- * success, and an UNKNOWN dispatch ledger remains UNKNOWN after reconciliation.
+ * source. Samples must be newer than any supplied pre-action sequence/time
+ * baseline and advance monotonically within the settling loop. Missing evidence
+ * never becomes success, and an UNKNOWN dispatch ledger remains UNKNOWN after
+ * reconciliation even if the visible post-state matches the requested outcome.
  */
 export async function verifyWindowsPostAction<T>(
   original:ComputerActionResult,
@@ -87,14 +92,18 @@ export async function verifyWindowsPostAction<T>(
   const pollIntervalMs=options.pollIntervalMs??25;
   const maxSamples=options.maxSamples??32;
   const maxConsecutiveErrors=options.maxConsecutiveErrors??3;
+  const minimumSequenceExclusive=options.minimumSequenceExclusive??-1;
+  const notBeforeMs=options.notBeforeMs??0;
   if(!boundedInt(timeoutMs,0,MAX_TIMEOUT_MS)||!boundedInt(pollIntervalMs,0,MAX_TIMEOUT_MS)||
-     !boundedInt(maxSamples,1,MAX_SAMPLES)||!boundedInt(maxConsecutiveErrors,0,MAX_ERRORS)){
+     !boundedInt(maxSamples,1,MAX_SAMPLES)||!boundedInt(maxConsecutiveErrors,0,MAX_ERRORS)||
+     !Number.isSafeInteger(minimumSequenceExclusive)||minimumSequenceExclusive< -1||
+     !Number.isSafeInteger(notBeforeMs)||notBeforeMs<0){
     throw new Error('windows-post-action-verification-options-invalid');
   }
   const now=options.now??Date.now;
   const sleep=options.sleep??defaultSleep;
   const started=now();
-  let lastSequence=-1;
+  let lastSequence=minimumSequenceExclusive;
   let successfulSamples=0;
   let consecutiveErrors=0;
 
@@ -106,7 +115,7 @@ export async function verifyWindowsPostAction<T>(
         throw new Error('windows-post-action-observation-invalid');
       }
       consecutiveErrors=0;
-      if(observation.sequence>lastSequence){
+      if(observation.sequence>lastSequence&&observation.capturedAtMs>=notBeforeMs){
         lastSequence=observation.sequence;
         successfulSamples+=1;
         const verdict=predicate(observation);
