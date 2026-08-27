@@ -225,8 +225,15 @@ test('release-environment proof must bind a required environment to a passing ca
   assert.deepEqual(good.satisfiedReleaseEnvironments,['test-release-environment']);
   assert.equal(good.releaseEnvironmentCoverage[0]?.attemptedCases,COMPUTER_USE_EVALUATION_STRATA.length);
   assert.ok(good.releaseEnvironmentCoverage[0]?.stratumBreadth.every((entry)=>entry.attempted===1&&entry.distinctSources===1));
+  assert.deepEqual(good.releaseEnvironmentCoverage[0]?.satisfiedClaims,COMPUTER_USE_PRODUCTION_SAFETY_CLAIMS);
   const partial=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[{environmentId:'test-release-environment',bindings:[{caseId,sourceId:'test-0'}]}]);
   assert.ok(partial.blockers.includes('release-environment:test-release-environment:case-unbound:prod-case-1'));
+  const outsideClaimCase={...cases[0]!,caseId:'outside-claim-case',sources:cases[0]!.sources?.map((source)=>({...source,sourceId:`outside-${source.sourceId}`,environmentId:'other-environment'}))};
+  const mixedCases=[...cases,outsideClaimCase];
+  const mixedClaims=claimEvidence(caseId).map((entry)=>entry.claim==='no-blind-retry-after-possible-dispatch'?{...entry,caseIds:[outsideClaimCase.caseId]}:entry);
+  const environmentClaimGap=evaluateComputerUseProductionGate(policy(),mixedCases,mixedClaims,runtimeProof(caseId),releaseEnvironmentEvidence(mixedCases));
+  assert.ok(!environmentClaimGap.blockers.includes('claim:no-blind-retry-after-possible-dispatch:passing-cases-below-threshold'));
+  assert.ok(environmentClaimGap.blockers.includes('release-environment:test-release-environment:claim:no-blind-retry-after-possible-dispatch:passing-cases-below-threshold'));
   const strict=evaluateComputerUseProductionGate(policy(2),cases,claimEvidence(caseId),runtimeProof(caseId),releaseEnvironmentEvidence(cases));
   assert.ok(strict.blockers.includes('release-environment:test-release-environment:stratum:grounding:attempted-below-threshold'));
   const missing=evaluateComputerUseProductionGate(policy(),cases,claimEvidence(caseId),runtimeProof(caseId),[]);

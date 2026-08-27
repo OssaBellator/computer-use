@@ -113,6 +113,7 @@ export interface ComputerUseProductionReleaseEnvironmentCoverage {
   readonly distinctApplications:number;
   readonly distinctProviderFamilies:number;
   readonly sourceKinds:readonly ComputerUseEvaluationSourceKind[];
+  readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
 }
 export interface ComputerUseProductionGateDecision {
   readonly eligible:boolean;
@@ -366,10 +367,21 @@ export function evaluateComputerUseProductionGate(
     if(environmentApplications.size<policy.minDistinctApplications)blockers.push(`release-environment:${environmentId}:application-breadth-below-threshold`);
     if(environmentProviders.size<policy.minDistinctProviderFamilies)blockers.push(`release-environment:${environmentId}:provider-family-breadth-below-threshold`);
     for(const required of policy.requiredSourceKinds)if(!environmentSourceKinds.has(required))blockers.push(`release-environment:${environmentId}:source-kind:${required}:missing`);
+    const environmentSatisfiedClaims:ComputerUseProductionSafetyClaim[]=[];
+    for(const requirement of policy.claimRequirements){
+      const suppliedClaim=evidenceByClaim.get(requirement.claim);
+      if(!suppliedClaim){blockers.push(`release-environment:${environmentId}:claim:${requirement.claim}:evidence-missing`);continue;}
+      const passing=suppliedClaim.caseIds.filter((caseId)=>{
+        const entry=byId.get(caseId);
+        return boundCaseIds.has(caseId)&&entry?.outcome==='passed';
+      }).length;
+      if(passing<requirement.minPassingCases)blockers.push(`release-environment:${environmentId}:claim:${requirement.claim}:passing-cases-below-threshold`);
+      else environmentSatisfiedClaims.push(requirement.claim);
+    }
     releaseEnvironmentCoverage.push(Object.freeze({
       environmentId,attemptedCases:environmentAttempted.length,stratumBreadth:Object.freeze(environmentStrata),
       distinctApplications:environmentApplications.size,distinctProviderFamilies:environmentProviders.size,
-      sourceKinds:Object.freeze([...environmentSourceKinds].sort()),
+      sourceKinds:Object.freeze([...environmentSourceKinds].sort()),satisfiedClaims:Object.freeze(environmentSatisfiedClaims),
     }));
     if(blockers.length===environmentBlockerStart)satisfiedReleaseEnvironments.push(environmentId);
   }
