@@ -88,6 +88,8 @@ export interface ComputerUseProductionGatePolicy {
 export type ComputerUseZeroToleranceIncidentCounts = Readonly<Record<ComputerUseZeroToleranceIncident,number>>;
 export interface ComputerUseZeroToleranceIncidentEvidence {
   readonly evidenceId:string;
+  readonly caseId:string;
+  readonly sourceId:string;
   readonly gitSha:string;
   readonly environmentId:string;
   readonly counts:ComputerUseZeroToleranceIncidentCounts;
@@ -299,7 +301,7 @@ function validateRuntimeProof(proof:ComputerUseProductionRuntimeProof):void {
   const evidenceIds=new Set<string>();
   const aggregate=Object.fromEntries(COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS.map((incident)=>[incident,0])) as Record<ComputerUseZeroToleranceIncident,number>;
   for(const evidence of proof.zeroToleranceIncidentEvidence){
-    if(!evidence||typeof evidence!=='object'||!TOKEN.test(evidence.evidenceId)||evidenceIds.has(evidence.evidenceId)||!GIT_SHA.test(evidence.gitSha)||!TOKEN.test(evidence.environmentId)||!evidence.counts||typeof evidence.counts!=='object')
+    if(!evidence||typeof evidence!=='object'||!TOKEN.test(evidence.evidenceId)||evidenceIds.has(evidence.evidenceId)||!TOKEN.test(evidence.caseId)||!TOKEN.test(evidence.sourceId)||!GIT_SHA.test(evidence.gitSha)||!TOKEN.test(evidence.environmentId)||!evidence.counts||typeof evidence.counts!=='object')
       throw new Error('computer-use-production-incident-evidence-invalid');
     evidenceIds.add(evidence.evidenceId);
     for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
@@ -375,6 +377,16 @@ export function evaluateComputerUseProductionGate(
   if(providerFamilies.size<policy.minDistinctProviderFamilies)blockers.push('corpus:provider-family-breadth-below-threshold');
 
   const byId=new Map(cases.map((entry)=>[entry.caseId,entry] as const));
+  const validIncidentEvidenceIds=new Set<string>();
+  for(const evidence of runtimeProof.zeroToleranceIncidentEvidence){
+    const entry=byId.get(evidence.caseId);
+    if(!entry){blockers.push(`incident-evidence:${evidence.evidenceId}:case-missing:${evidence.caseId}`);continue;}
+    const source=entry.sources?.find((candidate)=>candidate.sourceId===evidence.sourceId);
+    if(!source){blockers.push(`incident-evidence:${evidence.evidenceId}:source-missing:${evidence.caseId}:${evidence.sourceId}`);continue;}
+    if(source.gitSha!==evidence.gitSha){blockers.push(`incident-evidence:${evidence.evidenceId}:source-git-sha-mismatch:${evidence.caseId}:${evidence.sourceId}`);continue;}
+    if(source.environmentId!==evidence.environmentId){blockers.push(`incident-evidence:${evidence.evidenceId}:source-environment-mismatch:${evidence.caseId}:${evidence.sourceId}:${source.environmentId??'missing'}`);continue;}
+    validIncidentEvidenceIds.add(evidence.evidenceId);
+  }
   const evidenceByClaim=new Map(claimEvidence.map((entry)=>[entry.claim,entry] as const));
   const satisfiedClaims:ComputerUseProductionSafetyClaim[]=[];
   for(const requirement of policy.claimRequirements){
@@ -471,7 +483,7 @@ export function evaluateComputerUseProductionGate(
       return boundCaseIds.has(caseId)&&entry?.outcome==='passed'&&entry.enablementLevel===runtimeProof.enablement.targetLevel;
     });
     if(!disablementEvidenceSatisfied)blockers.push(`release-environment:${environmentId}:enablement:${runtimeProof.enablement.targetLevel}:disablement-evidence-missing`);
-    const zeroToleranceIncidentEvidenceSatisfied=runtimeProof.zeroToleranceIncidentEvidence.some((evidence)=>evidence.environmentId===environmentId);
+    const zeroToleranceIncidentEvidenceSatisfied=runtimeProof.zeroToleranceIncidentEvidence.some((evidence)=>evidence.environmentId===environmentId&&validIncidentEvidenceIds.has(evidence.evidenceId));
     if(!zeroToleranceIncidentEvidenceSatisfied)blockers.push(`release-environment:${environmentId}:incident-evidence-missing`);
     releaseEnvironmentCoverage.push(Object.freeze({
       environmentId,attemptedCases:environmentAttempted.length,stratumBreadth:Object.freeze(environmentStrata),
