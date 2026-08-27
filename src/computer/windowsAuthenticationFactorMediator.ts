@@ -1,5 +1,6 @@
 import { decideComputerConsequenceAuthority, type ComputerEffectAuthorityGrant } from './consequenceAuthority.js';
 import { mayContributeInstructionAuthority, type ObservationTrust } from './observationTrust.js';
+import { sameWindowsUiaControl, type WindowsUiaControlRef } from './windowsUiaContract.js';
 
 export type WindowsAuthenticationFactorKind='totp'|'passkey'|'windows-hello'|'push-approval'|'user-presence';
 export type WindowsAuthenticationPurpose='authenticate'|'reauthenticate';
@@ -11,12 +12,16 @@ export interface WindowsAuthenticationFactorGrant {
   readonly kind:WindowsAuthenticationFactorKind;
   readonly expiresAtMs:number;
   readonly source:ObservationTrust;
+  /** Required for TOTP so factor application cannot be redirected after grant creation. */
+  readonly target?:WindowsUiaControlRef;
 }
 
 export interface WindowsAuthenticationFactorBrokerRequest {
   readonly factorRef:string;
   readonly purpose:WindowsAuthenticationPurpose;
   readonly kind:WindowsAuthenticationFactorKind;
+  /** Present only for target-bound factors such as TOTP. */
+  readonly target?:WindowsUiaControlRef;
 }
 
 export type WindowsAuthenticationFactorBrokerResult =
@@ -64,6 +69,12 @@ export class WindowsAuthenticationFactorMediator {
     const now=this.now();
     if(!REF.test(request.factorRef)||!REF.test(grant.grantId)||!REF.test(grant.factorRef))return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-ref-invalid'])});
     if(grant.factorRef!==request.factorRef||grant.kind!==request.kind||grant.purpose!==request.purpose)return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-grant-mismatch'])});
+    if(request.kind==='totp'){
+      if(!request.target||!grant.target)return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-target-required'])});
+      if(!sameWindowsUiaControl(request.target,grant.target))return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-target-mismatch'])});
+    }else if(request.target!==undefined||grant.target!==undefined){
+      return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-target-unexpected'])});
+    }
     if(!mayContributeInstructionAuthority(grant.source))return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-source-untrusted'])});
     if(!Number.isSafeInteger(grant.expiresAtMs)||grant.expiresAtMs<=now||grant.expiresAtMs-now>MAX_GRANT_TTL_MS)return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-auth-factor-grant-expired-or-unbounded'])});
     const consequence=decideComputerConsequenceAuthority('security-sensitive',request.consequenceGrants??[]);
@@ -79,7 +90,7 @@ export class WindowsAuthenticationFactorMediator {
       this.consumed.delete(oldest);
     }
     try{
-      const result=await this.broker.performFactor(Object.freeze({factorRef:request.factorRef,purpose:request.purpose,kind:request.kind}));
+      const result=await this.broker.performFactor(Object.freeze({factorRef:request.factorRef,purpose:request.purpose,kind:request.kind,...(request.target?{target:request.target}:{})}));
       return normalizeBrokerResult(result,request.factorRef);
     }catch{
       return Object.freeze({status:'unknown',evidence:Object.freeze(['windows-auth-factor-broker-unknown'])});

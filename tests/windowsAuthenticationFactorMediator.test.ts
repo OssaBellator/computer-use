@@ -6,24 +6,27 @@ import { WindowsAuthenticationFactorMediator, type WindowsAuthenticationFactorBr
 const trusted=observationTrust('user-authored',['factor']);
 const untrusted=observationTrust('external-untrusted-content',['web']);
 const consequence=Object.freeze({grantId:'security-factor',source:trusted,allowedEffects:Object.freeze(['security-sensitive' as const])});
+const windowRef=Object.freeze({hwnd:'0xabc',desktopSessionId:'session:1',process:Object.freeze({processId:55,startIdentity:'p55'}),generation:3});
+const target=Object.freeze({window:windowRef,runtimeId:Object.freeze([1,2]),automationId:'Otp',controlType:'Edit',generation:1});
 function request(overrides:Record<string,unknown>={}){
   const factorRef='factor:totp:work';
   return {
     factorRef,
     purpose:'authenticate' as const,
     kind:'totp' as const,
-    factorGrant:{grantId:'factor-grant:1',factorRef,purpose:'authenticate' as const,kind:'totp' as const,expiresAtMs:10_500,source:trusted},
+    target,
+    factorGrant:{grantId:'factor-grant:1',factorRef,purpose:'authenticate' as const,kind:'totp' as const,expiresAtMs:10_500,source:trusted,target},
     consequenceGrants:[consequence],
     ...overrides,
   };
 }
 
-test('factor broker receives only opaque ref, purpose, and kind',async()=>{
+test('factor broker receives only bounded authorized metadata and exact TOTP target',async()=>{
   let seen:unknown;
   const broker:WindowsAuthenticationFactorBroker={performFactor:async value=>{seen=value;return {status:'completed',evidence:['factor-used']};}};
   const mediator=new WindowsAuthenticationFactorMediator(broker,()=>10_000);
   const out=await mediator.performFactor(request());
-  assert.deepEqual(seen,{factorRef:'factor:totp:work',purpose:'authenticate',kind:'totp'});
+  assert.deepEqual(seen,{factorRef:'factor:totp:work',purpose:'authenticate',kind:'totp',target});
   assert.equal(out.status,'completed');
   assert.equal(JSON.stringify(seen).includes('factorGrant'),false);
   assert.equal(JSON.stringify(seen).includes('consequenceGrants'),false);
@@ -34,6 +37,26 @@ test('factor grant is exact-purpose and exact-kind bound',async()=>{
   const mediator=new WindowsAuthenticationFactorMediator({performFactor:async()=>{calls+=1;return {status:'completed'};}},()=>10_000);
   const out=await mediator.performFactor(request({kind:'passkey'}));
   assert.equal(out.status,'rejected');
+  assert.equal(calls,0);
+});
+
+test('TOTP factor use requires the exact generation-aware target bound into the grant',async()=>{
+  let calls=0;
+  const mediator=new WindowsAuthenticationFactorMediator({performFactor:async()=>{calls+=1;return {status:'completed'};}},()=>10_000);
+  const base=request();
+  const replaced={...target,generation:2};
+  assert.equal((await mediator.performFactor({...base,target:replaced})).status,'rejected');
+  assert.equal(calls,0);
+  assert.equal((await mediator.performFactor({...base,target:undefined})).status,'rejected');
+  assert.equal(calls,0);
+});
+
+test('non-TOTP factors cannot acquire a UIA value target through the generic factor boundary',async()=>{
+  let calls=0;
+  const mediator=new WindowsAuthenticationFactorMediator({performFactor:async()=>{calls+=1;return {status:'completed'};}},()=>10_000);
+  const base=request();
+  const passkey={...base,kind:'passkey' as const,factorGrant:{...base.factorGrant,kind:'passkey' as const}};
+  assert.equal((await mediator.performFactor(passkey)).status,'rejected');
   assert.equal(calls,0);
 });
 
