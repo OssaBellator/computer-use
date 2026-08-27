@@ -57,4 +57,9 @@ Write-Host '== Native Win32 semantic smoke target Release build =='
 dotnet build $win32Smoke -c Release --nologo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+$realAppSmoke = 'native/windows/Ossa.ComputerUse.RealAppSmoke/Ossa.ComputerUse.RealAppSmoke.csproj'
+Write-Host '== Real Windows application semantic smoke target Release build =='
+dotnet build $realAppSmoke -c Release --nologo
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 Write-Host 'DP11 Windows validation receipt: PASS'
