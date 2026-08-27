@@ -77,6 +77,11 @@ export type WindowsUiaRevalidation =
   | {readonly status:'current';readonly control:WindowsUiaControlSnapshot}
   | {readonly status:'stale'|'missing'|'ambiguous'|'inaccessible';readonly evidence?:readonly string[]};
 
+export type WindowsUiaActionSupportAssessment =
+  | {readonly status:'supported';readonly requiredPattern:WindowsUiaPattern;readonly observedPatterns:readonly WindowsUiaPattern[];readonly evidence:readonly string[]}
+  | {readonly status:'unsupported';readonly requiredPattern:WindowsUiaPattern;readonly observedPatterns?:readonly WindowsUiaPattern[];readonly evidence:readonly string[]}
+  | {readonly status:'rejected'|'failed';readonly requiredPattern?:WindowsUiaPattern;readonly observedPatterns?:readonly WindowsUiaPattern[];readonly evidence:readonly string[]};
+
 export interface WindowsUiaProvider {
   observeCached(window:WindowsUiaWindowRef,limits:Required<ComputerObservationLimits>):Promise<WindowsUiaCachedObservation>;
   revalidateControl(ref:WindowsUiaControlRef):Promise<WindowsUiaRevalidation>;
@@ -375,22 +380,46 @@ export class WindowsUiaSemanticRuntime {
     if(!captured) throw new Error('windows-uia-observation-invalid');
     return captured;
   }
+  async assessActionSupport(ref:WindowsUiaControlRef,action:WindowsUiaSemanticAction):Promise<WindowsUiaActionSupportAssessment>{
+    const authorityRef=captureWindowsUiaControlRef(ref);
+    const authorityAction=captureWindowsUiaSemanticAction(action);
+    if(!authorityRef||!authorityAction)return Object.freeze({status:'rejected',evidence:Object.freeze(['windows-uia-request-invalid'])});
+    const requiredPattern=requiredWindowsUiaPattern(authorityAction);
+    let currentRaw:WindowsUiaRevalidation;
+    try{currentRaw=await this.provider.revalidateControl(authorityRef);}catch{
+      return Object.freeze({status:'failed',requiredPattern,evidence:Object.freeze(['windows-uia-revalidation-failed'])});
+    }
+    const current=captureWindowsUiaRevalidation(currentRaw);
+    if(!current)return Object.freeze({status:'failed',requiredPattern,evidence:Object.freeze(['windows-uia-revalidation-invalid'])});
+    if(current.status!=='current')return Object.freeze({
+      status:current.status==='inaccessible'?'unsupported':'rejected',
+      requiredPattern,
+      evidence:Object.freeze([`windows-uia-${current.status}`,...(current.evidence??[])]),
+    });
+    const observedPatterns=Object.freeze([...current.control.patterns]);
+    if(!sameWindowsUiaControl(authorityRef,current.control.ref))return Object.freeze({
+      status:'rejected',requiredPattern,observedPatterns,evidence:Object.freeze(['windows-uia-control-replaced']),
+    });
+    if(current.control.enabled===false)return Object.freeze({
+      status:'rejected',requiredPattern,observedPatterns,evidence:Object.freeze(['windows-uia-control-disabled']),
+    });
+    if(!observedPatterns.includes(requiredPattern))return Object.freeze({
+      status:'unsupported',requiredPattern,observedPatterns,evidence:Object.freeze(['windows-uia-pattern-unsupported']),
+    });
+    return Object.freeze({
+      status:'supported',requiredPattern,observedPatterns,evidence:Object.freeze(['windows-uia-target-pattern-supported']),
+    });
+  }
   async act(ref:WindowsUiaControlRef,action:WindowsUiaSemanticAction,effect:ComputerEffectClass):Promise<ComputerActionResult>{
     const authorityRef=captureWindowsUiaControlRef(ref);
     const authorityAction=captureWindowsUiaSemanticAction(action);
     if(!authorityRef||!authorityAction||!COMPUTER_EFFECT_CLASSES.includes(effect)) return{status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-request-invalid']};
     if(effect==='observe-only') return{status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-effect-invalid']};
-    let currentRaw:WindowsUiaRevalidation;
-    try{currentRaw=await this.provider.revalidateControl(authorityRef);}catch{return{status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-revalidation-failed']};}
-    const current=captureWindowsUiaRevalidation(currentRaw);
-    if(!current)return{status:'failed',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-revalidation-invalid']};
-    if(current.status!=='current')return{
-      status:current.status==='inaccessible'?'unsupported':'rejected',dispatch:'not-dispatched',verification:'unverified',
-      evidence:Object.freeze([`windows-uia-${current.status}`,...(current.evidence??[])]),
+    const support=await this.assessActionSupport(authorityRef,authorityAction);
+    if(support.status!=='supported')return{
+      status:support.status==='unsupported'?'unsupported':support.status==='failed'?'failed':'rejected',
+      dispatch:'not-dispatched',verification:'unverified',evidence:support.evidence,
     };
-    if(!sameWindowsUiaControl(authorityRef,current.control.ref))return{status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-control-replaced']};
-    if(current.control.enabled===false)return{status:'rejected',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-control-disabled']};
-    if(!current.control.patterns.includes(requiredWindowsUiaPattern(authorityAction)))return{status:'unsupported',dispatch:'not-dispatched',verification:'unverified',evidence:['windows-uia-pattern-unsupported']};
     try{
       const rawResult=await this.provider.performSemanticAction(authorityRef,authorityAction,effect);
       const capturedResult=captureDesktopBackendActionResult(rawResult);

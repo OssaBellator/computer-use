@@ -100,6 +100,48 @@ test('stale and ambiguous UIA controls fail before dispatch', async () => {
   assert.equal(dispatches,0);
 });
 
+test('target action support assessment exposes exact required and observed UIA patterns without dispatch', async () => {
+  let dispatches = 0;
+  const runtime = new WindowsUiaSemanticRuntime(provider({
+    revalidateControl: async () => ({
+      status:'current',
+      control:{ref,enabled:true,patterns:Object.freeze(['value','invoke','window'] as const)},
+    }),
+    performSemanticAction: async () => {
+      dispatches += 1;
+      return {status:'completed',dispatched:true};
+    },
+  }));
+  const supported = await runtime.assessActionSupport(ref,{kind:'invoke'});
+  assert.deepEqual(supported,{
+    status:'supported',
+    requiredPattern:'invoke',
+    observedPatterns:['value','invoke','window'],
+    evidence:['windows-uia-target-pattern-supported'],
+  });
+  const unsupported = await runtime.assessActionSupport(ref,{kind:'set-range-value',value:73});
+  assert.deepEqual(unsupported,{
+    status:'unsupported',
+    requiredPattern:'range-value',
+    observedPatterns:['value','invoke','window'],
+    evidence:['windows-uia-pattern-unsupported'],
+  });
+  assert.equal(dispatches,0);
+});
+
+test('target action support assessment fails closed on stale or disabled exact targets', async () => {
+  const stale = new WindowsUiaSemanticRuntime(provider({revalidateControl:async()=>({status:'stale',evidence:['provider-stale']})}));
+  assert.deepEqual(await stale.assessActionSupport(ref,{kind:'invoke'}),{
+    status:'rejected',requiredPattern:'invoke',evidence:['windows-uia-stale','provider-stale'],
+  });
+  const disabled = new WindowsUiaSemanticRuntime(provider({
+    revalidateControl:async()=>({status:'current',control:{ref,enabled:false,patterns:['invoke']}}),
+  }));
+  assert.deepEqual(await disabled.assessActionSupport(ref,{kind:'invoke'}),{
+    status:'rejected',requiredPattern:'invoke',observedPatterns:['invoke'],evidence:['windows-uia-control-disabled'],
+  });
+});
+
 test('semantic action never silently falls back when pattern is absent', async () => {
   let dispatches = 0;
   const runtime = new WindowsUiaSemanticRuntime(provider({
