@@ -8,15 +8,16 @@ internal static class Program
     {
         Console.WriteLine("REAL_APP_SMOKE_BEGIN");
         var mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
-        if (mode is not ("all" or "calculator" or "notepad" or "explorer"))
+        if (mode is not ("all" or "calculator" or "notepad" or "explorer" or "terminal"))
         {
             Console.WriteLine("REAL_APP_SMOKE_STATUS=invalid-mode");
             return 2;
         }
-        var calculator = mode is "notepad" or "explorer" || RunCalculator();
-        var notepad = mode is "calculator" or "explorer" || RunNotepadObservation();
-        var explorer = mode is "calculator" or "notepad" || RunExplorer();
-        var passed = calculator && notepad && explorer;
+        var calculator = mode is "notepad" or "explorer" or "terminal" || RunCalculator();
+        var notepad = mode is "calculator" or "explorer" or "terminal" || RunNotepadObservation();
+        var explorer = mode is "calculator" or "notepad" or "terminal" || RunExplorer();
+        var terminal = mode is "calculator" or "notepad" or "explorer" || RunTerminal();
+        var passed = calculator && notepad && explorer && terminal;
         Console.WriteLine($"REAL_APP_SMOKE_STATUS={(passed ? "completed" : "blocked")}");
         return passed ? 0 : 3;
     }
@@ -147,6 +148,70 @@ internal static class Program
         }
     }
 
+    private static bool RunTerminal()
+    {
+        AutomationElement? window = null;
+        try
+        {
+            static bool IsTerminal(string name) => name.Contains("PowerShell", StringComparison.OrdinalIgnoreCase) || name.Contains("Terminal", StringComparison.OrdinalIgnoreCase);
+            var priorWindows = CaptureTopLevelHandles(IsTerminal);
+            _ = Process.Start(new ProcessStartInfo("wt.exe", "-w new") { UseShellExecute = true });
+            window = WaitForTopLevelWindow(IsTerminal, priorWindows);
+            if (window is null || !StringComparer.OrdinalIgnoreCase.Equals(SafeCurrent(window, AutomationElement.ClassNameProperty)?.ToString(), "CASCADIA_HOSTING_WINDOW_CLASS"))
+            {
+                Console.WriteLine("TERMINAL_STATUS=window-unavailable");
+                return false;
+            }
+
+            Console.WriteLine($"TERMINAL_WINDOW=framework:{SafeCurrent(window, AutomationElement.FrameworkIdProperty)}:class:{SafeCurrent(window, AutomationElement.ClassNameProperty)}");
+            var newTabButton = WaitForInvokableControl(window, "NewTabButton", new[] { "New Tab" });
+            if (newTabButton is null || !newTabButton.TryGetCurrentPattern(InvokePattern.Pattern, out var rawNewTab))
+            {
+                Console.WriteLine("TERMINAL_NEW_TAB=unsupported");
+                DumpDescendants(window, "TERMINAL");
+                return false;
+            }
+
+            var before = CountTabCloseButtons(window);
+            if (before < 1)
+            {
+                Console.WriteLine($"TERMINAL_STATUS=tab-strip-unavailable:{before}");
+                return false;
+            }
+            ((InvokePattern)rawNewTab).Invoke();
+            var added = WaitForStableTabCloseButtonCount(window, before + 1);
+            Console.WriteLine("TERMINAL_NEW_TAB=dispatched-once");
+            Console.WriteLine($"TERMINAL_ADD_VERIFY={(added ? "pass" : "mismatch")}:before:{before}:after:{CountTabCloseButtons(window)}");
+            if (!added)
+            {
+                Console.WriteLine("TERMINAL_STATUS=verification-mismatch");
+                return false;
+            }
+
+            var closeButton = WaitForSelectedTabCloseButton(window);
+            if (closeButton is null || !closeButton.TryGetCurrentPattern(InvokePattern.Pattern, out var rawClose))
+            {
+                Console.WriteLine("TERMINAL_CLOSE_TAB=unsupported");
+                return false;
+            }
+            ((InvokePattern)rawClose).Invoke();
+            var restored = WaitForStableTabCloseButtonCount(window, before);
+            Console.WriteLine("TERMINAL_CLOSE_TAB=dispatched-once");
+            Console.WriteLine($"TERMINAL_CLOSE_VERIFY={(restored ? "pass" : "mismatch")}:expected:{before}:actual:{CountTabCloseButtons(window)}");
+            Console.WriteLine($"TERMINAL_STATUS={(restored ? "completed" : "verification-mismatch")}");
+            return restored;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"TERMINAL_STATUS=blocked:{ex.GetType().Name}:0x{ex.HResult:X8}");
+            return false;
+        }
+        finally
+        {
+            CloseWindow(window);
+        }
+    }
+
     private static bool RunExplorer()
     {
         AutomationElement? window = null;
@@ -262,6 +327,23 @@ internal static class Program
             Thread.Sleep(100);
         }
         return null;
+    }
+
+    private static bool WaitForStableTabCloseButtonCount(AutomationElement root, int expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var consecutive = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (CountTabCloseButtons(root) == expected)
+            {
+                consecutive += 1;
+                if (consecutive >= 3) return true;
+            }
+            else consecutive = 0;
+            Thread.Sleep(100);
+        }
+        return false;
     }
 
     private static bool WaitForWindowNameChange(AutomationElement window, string baseline)
