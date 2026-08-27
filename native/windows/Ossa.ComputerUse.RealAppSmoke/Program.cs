@@ -4,11 +4,17 @@ using System.Windows.Automation;
 internal static class Program
 {
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         Console.WriteLine("REAL_APP_SMOKE_BEGIN");
-        var calculator = RunCalculator();
-        var notepad = RunNotepadObservation();
+        var mode = args.Length == 0 ? "all" : args[0].Trim().ToLowerInvariant();
+        if (mode is not ("all" or "calculator" or "notepad"))
+        {
+            Console.WriteLine("REAL_APP_SMOKE_STATUS=invalid-mode");
+            return 2;
+        }
+        var calculator = mode == "notepad" || RunCalculator();
+        var notepad = mode == "calculator" || RunNotepadObservation();
         var passed = calculator && notepad;
         Console.WriteLine($"REAL_APP_SMOKE_STATUS={(passed ? "completed" : "blocked")}");
         return passed ? 0 : 3;
@@ -39,7 +45,7 @@ internal static class Program
             };
             foreach (var control in controls)
             {
-                var button = FindInvokableControl(window, control.Id, control.Names);
+                var button = WaitForInvokableControl(window, control.Id, control.Names);
                 if (button is null || !button.TryGetCurrentPattern(InvokePattern.Pattern, out var rawInvoke))
                 {
                     Console.WriteLine($"CALCULATOR_INVOKE=unsupported:{control.Id}");
@@ -51,7 +57,9 @@ internal static class Program
                 Thread.Sleep(120);
             }
 
-            var result = FindByAutomationId(window, "CalculatorResults");
+            var result = WaitForControl(window, candidate =>
+                StringComparer.Ordinal.Equals(candidate.Current.AutomationId, "CalculatorResults") ||
+                candidate.Current.Name.Contains("Display is", StringComparison.OrdinalIgnoreCase));
             var resultName = result?.Current.Name ?? string.Empty;
             var resultPassed = resultName.Contains("12", StringComparison.Ordinal);
             Console.WriteLine("CALCULATOR_INVOKE=pass");
@@ -113,13 +121,19 @@ internal static class Program
             }
             const string probe = "Ossa semantic real-app probe";
             valuePattern.SetValue(probe);
-            Thread.Sleep(120);
-            var observed = valuePattern.Current.Value;
-            var verified = StringComparer.Ordinal.Equals(observed, probe);
+            var verified = WaitForValue(valuePattern, probe);
             Console.WriteLine("NOTEPAD_VALUE=dispatched-once");
             Console.WriteLine($"NOTEPAD_VERIFY={(verified ? "pass" : "mismatch")}");
-            Console.WriteLine($"NOTEPAD_STATUS={(verified ? "completed" : "verification-mismatch")}");
-            return verified;
+            if (!verified)
+            {
+                Console.WriteLine("NOTEPAD_STATUS=verification-mismatch");
+                return false;
+            }
+            valuePattern.SetValue(string.Empty);
+            var cleared = WaitForValue(valuePattern, string.Empty);
+            Console.WriteLine($"NOTEPAD_CLEAR_VERIFY={(cleared ? "pass" : "mismatch")}");
+            Console.WriteLine($"NOTEPAD_STATUS={(cleared ? "completed" : "verification-mismatch")}");
+            return cleared;
         }
         catch (Exception ex)
         {
@@ -202,20 +216,28 @@ internal static class Program
         return null;
     }
 
-    private static AutomationElement? FindInvokableControl(AutomationElement root, string automationId, IReadOnlyCollection<string> semanticNames)
+    private static AutomationElement? WaitForInvokableControl(AutomationElement root, string automationId, IReadOnlyCollection<string> semanticNames)
     {
-        var byId = FindByAutomationId(root, automationId);
-        if (IsInvokable(byId)) return byId;
-
-        var descendants = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
-        for (var i = 0; i < descendants.Count; i++)
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
         {
-            var candidate = descendants[i];
-            if (!IsInvokable(candidate)) continue;
-            string name;
-            try { name = candidate.Current.Name; }
-            catch (ElementNotAvailableException) { continue; }
-            if (semanticNames.Any(expected => StringComparer.OrdinalIgnoreCase.Equals(expected, name))) return candidate;
+            try
+            {
+                var byId = FindByAutomationId(root, automationId);
+                if (IsInvokable(byId)) return byId;
+                var descendants = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+                for (var i = 0; i < descendants.Count; i++)
+                {
+                    var candidate = descendants[i];
+                    if (!IsInvokable(candidate)) continue;
+                    string name;
+                    try { name = candidate.Current.Name; }
+                    catch (ElementNotAvailableException) { continue; }
+                    if (semanticNames.Any(expected => StringComparer.OrdinalIgnoreCase.Equals(expected, name))) return candidate;
+                }
+            }
+            catch (ElementNotAvailableException) { }
+            Thread.Sleep(160);
         }
         return null;
     }
@@ -225,6 +247,22 @@ internal static class Program
         if (element is null) return false;
         try { return element.Current.IsEnabled && element.TryGetCurrentPattern(InvokePattern.Pattern, out _); }
         catch (ElementNotAvailableException) { return false; }
+    }
+
+    private static bool WaitForValue(ValuePattern pattern, string expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                if (StringComparer.Ordinal.Equals(pattern.Current.Value, expected)) return true;
+            }
+            catch (ElementNotAvailableException) { return false; }
+            catch (InvalidOperationException) { return false; }
+            Thread.Sleep(100);
+        }
+        return false;
     }
 
     private static void DumpDescendants(AutomationElement root, string prefix)
