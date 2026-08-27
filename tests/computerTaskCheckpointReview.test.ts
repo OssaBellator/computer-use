@@ -228,6 +228,35 @@ test('resume context is bounded metadata and rejects invalid or excessive bindin
   }), /exceeds 32 bindings/);
 });
 
+test('continuation gate can suspend before dispatch without consuming step budget or cursor state', async () => {
+  const environment = registryWith(['fake.write']);
+  const runtime = new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    hooks: { continuationGate: async () => ({ state: 'suspend', evidence: ['auth-user-presence-required'] }) },
+  });
+  const result = await runtime.run();
+  assert.equal(result.status, 'suspended');
+  assert.equal(result.stepsExecuted, 0);
+  assert.equal(result.nextStepId, 'write');
+  assert.equal(environment.adapter.actCount, 0);
+  assert.ok(result.evidence?.includes('auth-user-presence-required'));
+  const checkpoint = runtime.checkpoint();
+  assert.equal(checkpoint.cursor.stepsExecuted, 0);
+  assert.equal(checkpoint.cursor.nextStepId, 'write');
+  assert.equal(checkpoint.actions.find((entry) => entry.stepId === 'write')?.state, 'not-started');
+});
+
+test('continuation gate exception fails closed into suspension before adapter execution', async () => {
+  const environment = registryWith(['fake.write']);
+  const result = await new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    hooks: { continuationGate: async () => { throw new Error('authority-provider-unavailable'); } },
+  }).run();
+  assert.equal(result.status, 'suspended');
+  assert.ok(result.evidence?.includes('continuation-gate-unknown'));
+  assert.equal(environment.adapter.actCount, 0);
+});
+
 test('verifier cannot mutate dispatch fields to bypass effectful post-dispatch verification', async () => {
   const environment = registryWith(['fake.write']);
   const verifyTask: ComputerTaskProgram = {

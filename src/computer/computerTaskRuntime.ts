@@ -45,7 +45,8 @@ export type ComputerTaskTerminalStatus =
   | 'verification-mismatch'
   | 'unverified'
   | 'unknown-dispatch'
-  | 'reconciliation-required';
+  | 'reconciliation-required'
+  | 'suspended';
 
 export interface ComputerTaskTargetRevalidation {
   state: 'fresh' | 'stale' | 'missing';
@@ -72,7 +73,17 @@ export interface ComputerTaskVerificationContext {
   registry: ComputerEnvironmentRegistry;
 }
 
+export interface ComputerTaskContinuationDecision {
+  state: 'continue' | 'suspend';
+  evidence?: readonly string[];
+}
+
 export interface ComputerTaskRuntimeHooks {
+  /**
+   * Trusted host continuation gate for long-horizon execution. Runs before any adapter preflight/dispatch.
+   * Suspension preserves the current cursor and does not consume task budget.
+   */
+  continuationGate?: (context: { step: ComputerTaskStep; stepsExecuted: number }) => Promise<ComputerTaskContinuationDecision>;
   /** Must use bounded adapter/domain observations; raw observations are not retained by the runtime. */
   revalidateTarget?: (
     registry: ComputerEnvironmentRegistry,
@@ -422,6 +433,21 @@ export class ComputerTaskRuntime {
       if (this.stepsExecuted >= maxTotalSteps) return this.result('failed', observations, ['task-step-budget-exhausted']);
       const step = this.stepById.get(this.currentStepId);
       if (!step) return this.result('failed', observations, ['task-step-missing']);
+
+      if (this.hooks.continuationGate) {
+        let continuation: ComputerTaskContinuationDecision;
+        try {
+          continuation = await this.hooks.continuationGate({ step, stepsExecuted: this.stepsExecuted });
+        } catch {
+          return this.result('suspended', observations, ['continuation-gate-unknown']);
+        }
+        if (!continuation || (continuation.state !== 'continue' && continuation.state !== 'suspend')) {
+          return this.result('suspended', observations, ['continuation-gate-invalid']);
+        }
+        if (continuation.state === 'suspend') {
+          return this.result('suspended', observations, evidence(continuation.evidence, ['task-continuation-suspended']));
+        }
+      }
 
       const preflight = this.preflight(step);
       if (preflight) return { ...preflight, observations: Object.freeze([...observations]), observationsDropped: this.observationsDropped };
