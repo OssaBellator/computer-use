@@ -159,3 +159,54 @@ test('external screen content cannot authorize a consequential native fallback',
   assert.deepEqual(result.evidence,['windows-consequence-authority-source-untrusted']);
   assert.equal(dispatches,0);
 });
+
+test('semantic dispatch can be verified only by a fresh authoritative post-action sample',async()=>{
+  const {value}=await coordinator();
+  let observations=0;
+  const result=await value.actSemantic({
+    ref,action:{kind:'invoke'},effect:'local-reversible',windows:[{window:main,isModal:false,interactionState:'running'}],
+    verification:{
+      provider:{observe:async()=>({sequence:2,capturedAtMs:Date.now()+1_000,value:{invoked:true}})},
+      predicate:(observation)=>{observations+=1;return observation.value.invoked?'match':'mismatch';},
+      options:{minimumSequenceExclusive:1,timeoutMs:0},
+    },
+  });
+  assert.equal(result.status,'completed');
+  assert.equal(result.dispatch,'dispatched-once');
+  assert.equal(result.verification,'verified');
+  assert.equal(observations,1);
+  assert.ok(result.evidence?.includes('windows-post-action-verified'));
+});
+
+test('matching post-action observation cannot erase partial native dispatch uncertainty',async()=>{
+  const {value,lease}=await coordinator();
+  const result=await value.actVisualNative({
+    binding,currentFrame:frame,windows:[{window:main,isModal:false,interactionState:'running'}],
+    lease,targetDesktop:'desktop-1',targetSurface:surface,effect:'local-reversible',
+    dispatcher:{dispatch:async()=>({requestedEventCount:2,insertedEventCount:1})},
+    verification:{
+      provider:{observe:async()=>({sequence:10,capturedAtMs:Date.now()+1_000,value:'looks-complete'})},
+      predicate:()=> 'match',
+      options:{minimumSequenceExclusive:9,timeoutMs:0},
+    },
+  });
+  assert.equal(result.status,'unknown');
+  assert.equal(result.dispatch,'unknown');
+  assert.equal(result.verification,'verified');
+  assert.ok(result.evidence?.includes('windows-input-partial-dispatch'));
+  assert.ok(result.evidence?.includes('windows-post-action-verified'));
+});
+
+test('pre-dispatch rejection never invokes post-action verification provider',async()=>{
+  let observations=0;
+  const {value}=await coordinator();
+  const result=await value.actSemantic({
+    ref,action:{kind:'invoke'},effect:'external-communication',windows:[{window:main,isModal:false,interactionState:'running'}],
+    verification:{
+      provider:{observe:async()=>{observations+=1;return {sequence:1,capturedAtMs:Date.now(),value:true};}},
+      predicate:()=> 'match',
+    },
+  });
+  assert.equal(result.dispatch,'not-dispatched');
+  assert.equal(observations,0);
+});
