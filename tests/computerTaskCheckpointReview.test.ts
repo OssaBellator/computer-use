@@ -10,6 +10,7 @@ import type {
 import { ComputerEnvironmentRegistry } from '../src/computer/environmentRegistry.js';
 import type { ComputerTaskProgram } from '../src/computer/computerTask.js';
 import { createComputerTaskCheckpoint, decodeComputerTaskCheckpoint, encodeComputerTaskCheckpoint } from '../src/computer/computerTaskCheckpoint.js';
+import { InMemoryComputerTaskCheckpointStore, loadComputerTaskCheckpointStoreHead } from '../src/computer/computerTaskCheckpointStore.js';
 import { ComputerTaskRuntime } from '../src/computer/computerTaskRuntime.js';
 
 const EXECUTION_ID = '0123456789abcdef0123456789abcdef';
@@ -295,6 +296,132 @@ test('ambiguous pre-dispatch checkpoint persistence prevents dispatch and leaves
   }).run();
   assert.equal(resumedResult.status, 'reconciliation-required');
   assert.equal(resumed.adapter.actCount, 0);
+});
+
+test('checkpoint store compare-and-swap revisions prevent stale durable overwrite', async () => {
+  const store = new InMemoryComputerTaskCheckpointStore();
+  const checkpoint = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: 0,
+    actions: { write: 'not-started' },
+  });
+  assert.deepEqual(await store.compareAndSwap(EXECUTION_ID, 0, checkpoint), { status: 'committed', revision: 1 });
+  assert.deepEqual(await store.compareAndSwap(EXECUTION_ID, 0, checkpoint), { status: 'conflict', currentRevision: 1 });
+  const head = await loadComputerTaskCheckpointStoreHead(store, EXECUTION_ID);
+  assert.equal(head?.revision, 1);
+  assert.equal(head?.checkpoint.cursor.nextStepId, 'write');
+});
+
+test('runtime advances monotonic store from write-ahead fence to verified completion', async () => {
+  const store = new InMemoryComputerTaskCheckpointStore();
+  const environment = registryWith(['fake.write']);
+  const runtime = new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpointStore: store,
+  });
+  const result = await runtime.run();
+  assert.equal(result.status, 'completed');
+  assert.equal(environment.adapter.actCount, 1);
+  assert.equal(runtime.durableCheckpointRevision(), 2);
+  const head = await loadComputerTaskCheckpointStoreHead(store, EXECUTION_ID);
+  assert.equal(head?.revision, 2);
+  assert.equal(head?.checkpoint.actions.find((entry) => entry.stepId === 'write')?.state, 'completed');
+  assert.equal(head?.checkpoint.cursor.stepsExecuted, 1);
+});
+
+test('stale concurrent runtime suspends before adapter dispatch when newer store head exists', async () => {
+  const store = new InMemoryComputerTaskCheckpointStore();
+  const winnerEnvironment = registryWith(['fake.write']);
+  const staleEnvironment = registryWith(['fake.write']);
+  const winner = new ComputerTaskRuntime(task, winnerEnvironment.registry, { executionId: EXECUTION_ID, checkpointStore: store });
+  const stale = new ComputerTaskRuntime(task, staleEnvironment.registry, { executionId: EXECUTION_ID, checkpointStore: store });
+  assert.equal((await winner.run()).status, 'completed');
+  const staleResult = await stale.run();
+  assert.equal(staleResult.status, 'suspended');
+  assert.ok(staleResult.evidence?.includes('checkpoint-store-head-mismatch'));
+  assert.equal(staleEnvironment.adapter.actCount, 0);
+});
+
+test('older valid checkpoint revision cannot roll back a newer durable head', async () => {
+  const store = new InMemoryComputerTaskCheckpointStore();
+  const initial = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: 0,
+    actions: { write: 'not-started' },
+  });
+  assert.deepEqual(await store.compareAndSwap(EXECUTION_ID, 0, initial), { status: 'committed', revision: 1 });
+  const oldHead = (await loadComputerTaskCheckpointStoreHead(store, EXECUTION_ID))!;
+  const newer = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: undefined,
+    stepsExecuted: 1,
+    actions: { write: 'completed' },
+  });
+  assert.deepEqual(await store.compareAndSwap(EXECUTION_ID, 1, newer), { status: 'committed', revision: 2 });
+
+  const environment = registryWith(['fake.write']);
+  const result = await new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint: oldHead.checkpoint,
+    checkpointStore: store,
+    checkpointStoreRevision: oldHead.revision,
+  }).run();
+  assert.equal(result.status, 'suspended');
+  assert.ok(result.evidence?.includes('checkpoint-store-head-mismatch'));
+  assert.equal(environment.adapter.actCount, 0);
+});
+
+test('old checkpoint paired with current revision is still rejected by exact durable-head binding', async () => {
+  const store = new InMemoryComputerTaskCheckpointStore();
+  const oldCheckpoint = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: 0,
+    actions: { write: 'not-started' },
+  });
+  await store.compareAndSwap(EXECUTION_ID, 0, oldCheckpoint);
+  const newer = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: undefined,
+    stepsExecuted: 1,
+    actions: { write: 'completed' },
+  });
+  await store.compareAndSwap(EXECUTION_ID, 1, newer);
+  const environment = registryWith(['fake.write']);
+  const result = await new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint: oldCheckpoint,
+    checkpointStore: store,
+    checkpointStoreRevision: 2,
+  }).run();
+  assert.equal(result.status, 'suspended');
+  assert.ok(result.evidence?.includes('checkpoint-store-head-mismatch'));
+  assert.equal(environment.adapter.actCount, 0);
+});
+
+test('store-backed checkpoint resume requires the revision paired with the durable head', async () => {
+  const store = new InMemoryComputerTaskCheckpointStore();
+  const checkpoint = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: 0,
+    actions: { write: 'not-started' },
+  });
+  await store.compareAndSwap(EXECUTION_ID, 0, checkpoint);
+  const environment = registryWith(['fake.write']);
+  assert.throws(() => new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+    checkpointStore: store,
+  }), /store revision is invalid/);
 });
 
 test('verifier cannot mutate dispatch fields to bypass effectful post-dispatch verification', async () => {

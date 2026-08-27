@@ -19,10 +19,15 @@ import {
 } from './computerTask.js';
 import {
   createComputerTaskCheckpoint,
+  encodeComputerTaskCheckpoint,
   validateComputerTaskCheckpoint,
   type ComputerTaskActionCheckpointState,
   type ComputerTaskCheckpoint,
 } from './computerTaskCheckpoint.js';
+import {
+  loadComputerTaskCheckpointStoreHead,
+  type ComputerTaskCheckpointStore,
+} from './computerTaskCheckpointStore.js';
 
 export const COMPUTER_TASK_MAX_RETAINED_OBSERVATIONS = 64;
 const EVIDENCE_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
@@ -101,6 +106,10 @@ export interface ComputerTaskRuntimeHooks {
 export interface ComputerTaskRuntimeOptions {
   executionId: string;
   checkpoint?: ComputerTaskCheckpoint;
+  /** Strong durable anti-rollback store. Resume callers must supply the revision paired with checkpoint. */
+  checkpointStore?: ComputerTaskCheckpointStore;
+  /** 0 only for a new execution with no durable head; positive revisions must come from the store head. */
+  checkpointStoreRevision?: number;
   /**
    * Non-secret opaque bindings for state that must remain stable across a long-horizon resume,
    * e.g. authenticated-account/session generation, authority revision, tenant, or environment generation.
@@ -196,6 +205,8 @@ export class ComputerTaskRuntime {
   private readonly executionId: string;
   private readonly hooks: ComputerTaskRuntimeHooks;
   private readonly resumeContext: Readonly<Record<string, string>>;
+  private readonly checkpointStore: ComputerTaskCheckpointStore | undefined;
+  private checkpointStoreRevision: number | undefined;
   private readonly stepById: Map<string, ComputerTaskStep>;
   private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
   private currentStepId: string | undefined;
@@ -218,6 +229,17 @@ export class ComputerTaskRuntime {
       ...options.hooks,
       verifiers: options.hooks?.verifiers ? Object.freeze({ ...options.hooks.verifiers }) : undefined,
     });
+    this.checkpointStore = options.checkpointStore;
+    if (this.checkpointStore) {
+      const revision = options.checkpointStoreRevision ?? (options.checkpoint ? undefined : 0);
+      if (revision === undefined || !Number.isSafeInteger(revision) || revision < 0 || revision > 1_000_000_000 ||
+          (options.checkpoint !== undefined && revision === 0) || (options.checkpoint === undefined && revision !== 0)) {
+        throw new Error('computer task checkpoint store revision is invalid for runtime state');
+      }
+      this.checkpointStoreRevision = revision;
+    } else if (options.checkpointStoreRevision !== undefined) {
+      throw new Error('computer task checkpoint store revision requires a checkpoint store');
+    }
     this.resumeContext = this.captureResumeContext(options.resumeContext);
     this.stepById = new Map(this.program.steps.map((step) => [step.id, step]));
     this.currentStepId = this.program.entry;
@@ -289,10 +311,40 @@ export class ComputerTaskRuntime {
     return undefined;
   }
 
+  /** Current monotonic durable revision, when a CAS store is attached. */
+  durableCheckpointRevision(): number | undefined {
+    return this.checkpointStoreRevision;
+  }
+
+  private async checkpointStoreHeadIsCurrent(): Promise<boolean> {
+    if (!this.checkpointStore) return true;
+    try {
+      const head = await loadComputerTaskCheckpointStoreHead(this.checkpointStore, this.executionId);
+      const revision = head?.revision ?? 0;
+      if (revision !== this.checkpointStoreRevision) return false;
+      if (!head) return revision === 0;
+      return encodeComputerTaskCheckpoint(head.checkpoint) === encodeComputerTaskCheckpoint(this.checkpoint());
+    } catch {
+      return false;
+    }
+  }
+
   private async persistCheckpoint(): Promise<boolean> {
+    const checkpoint = this.checkpoint();
+    if (this.checkpointStore) {
+      const expectedRevision = this.checkpointStoreRevision;
+      if (expectedRevision === undefined) return false;
+      try {
+        const committed = await this.checkpointStore.compareAndSwap(this.executionId, expectedRevision, checkpoint);
+        if (!committed || committed.status !== 'committed' || committed.revision !== expectedRevision + 1) return false;
+        this.checkpointStoreRevision = committed.revision;
+      } catch {
+        return false;
+      }
+    }
     if (!this.hooks.checkpointSink) return true;
     try {
-      await this.hooks.checkpointSink(this.checkpoint());
+      await this.hooks.checkpointSink(checkpoint);
       return true;
     } catch {
       return false;
@@ -375,7 +427,7 @@ export class ComputerTaskRuntime {
       if (predispatch.state !== 'fresh') {
         return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
       }
-      if (this.hooks.checkpointSink) {
+      if (this.hooks.checkpointSink || this.checkpointStore) {
         // Write-ahead fence: after this durable state exists, any crash/lost process must reconcile
         // rather than replaying the action from an older not-started checkpoint.
         this.actionStates.set(step.id, 'unknown-dispatch');
@@ -445,6 +497,9 @@ export class ComputerTaskRuntime {
   async run(): Promise<ComputerTaskRunResult> {
     const observations: ComputerTaskObservationRecord[] = [];
     this.observationsDropped = 0;
+    if (!await this.checkpointStoreHeadIsCurrent()) {
+      return this.result('suspended', observations, ['checkpoint-store-head-mismatch']);
+    }
     if (this.unresolvedCheckpointDispatch) {
       return this.result('reconciliation-required', observations, ['checkpoint-unresolved-dispatch']);
     }
