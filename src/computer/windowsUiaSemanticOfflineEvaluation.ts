@@ -1,6 +1,7 @@
 import type { WindowsUiaCachedObservation } from './windowsUiaContract.js';
 import { instantiateWindowsUiaSemanticRecipe, type WindowsUiaSemanticRecipeInputs } from './windowsUiaSemanticRecipe.js';
 import { validateWindowsUiaSemanticRecipeRevision, type WindowsUiaSemanticRecipeManifest } from './windowsUiaSemanticRecipeManifest.js';
+import { digestWindowsUiaSemanticReplayCorpus } from './windowsUiaSemanticReplayCorpus.js';
 
 const TOKEN=/^[a-z0-9][a-z0-9._:-]{0,127}$/i;
 const MAX_CASES=256;
@@ -19,6 +20,7 @@ export interface WindowsUiaSemanticOfflineReplayCase {
 export interface WindowsUiaSemanticOfflineEvaluation {
   readonly status:'improved'|'non-regressing'|'regressed';
   readonly cases:number;
+  readonly corpusDigest:string;
   readonly recoveries:number;
   readonly regressions:number;
   readonly stableReady:number;
@@ -68,6 +70,7 @@ export function evaluateWindowsUiaSemanticRecipeOffline(
 ):WindowsUiaSemanticOfflineEvaluation {
   validateWindowsUiaSemanticRecipeRevision(base,proposed);
   if(!Array.isArray(cases)||cases.length===0||cases.length>MAX_CASES)throw new Error('windows-uia-semantic-offline-evaluation-cases-invalid');
+  const corpusDigest=digestWindowsUiaSemanticReplayCorpus(cases);
   const seen=new Set<string>();
   const applications=new Set<string>();
   const providers=new Set<string>();
@@ -116,7 +119,7 @@ export function evaluateWindowsUiaSemanticRecipeOffline(
     })),
   });
   return Object.freeze({
-    status,cases:cases.length,recoveries,regressions,stableReady,proposedUnresolved,generalization,
+    status,cases:cases.length,corpusDigest,recoveries,regressions,stableReady,proposedUnresolved,generalization,
     caseResults:Object.freeze(caseResults),promotionEligible:false as const,authorityGranted:false as const,
   });
 }

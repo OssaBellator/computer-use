@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { WindowsUiaCachedObservation, WindowsUiaControlSnapshot, WindowsUiaWindowRef } from '../src/computer/windowsUiaContract.js';
 import { evaluateWindowsUiaSemanticRecipeOffline } from '../src/computer/windowsUiaSemanticOfflineEvaluation.js';
 import { digestWindowsUiaSemanticRecipeManifest, type WindowsUiaSemanticRecipeManifest } from '../src/computer/windowsUiaSemanticRecipeManifest.js';
+import { digestWindowsUiaSemanticReplayCorpus } from '../src/computer/windowsUiaSemanticReplayCorpus.js';
 
 const windowRef:WindowsUiaWindowRef=Object.freeze({
   hwnd:'0x720',desktopSessionId:'interactive:1',process:Object.freeze({processId:720,startIdentity:'p720'}),generation:2,
@@ -16,7 +17,9 @@ function node(runtimeId:number[],controlType:string,input:Partial<WindowsUiaCont
   });
 }
 function observation(children:readonly WindowsUiaControlSnapshot[]):WindowsUiaCachedObservation{
-  return Object.freeze({window:windowRef,root:node([1],'Window',{patterns:['window'],children}),itemCount:children.length+1,textBytes:0,truncated:false,invalidationEpoch:1,capturedAtMs:1});
+  const count=(entries:readonly WindowsUiaControlSnapshot[]):number=>entries.reduce((sum,entry)=>sum+1+count(entry.children??[]),0);
+  const textBytes=(entries:readonly WindowsUiaControlSnapshot[]):number=>entries.reduce((sum,entry)=>sum+(entry.name===undefined?0:new TextEncoder().encode(entry.name).byteLength)+(entry.value===undefined?0:new TextEncoder().encode(entry.value).byteLength)+textBytes(entry.children??[]),0);
+  return Object.freeze({window:windowRef,root:node([1],'Window',{patterns:['window'],children}),itemCount:count(children)+1,textBytes:textBytes(children),truncated:false,invalidationEpoch:1,capturedAtMs:1});
 }
 function manifests(baseNames:readonly string[],proposedNames:readonly string[]):readonly [WindowsUiaSemanticRecipeManifest,WindowsUiaSemanticRecipeManifest]{
   const base:WindowsUiaSemanticRecipeManifest=Object.freeze({
@@ -39,6 +42,7 @@ test('offline semantic replay reports recovery without granting promotion or aut
     {caseId:'new-store',observation:observation([node([3],'Button',{name:'Store',patterns:['invoke']})])},
   ]);
   assert.equal(result.status,'improved');
+  assert.match(result.corpusDigest,/^sha256:[a-f0-9]{64}$/);
   assert.equal(result.recoveries,1);
   assert.equal(result.regressions,0);
   assert.equal(result.stableReady,1);
@@ -122,6 +126,15 @@ test('offline semantic replay separates development recovery from held-out regre
   ]);
   assert.equal(result.promotionEligible,false);
   assert.equal(result.authorityGranted,false);
+});
+
+test('offline replay corpus digest is order-independent but content-sensitive',()=>{
+  const a={caseId:'a',partition:'development' as const,applicationId:'app-a',providerFamily:'provider-a',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})]),inputs:{level:1}};
+  const b={caseId:'b',partition:'holdout' as const,applicationId:'app-b',providerFamily:'provider-b',observation:observation([node([3],'Button',{name:'Store',patterns:['invoke']})]),inputs:{text:'x'}};
+  const first=digestWindowsUiaSemanticReplayCorpus([a,b]);
+  assert.equal(first,digestWindowsUiaSemanticReplayCorpus([b,a]));
+  assert.notEqual(first,digestWindowsUiaSemanticReplayCorpus([a,{...b,partition:'development'}]));
+  assert.notEqual(first,digestWindowsUiaSemanticReplayCorpus([a,{...b,inputs:{text:'y'}}]));
 });
 
 test('offline semantic replay requires exact revision lineage and bounded unique case identities',()=>{
