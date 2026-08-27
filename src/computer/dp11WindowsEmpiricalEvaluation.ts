@@ -22,6 +22,8 @@ const REAL_APP_EVIDENCE_RECEIPT='xrc_mtbe4tif_fc491915f912baad0475752e';
 const REAL_APP_LIFECYCLE_EVIDENCE_SHA='9c3950f2aded23b084365154bbb58fadbdf1388c';
 const REAL_APP_NOTEPAD_LIFECYCLE_RECEIPT='xrc_mtbema8r_7ee7370d2d2377f59bd4ef47';
 const REAL_APP_CALCULATOR_LIFECYCLE_RECEIPT='xrc_mtbemmqu_80c6b5ce2dbcd3d194065d30';
+const REAL_APP_EXPLORER_EVIDENCE_SHA='44c867c098b82ef33c7c3804d80a21a0c23238b0';
+const REAL_APP_EXPLORER_RECEIPT='xrc_mtbi8lrl_e5d9b80204456db1d1ba8908';
 
 function automated(sourceId:string){
   return Object.freeze([
@@ -256,6 +258,18 @@ export const DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES:readonly ComputerUseEvaluatio
     stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-calculator',providerFamily:'application-frame-uia',
     evidence:Object.freeze(['real-application','calculator-display-readback-verified','expected-result-12']),
     sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_CALCULATOR_LIFECYCLE_RECEIPT,gitSha:REAL_APP_LIFECYCLE_EVIDENCE_SHA,independenceId:REAL_APP_CALCULATOR_LIFECYCLE_RECEIPT})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-explorer-real-app-semantic-tab-actions',
+    stratum:'primitive-action',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-file-explorer',providerFamily:'win32-explorer-uia',
+    evidence:Object.freeze(['real-application','add-tab-invoke-dispatched-once','selected-tab-close-invoke-dispatched-once','no-raw-fallback']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_EXPLORER_RECEIPT,gitSha:REAL_APP_EXPLORER_EVIDENCE_SHA,independenceId:REAL_APP_EXPLORER_RECEIPT})]),
+  }),
+  Object.freeze({
+    caseId:'dp11-explorer-real-app-state-verification',
+    stratum:'state-transition-verification',outcome:'passed',embodiment:'semantic-ui',applicationId:'windows-file-explorer',providerFamily:'win32-explorer-uia',
+    evidence:Object.freeze(['real-application','window-title-changed-after-add-tab','window-title-restored-after-selected-tab-close','semantic-state-transition-verified']),
+    sources:Object.freeze([Object.freeze({kind:'windows-host-smoke' as const,sourceId:REAL_APP_EXPLORER_RECEIPT,gitSha:REAL_APP_EXPLORER_EVIDENCE_SHA,independenceId:REAL_APP_EXPLORER_RECEIPT})]),
   }),
 ]);
 
