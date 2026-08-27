@@ -53,46 +53,41 @@ function validateLocator(locator:WindowsUiaSemanticLocator):void {
   if(locator.includeOffscreen!==undefined&&typeof locator.includeOffscreen!=='boolean')throw new Error('windows-uia-semantic-locator-offscreen-invalid');
 }
 
-function flatten(root:WindowsUiaControlSnapshot|undefined):readonly WindowsUiaControlSnapshot[] {
-  if(!root)return Object.freeze([]);
-  const result:WindowsUiaControlSnapshot[]=[];
-  const stack=[root];
-  while(stack.length>0){
-    const current=stack.pop()!;
-    result.push(current);
-    const children=current.children??[];
-    for(let index=children.length-1;index>=0;index-=1)stack.push(children[index]!);
-  }
-  return Object.freeze(result);
-}
-function eligible(node:WindowsUiaControlSnapshot,locator:WindowsUiaSemanticLocator):boolean {
-  if(!locator.controlTypes.includes(node.ref.controlType))return false;
-  if((locator.requireEnabled??true)&&node.enabled===false)return false;
-  if(!(locator.includeOffscreen??false)&&node.offscreen===true)return false;
-  for(const pattern of locator.requiredPatterns??[])if(!node.patterns.includes(pattern))return false;
+function eligible(
+  node:WindowsUiaControlSnapshot,
+  controlTypes:ReadonlySet<string>,
+  requiredPatterns:readonly WindowsUiaPattern[],
+  requireEnabled:boolean,
+  includeOffscreen:boolean,
+):boolean {
+  if(!controlTypes.has(node.ref.controlType))return false;
+  if(requireEnabled&&node.enabled===false)return false;
+  if(!includeOffscreen&&node.offscreen===true)return false;
+  for(const pattern of requiredPatterns)if(!node.patterns.includes(pattern))return false;
   return true;
 }
 function refIdentity(ref:WindowsUiaControlRef):string {
   return `${ref.window.hwnd}:${ref.window.generation}:${ref.generation}:${ref.runtimeId.join('.')}`;
 }
-function unique(nodes:readonly WindowsUiaControlSnapshot[]):readonly WindowsUiaControlSnapshot[] {
-  const seen=new Set<string>();
-  return Object.freeze(nodes.filter((node)=>{
-    const identity=refIdentity(node.ref);
-    if(seen.has(identity))return false;
-    seen.add(identity);
-    return true;
-  }));
+interface CandidateState {
+  readonly identities:Set<string>;
+  firstRef?:WindowsUiaControlRef;
 }
-function resolution(nodes:readonly WindowsUiaControlSnapshot[],basis:'automation-id'|'semantic-name',id:string):WindowsUiaSemanticLocatorResolution|undefined {
-  const candidates=unique(nodes);
-  if(candidates.length===0)return undefined;
-  if(candidates.length>1)return Object.freeze({
-    status:'ambiguous' as const,basis,candidateCount:candidates.length,
+function addCandidate(state:CandidateState,ref:WindowsUiaControlRef):void {
+  const identity=refIdentity(ref);
+  if(state.identities.has(identity))return;
+  state.identities.add(identity);
+  state.firstRef??=ref;
+}
+function resolution(state:CandidateState,basis:'automation-id'|'semantic-name',id:string):WindowsUiaSemanticLocatorResolution|undefined {
+  const candidateCount=state.identities.size;
+  if(candidateCount===0)return undefined;
+  if(candidateCount>1)return Object.freeze({
+    status:'ambiguous' as const,basis,candidateCount,
     evidence:Object.freeze([`windows-uia-semantic-locator-${id}-${basis}-ambiguous`]),
   });
   return Object.freeze({
-    status:'matched' as const,ref:candidates[0]!.ref,basis,
+    status:'matched' as const,ref:state.firstRef!,basis,
     evidence:Object.freeze([`windows-uia-semantic-locator-${id}-${basis}-matched`]),
   });
 }
@@ -109,15 +104,27 @@ export function resolveWindowsUiaSemanticLocator(
   locator:WindowsUiaSemanticLocator,
 ):WindowsUiaSemanticLocatorResolution {
   validateLocator(locator);
-  const nodes=flatten(observation.root).filter((node)=>eligible(node,locator));
-  if(locator.automationIds!==undefined){
-    const matched=resolution(nodes.filter((node)=>node.ref.automationId!==undefined&&locator.automationIds!.includes(node.ref.automationId)), 'automation-id',locator.id);
-    if(matched)return matched;
+  const controlTypes=new Set(locator.controlTypes);
+  const requiredPatterns=locator.requiredPatterns??[];
+  const requireEnabled=locator.requireEnabled??true;
+  const includeOffscreen=locator.includeOffscreen??false;
+  const automationIds=locator.automationIds===undefined?undefined:new Set(locator.automationIds);
+  const names=locator.names===undefined?undefined:new Set(locator.names.map((name)=>name.toLocaleLowerCase('en-US')));
+  const automationCandidates:CandidateState={identities:new Set<string>()};
+  const nameCandidates:CandidateState={identities:new Set<string>()};
+  const stack:WindowsUiaControlSnapshot[]=observation.root===undefined?[]:[observation.root];
+  while(stack.length>0){
+    const node=stack.pop()!;
+    if(eligible(node,controlTypes,requiredPatterns,requireEnabled,includeOffscreen)){
+      if(automationIds!==undefined&&node.ref.automationId!==undefined&&automationIds.has(node.ref.automationId))addCandidate(automationCandidates,node.ref);
+      if(names!==undefined&&node.name!==undefined&&names.has(node.name.toLocaleLowerCase('en-US')))addCandidate(nameCandidates,node.ref);
+    }
+    const children=node.children??[];
+    for(let index=children.length-1;index>=0;index-=1)stack.push(children[index]!);
   }
-  if(locator.names!==undefined){
-    const names=new Set(locator.names.map((name)=>name.toLocaleLowerCase('en-US')));
-    const matched=resolution(nodes.filter((node)=>node.name!==undefined&&names.has(node.name.toLocaleLowerCase('en-US'))), 'semantic-name',locator.id);
-    if(matched)return matched;
-  }
+  const automationResolution=resolution(automationCandidates,'automation-id',locator.id);
+  if(automationResolution)return automationResolution;
+  const nameResolution=resolution(nameCandidates,'semantic-name',locator.id);
+  if(nameResolution)return nameResolution;
   return Object.freeze({status:'missing' as const,evidence:Object.freeze([`windows-uia-semantic-locator-${locator.id}-missing`])});
 }

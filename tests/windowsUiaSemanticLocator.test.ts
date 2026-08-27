@@ -62,6 +62,19 @@ test('semantic locator fails closed when the active identifier tier is ambiguous
   }
 });
 
+test('semantic locator deduplicates repeated snapshots of the same UIA ref',()=>{
+  const first=node([10],'Button',{name:'Save',patterns:['invoke']});
+  const duplicate=node([10],'Button',{name:'SAVE',patterns:['invoke']});
+  const result=resolveWindowsUiaSemanticLocator(observation([first,duplicate]),{
+    id:'duplicate-ref-save',names:['Save'],controlTypes:['Button'],requiredPatterns:['invoke'],
+  });
+  assert.equal(result.status,'matched');
+  if(result.status==='matched'){
+    assert.equal(result.basis,'semantic-name');
+    assert.deepEqual(result.ref.runtimeId,[10]);
+  }
+});
+
 test('semantic locator filters disabled offscreen and pattern-incompatible controls before matching',()=>{
   const disabled=node([7],'Button',{name:'Run',enabled:false,patterns:['invoke']});
   const offscreen=node([8],'Button',{name:'Run',offscreen:true,patterns:['invoke']});
