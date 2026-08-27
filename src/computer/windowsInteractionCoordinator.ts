@@ -17,6 +17,11 @@ import {
   type WindowsUiaSemanticAction,
 } from './windowsUiaContract.js';
 import { validateWindowsVisualPointBinding, type WindowsVisualFrameRef, type WindowsVisualPointBinding } from './windowsVisualFrame.js';
+import {
+  assessWindowsVisualPostActionEvidence,
+  type WindowsVisualEvidencePredicate,
+  type WindowsVisualPostActionEvidenceProvider,
+} from './windowsVisualPostActionEvidence.js';
 import { decideWindowsWindowAuthority, type WindowsWindowAuthoritySnapshot } from './windowsWindowAuthority.js';
 
 function rejected(reason:string):ComputerActionResult {
@@ -34,16 +39,22 @@ export interface WindowsInteractionVerification<T> {
   readonly options?:WindowsPostActionVerificationOptions;
 }
 
-export interface WindowsSemanticInteractionRequest<TVerification=unknown> {
+export interface WindowsInteractionVisualEvidence<T> {
+  readonly provider:WindowsVisualPostActionEvidenceProvider<T>;
+  readonly predicate:WindowsVisualEvidencePredicate<T>;
+}
+
+export interface WindowsSemanticInteractionRequest<TVerification=unknown,TVisualEvidence=unknown> {
   readonly ref:WindowsUiaControlRef;
   readonly action:WindowsUiaSemanticAction;
   readonly effect:ComputerEffectClass;
   readonly windows:readonly WindowsWindowAuthoritySnapshot[];
   readonly grants?:readonly ComputerEffectAuthorityGrant[];
   readonly verification?:WindowsInteractionVerification<TVerification>;
+  readonly visualEvidence?:WindowsInteractionVisualEvidence<TVisualEvidence>;
 }
 
-export interface WindowsVisualNativeInteractionRequest<TVerification=unknown> {
+export interface WindowsVisualNativeInteractionRequest<TVerification=unknown,TVisualEvidence=unknown> {
   readonly binding:WindowsVisualPointBinding;
   /** Most recent frame available immediately before dispatch. */
   readonly currentFrame:WindowsVisualFrameRef;
@@ -55,6 +66,7 @@ export interface WindowsVisualNativeInteractionRequest<TVerification=unknown> {
   readonly grants?:readonly ComputerEffectAuthorityGrant[];
   readonly dispatcher:WindowsNativeInputDispatcher;
   readonly verification?:WindowsInteractionVerification<TVerification>;
+  readonly visualEvidence?:WindowsInteractionVisualEvidence<TVisualEvidence>;
 }
 
 async function verifyIfRequested<T>(
@@ -90,7 +102,7 @@ export class WindowsInteractionCoordinator {
     readonly integrity:WindowsProcessTokenIntegrityReader,
   ) {}
 
-  async actSemantic<TVerification=unknown>(request:WindowsSemanticInteractionRequest<TVerification>):Promise<ComputerActionResult> {
+  async actSemantic<TVerification=unknown,TVisualEvidence=unknown>(request:WindowsSemanticInteractionRequest<TVerification,TVisualEvidence>):Promise<ComputerActionResult> {
     const consequenceDenied = consequence(request.effect,request.grants);
     if (consequenceDenied) return consequenceDenied;
     const authority = decideWindowsWindowAuthority(request.ref.window,request.windows);
@@ -100,12 +112,15 @@ export class WindowsInteractionCoordinator {
     }
     const notBeforeMs=Date.now();
     const result=await this.semantic.act(request.ref,request.action,request.effect);
-    if(request.verification)return verifyIfRequested(result,request.verification,notBeforeMs);
-    const builtIn=createWindowsUiaActionVerification(this.semantic.provider,request.ref,request.action);
-    return verifyIfRequested(result,builtIn,notBeforeMs);
+    const authoritative=request.verification
+      ?await verifyIfRequested(result,request.verification,notBeforeMs)
+      :await verifyIfRequested(result,createWindowsUiaActionVerification(this.semantic.provider,request.ref,request.action),notBeforeMs);
+    return request.visualEvidence
+      ?assessWindowsVisualPostActionEvidence(authoritative,request.visualEvidence.provider,request.visualEvidence.predicate,notBeforeMs)
+      :authoritative;
   }
 
-  async actVisualNative<TVerification=unknown>(request:WindowsVisualNativeInteractionRequest<TVerification>):Promise<ComputerActionResult> {
+  async actVisualNative<TVerification=unknown,TVisualEvidence=unknown>(request:WindowsVisualNativeInteractionRequest<TVerification,TVisualEvidence>):Promise<ComputerActionResult> {
     const consequenceDenied = consequence(request.effect,request.grants);
     if (consequenceDenied) return consequenceDenied;
     const requestedWindow = request.binding.frame.window;
@@ -130,6 +145,9 @@ export class WindowsInteractionCoordinator {
       integrity,
       effect:request.effect,
     },request.dispatcher);
-    return verifyIfRequested(result,request.verification,notBeforeMs);
+    const authoritative=await verifyIfRequested(result,request.verification,notBeforeMs);
+    return request.visualEvidence
+      ?assessWindowsVisualPostActionEvidence(authoritative,request.visualEvidence.provider,request.visualEvidence.predicate,notBeforeMs)
+      :authoritative;
   }
 }

@@ -196,6 +196,7 @@ internal sealed class UiaService
         request.Add(AutomationElement.ControlTypeProperty);
         request.Add(AutomationElement.NameProperty);
         request.Add(AutomationElement.IsEnabledProperty);
+        request.Add(AutomationElement.IsPasswordProperty);
         request.Add(AutomationElement.IsOffscreenProperty);
         request.Add(AutomationElement.BoundingRectangleProperty);
         request.Add(AutomationElement.NativeWindowHandleProperty);
@@ -230,12 +231,15 @@ internal sealed class UiaService
         var controlType = ControlTypeName(element);
         var generation = ControlGeneration(window, runtimeId, controlType, element);
         var name = TruncateUtf8(StringProperty(element, AutomationElement.NameProperty), MaxFieldBytes);
-        var value = TruncateUtf8(StringProperty(element, ValuePattern.ValueProperty), MaxFieldBytes);
+        var isPassword = BoolProperty(element, AutomationElement.IsPasswordProperty);
+        // Password/credential text is never serialized across the native-host boundary.
+        var value = isPassword == true ? string.Empty : TruncateUtf8(StringProperty(element, ValuePattern.ValueProperty), MaxFieldBytes);
         return new ControlSnapshotDto(
             new ControlRefDto(window, runtimeId, EmptyToNull(automationId), controlType, null, generation),
             EmptyToNull(name),
             EmptyToNull(value),
             BoolProperty(element, AutomationElement.IsEnabledProperty),
+            isPassword,
             BoolProperty(element, AutomationElement.IsOffscreenProperty),
             Bounds(element),
             SupportedPatterns(element),
@@ -551,6 +555,7 @@ internal sealed class UiaService
         string? Name,
         string? Value,
         bool? Enabled,
+        bool? IsPassword,
         bool? Offscreen,
         RectDto? Bounds,
         string[] Patterns,

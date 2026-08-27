@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deriveObservationTrust, mayContributeInstructionAuthority, observationTrust } from '../src/computer/observationTrust.js';
 import { DesktopInteractionLeaseManager } from '../src/computer/desktopInteractionLease.js';
-import { resolveGrounding, type GroundingCandidate } from '../src/computer/groundingResolver.js';
+import { resolveGrounding, routeGroundingEmbodiment, type GroundingCandidate } from '../src/computer/groundingResolver.js';
 
 const surface = { adapterId:'desktop:test', environment:'desktop-ui' as const, surfaceId:'win-1', generation:7 };
 
@@ -87,6 +87,31 @@ test('visual candidates cannot manufacture semantic identity or veto current sem
   assert.equal(result.selected?.id,'uia-save');
   assert.deepEqual(result.conflicts,[]);
   assert.deepEqual(result.rejected,[{id:'visual-export',reason:'visual-candidate-semantic-target-forbidden'}]);
+});
+
+test('embodiment router exposes bounded selection reason and available fallbacks',()=>{
+  const semanticTarget={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
+  const decision=routeGroundingEmbodiment([
+    {id:'uia-save',kind:'semantic-ui',confidence:0.8,supported:true,stale:false,target:semanticTarget},
+    {id:'visual-save',kind:'visual-grounded',confidence:0.99,supported:true,stale:false,frame:{surface,frameSequence:50,capturedAtMs:5}},
+    {id:'keyboard-save',kind:'keyboard-semantic',confidence:0.9,supported:true,stale:false},
+  ]);
+  assert.deepEqual(decision.availableEmbodiments,['semantic-ui','keyboard-semantic','visual-grounded']);
+  assert.equal(decision.selectedEmbodiment,'semantic-ui');
+  assert.equal(decision.selectedCandidateId,'uia-save');
+  assert.equal(decision.selectionReason,'highest-authority-current-supported');
+  assert.equal(decision.fallbackReason,undefined);
+});
+
+test('embodiment router exposes authoritative conflict instead of selecting through it',()=>{
+  const target={adapterId:'desktop:test',environment:'desktop-ui' as const,kind:'ui-control' as const,entityId:'save',surfaceId:'win-1',generation:7};
+  const decision=routeGroundingEmbodiment([
+    {id:'uia-save',kind:'semantic-ui',confidence:0.9,supported:true,stale:false,target},
+    {id:'native-other',kind:'native-api',confidence:0.9,supported:true,stale:false,target:{...target,entityId:'other'}},
+  ]);
+  assert.equal(decision.selectedEmbodiment,undefined);
+  assert.equal(decision.selectionReason,'authoritative-conflict');
+  assert.equal(decision.fallbackReason,'authoritative-target-conflict');
 });
 
 test('visual and coordinate candidates fail closed unless frame and generation bound', () => {

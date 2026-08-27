@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   WindowsUiaSemanticRuntime,
+  captureWindowsUiaControlSnapshot,
   requiredWindowsUiaPattern,
   sameWindowsUiaControl,
   type WindowsUiaControlRef,
@@ -69,6 +70,13 @@ test('normalized UIA pattern state is bounded and preserved as observation rathe
   const runtime=new WindowsUiaSemanticRuntime(provider({revalidateControl:async()=>({status:'current',control:current})}));
   const result=await runtime.act(ref,{kind:'select'},'local-reversible');
   assert.equal(result.dispatch,'dispatched-once');
+});
+
+test('password controls are marked semantic-sensitive and cannot carry serialized value text',()=>{
+  const safe=captureWindowsUiaControlSnapshot({ref,name:'Password',enabled:true,isPassword:true,patterns:['value']});
+  assert.equal(safe?.isPassword,true);
+  assert.equal(safe?.value,undefined);
+  assert.equal(captureWindowsUiaControlSnapshot({ref,name:'Password',value:'secret',enabled:true,isPassword:true,patterns:['value']}),undefined);
 });
 
 test('same RuntimeId cannot rescue a replaced control generation', () => {

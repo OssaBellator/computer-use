@@ -38,6 +38,20 @@ export interface GroundingResolution {
   readonly conflicts:readonly GroundingConflict[];
 }
 
+export type EmbodimentSelectionReason =
+  | 'highest-authority-current-supported'
+  | 'authoritative-conflict'
+  | 'no-valid-candidate';
+
+export interface EmbodimentRoutingDecision {
+  readonly availableEmbodiments:readonly GroundingKind[];
+  readonly selectedEmbodiment?:GroundingKind;
+  readonly selectedCandidateId?:string;
+  readonly selectionReason:EmbodimentSelectionReason;
+  readonly fallbackReason?:string;
+  readonly resolution:GroundingResolution;
+}
+
 const PRIORITY: Readonly<Record<GroundingKind, number>> = Object.freeze({
   'native-api': 500,
   'semantic-ui': 400,
@@ -115,5 +129,42 @@ export function resolveGrounding(candidates: readonly GroundingCandidate[]): Gro
     ...(conflicts.length===0&&accepted[0] ? { selected: accepted[0] } : {}),
     rejected: Object.freeze(rejected),
     conflicts,
+  });
+}
+
+/**
+ * Produces a bounded decision exposure for the embodiment router. The planner can
+ * inspect what was available and why one embodiment was selected without gaining
+ * authority to reinterpret rejected or conflicting candidates.
+ */
+export function routeGroundingEmbodiment(candidates:readonly GroundingCandidate[]):EmbodimentRoutingDecision {
+  const resolution=resolveGrounding(candidates);
+  const availableEmbodiments=Object.freeze([...new Set(
+    candidates
+      .filter((candidate)=>!validCandidate(candidate))
+      .map((candidate)=>candidate.kind),
+  )].sort((a,b)=>PRIORITY[b]-PRIORITY[a]));
+  if(resolution.conflicts.length>0){
+    return Object.freeze({
+      availableEmbodiments,
+      selectionReason:'authoritative-conflict',
+      fallbackReason:'authoritative-target-conflict',
+      resolution,
+    });
+  }
+  if(!resolution.selected){
+    return Object.freeze({
+      availableEmbodiments,
+      selectionReason:'no-valid-candidate',
+      fallbackReason:'no-current-supported-embodiment',
+      resolution,
+    });
+  }
+  return Object.freeze({
+    availableEmbodiments,
+    selectedEmbodiment:resolution.selected.kind,
+    selectedCandidateId:resolution.selected.id,
+    selectionReason:'highest-authority-current-supported',
+    resolution,
   });
 }

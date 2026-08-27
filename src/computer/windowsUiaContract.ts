@@ -40,6 +40,8 @@ export interface WindowsUiaControlSnapshot {
   readonly name?:string;
   readonly value?:string;
   readonly enabled?:boolean;
+  /** True means secret text must never be serialized in `value`. */
+  readonly isPassword?:boolean;
   readonly offscreen?:boolean;
   readonly bounds?:DesktopRect;
   readonly patterns:readonly WindowsUiaPattern[];
@@ -220,7 +222,7 @@ function captureControlSnapshotTree(
   if(state.seen.has(value)) return undefined;
   state.seen.add(value);
 
-  const raw=captureOwnDataObject(value,['ref','name','value','enabled','offscreen','bounds','patterns','toggleState','selected','expandCollapseState','rangeValue','windowVisualState','children']);
+  const raw=captureOwnDataObject(value,['ref','name','value','enabled','isPassword','offscreen','bounds','patterns','toggleState','selected','expandCollapseState','rangeValue','windowVisualState','children']);
   if(!raw) return undefined;
   const ref=captureWindowsUiaControlRef(raw.ref);
   const patternsRaw=capturePlainArray(raw.patterns,WINDOWS_UIA_PATTERNS.length);
@@ -230,6 +232,8 @@ function captureControlSnapshotTree(
   if(raw.name!==undefined&&!boundedString(raw.name,MAX_VALUE_BYTES,true)) return undefined;
   if(raw.value!==undefined&&!boundedString(raw.value,MAX_VALUE_BYTES,true)) return undefined;
   if(raw.enabled!==undefined&&typeof raw.enabled!=='boolean') return undefined;
+  if(raw.isPassword!==undefined&&typeof raw.isPassword!=='boolean') return undefined;
+  if(raw.isPassword===true&&raw.value!==undefined) return undefined;
   if(raw.offscreen!==undefined&&typeof raw.offscreen!=='boolean') return undefined;
   if(raw.toggleState!==undefined&&(typeof raw.toggleState!=='string'||!TOGGLE_STATES.has(raw.toggleState))) return undefined;
   if(raw.selected!==undefined&&typeof raw.selected!=='boolean') return undefined;
@@ -261,6 +265,7 @@ function captureControlSnapshotTree(
     ...(raw.name!==undefined?{name:raw.name as string}:{}),
     ...(raw.value!==undefined?{value:raw.value as string}:{}),
     ...(raw.enabled!==undefined?{enabled:raw.enabled as boolean}:{}),
+    ...(raw.isPassword!==undefined?{isPassword:raw.isPassword as boolean}:{}),
     ...(raw.offscreen!==undefined?{offscreen:raw.offscreen as boolean}:{}),
     ...(bounds?{bounds}:{}),
     patterns:Object.freeze(patternsRaw as readonly WindowsUiaPattern[]),

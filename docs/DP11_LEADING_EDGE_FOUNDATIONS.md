@@ -1,6 +1,6 @@
 # DP11 leading-edge computer-use foundations
 
-This note records architecture decisions added in preparation for the DP11 Windows production embodiment. It does **not** claim that a production Windows UI Automation/capture/input backend exists yet.
+This note records the architecture decisions and production Windows embodiment delivered by DP11. The Windows provider now includes a native UI Automation host, exact HWND-bound Windows.Graphics.Capture, generation-aware frame binding, bounded one-shot visual grounding evidence, guarded SendInput fallback, modal/window authority, human-interference detection, integrity gating, transient screenshot retention, and post-action verification. These facilities do not weaken the neutral computer-use safety contracts.
 
 ## Decisions implemented in this branch
 
@@ -46,9 +46,9 @@ Microsoft also documents that `RuntimeId` is desktop-local opaque comparison mat
 
 UFO² independently converges on the same high-level architecture: UI Automation and Windows/native APIs are preferred, with vision used to cover custom/inaccessible controls. Its picture-in-picture/isolated execution work also validates treating human/agent interference as a first-class desktop concern.
 
-## Production Windows backend follow-through
+## Production Windows embodiment status
 
-The next implementation slice should be a Windows-specific backend package behind `NativeDesktopUiBackend`, with no weakening of the neutral contract:
+The Windows-specific provider is now implemented without weakening the neutral contract:
 
 - HWND + process-start identity and generation tracking;
 - bounded UIA Control View acquisition using cache requests;
@@ -56,11 +56,17 @@ The next implementation slice should be a Windows-specific backend package behin
 - semantic UIA control-pattern actions before keyboard/pointer fallback;
 - event-driven cache invalidation where events trigger re-observation rather than count as proof;
 - modal and multi-window ambiguity detection;
-- exact-window capture with DPI/geometry/frame generation metadata;
-- frame-bound visual grounding provider interface;
+- exact-window WGC capture with DPI/geometry/frame generation metadata;
+- transient, one-shot artifact consumption for production visual grounding;
+- frame-bound visual candidates that are forbidden from manufacturing semantic entity identity;
 - foreground lease enforcement before `SendInput`-style fallback;
+- non-injected human-input freshness checks at the native dispatch boundary;
 - explicit UIPI/integrity failure without silent elevation;
-- post-dispatch semantic/native verification when available, with visual diff retained as weaker evidence.
+- built-in semantic UIA post-state verification where normalized state exists;
+- visual post-action assessment retained strictly as weak evidence that cannot manufacture semantic success;
+- password controls marked with UIA `IsPassword`, with Value text redacted before native-host serialization;
+- Windows provider capabilities projected into the neutral `ComputerCapabilityProfile` without inferring unrelated powers;
+- explicit embodiment routing exposure with available embodiments, selection reason, fallback/conflict reason, and fail-closed authoritative target conflict handling.
 
 ## Research references
 
