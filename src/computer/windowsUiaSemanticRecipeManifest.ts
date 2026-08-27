@@ -16,7 +16,7 @@ export interface WindowsUiaSemanticRecipeManifest {
 }
 
 function sortedUnique(values:readonly string[],normalizer?:(value:string)=>string):readonly string[]{
-  const normalized=values.map((value)=>normalizer?normalizer(value):value);
+  const normalized=normalizer===undefined?values:values.map(normalizer);
   return Object.freeze([...new Set(normalized)].sort());
 }
 
@@ -54,13 +54,7 @@ function validateManifest(manifest:WindowsUiaSemanticRecipeManifest):void {
   }
 }
 
-/**
- * Stable content identity for a portable semantic recipe revision. The digest
- * covers recipe semantics, revision lineage and bounded provenance only; it does
- * not encode effect authority, grants, credentials, leases or dispatch state.
- */
-export function digestWindowsUiaSemanticRecipeManifest(manifest:WindowsUiaSemanticRecipeManifest):string {
-  validateManifest(manifest);
+function digestValidatedManifest(manifest:WindowsUiaSemanticRecipeManifest):string {
   const canonical={
     schemaVersion:1,
     recipe:canonicalRecipe(manifest.recipe),
@@ -69,6 +63,16 @@ export function digestWindowsUiaSemanticRecipeManifest(manifest:WindowsUiaSemant
     evidenceIds:sortedUnique(manifest.evidenceIds),
   };
   return `sha256:${createHash('sha256').update(JSON.stringify(canonical),'utf8').digest('hex')}`;
+}
+
+/**
+ * Stable content identity for a portable semantic recipe revision. The digest
+ * covers recipe semantics, revision lineage and bounded provenance only; it does
+ * not encode effect authority, grants, credentials, leases or dispatch state.
+ */
+export function digestWindowsUiaSemanticRecipeManifest(manifest:WindowsUiaSemanticRecipeManifest):string {
+  validateManifest(manifest);
+  return digestValidatedManifest(manifest);
 }
 
 /** Validate an immutable correction/revision link without granting execution authority. */
@@ -80,6 +84,6 @@ export function validateWindowsUiaSemanticRecipeRevision(
   validateManifest(next);
   if(previous.recipe.id!==next.recipe.id)throw new Error('windows-uia-semantic-recipe-revision-id-mismatch');
   if(next.revision!==previous.revision+1)throw new Error('windows-uia-semantic-recipe-revision-sequence-invalid');
-  if(next.parentDigest!==digestWindowsUiaSemanticRecipeManifest(previous))
+  if(next.parentDigest!==digestValidatedManifest(previous))
     throw new Error('windows-uia-semantic-recipe-revision-parent-mismatch');
 }
