@@ -11,7 +11,7 @@ intent
   -> exact UIA re-resolution
   -> semantic pattern dispatch when available
   -> frame-bound visual fallback only when needed
-  -> interactive-host lease
+  -> foreground-bound interactive-host lease
   -> UIPI integrity gate
   -> final foreground + physical-input revalidation
   -> exactly one native input call
@@ -80,6 +80,14 @@ References:
 - https://learn.microsoft.com/windows/win32/api/uiautomationcore/ne-uiautomationcore-windowinteractionstate
 - https://learn.microsoft.com/windows/win32/api/uiautomationclient/nn-uiautomationclient-iuiautomationwindowpattern
 
+## Foreground-bound interactive lease
+
+`WindowsInteractiveHostLeaseService` acquires an interactive-host lease only after a fresh bounded `system.windows` observation proves that the exact generation-bearing target window is the foreground window. The lease desktop ID is derived from the observed window session rather than supplied independently by a planner.
+
+Acquisition-time foreground state is not treated as durable. `DesktopInteractionLeaseManager` still requires the same human-input baseline at use time, and the native SendInput boundary repeats exact generation, foreground HWND, and physical-input checks immediately before dispatch.
+
+`foreground-interaction-lease` is advertised as supported only when `system.windows`, live `input.human-sequence`, and guarded `input.send` are all implemented by the current host/session.
+
 ## Native-input dispatch ledger
 
 SendInput fallback passes through `WindowsNativeInputGate` only after exact target surface binding, interactive-host lease validation, human-interference check, and UIPI integrity decision.
@@ -131,10 +139,40 @@ Returned points/regions are accepted only when they remain inside that exact ima
 
 The production runtime reports visual grounding as supported only when both live WGC capture and an explicitly supplied grounding backend are present. Capture alone remains partial visual grounding capability.
 
+## Post-action verification and reconciliation
+
+`WindowsInteractionCoordinator` may attach a bounded authoritative post-action verifier to either semantic or visual/native execution. The coordinator supplies its own action-boundary timestamp floor so a caller cannot accidentally verify against a pre-action sample by omitting `notBeforeMs`.
+
+`verifyWindowsPostAction` additionally supports a pre-action sequence baseline. Samples older than either baseline are ignored. Observation errors are bounded; missing evidence never becomes success.
+
+Dispatch and verification remain separate ledgers:
+
+- a dispatched-once action plus a semantic match may become `verified`;
+- a dispatched-once semantic mismatch becomes failed/mismatch without rewriting the dispatch history;
+- an unknown/partial dispatch remains `status: unknown` and `dispatch: unknown` even if a later observation visually matches the desired state.
+
+`createWindowsUiaActionVerification` currently supplies conservative generic presets only where the normalized UIA contract already contains authoritative state:
+
+- `set-value`: exact fresh UIA value match;
+- `window:close`: the exact target control becoming `missing`.
+
+A stale/replaced identity is not accepted as proof of Close. Invoke, Toggle, SelectionItem, ExpandCollapse, Scroll, RangeValue and non-close Window actions remain caller-specific until their normalized authoritative post-state is represented explicitly.
+
+## Shutdown revocation
+
+Runtime shutdown revokes local authority before closing the sidecar:
+
+1. every active desktop interaction lease is cleared;
+2. every visual artifact lease is cleared locally before backend destruction is attempted;
+3. all artifact release calls are attempted even if one fails;
+4. the native apartment/sidecar is then disposed.
+
+A backend artifact-destruction failure can therefore report cleanup uncertainty but cannot make a locally released screenshot or interaction lease current again. Native host disposal independently zeroizes retained capture buffers.
+
 ## Validation status
 
 The earlier Windows VM validation established the production UIA/native subset against real Notepad and the interactive desktop: bounded semantic trees, exact element comparison, semantic Value/SelectionItem/ExpandCollapse/Window actions, event registration/invalidation, integrity reads, stale-ref rejection, and real relative/absolute SendInput were exercised successfully.
 
-Changes after that validation include the concrete WGC implementation, native artifact expiry, non-injected human-input hooks, final native foreground/interference SendInput checks, native modal/window-state batches, and the exact-frame visual-grounding boundary. These newer changes must pass the next Windows receipt (`scripts/test.ps1`) and targeted live tests before they are described as Windows-validated.
+Changes after that validation include the concrete WGC implementation, native artifact expiry, non-injected human-input hooks, final native foreground/interference SendInput checks, native modal/window-state batches, exact-frame visual grounding, foreground-bound lease acquisition, coordinator-integrated post-action verification, UIA Value/Close verification presets, and bulk shutdown revocation. These newer changes must pass the next Windows receipt (`scripts/test.ps1`) and targeted live tests before they are described as Windows-validated.
 
 The platform bridge is an embodiment provider, not a planner and not an alternate safety runtime.
