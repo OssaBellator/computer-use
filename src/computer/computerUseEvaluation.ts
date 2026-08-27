@@ -11,12 +11,28 @@ export const COMPUTER_USE_EVALUATION_STRATA = [
 export type ComputerUseEvaluationStratum = typeof COMPUTER_USE_EVALUATION_STRATA[number];
 export type ComputerUseEvaluationOutcome = 'passed'|'failed'|'unknown'|'skipped';
 
+export const COMPUTER_USE_EVALUATION_SOURCE_KINDS = [
+  'automated-test',
+  'execution-receipt',
+  'windows-host-smoke',
+  'windows-vm-smoke',
+] as const;
+
+export type ComputerUseEvaluationSourceKind = typeof COMPUTER_USE_EVALUATION_SOURCE_KINDS[number];
+
+export interface ComputerUseEvaluationEvidenceSource {
+  readonly kind:ComputerUseEvaluationSourceKind;
+  readonly sourceId:string;
+  readonly gitSha?:string;
+}
+
 export interface ComputerUseEvaluationCaseResult {
   readonly caseId:string;
   readonly stratum:ComputerUseEvaluationStratum;
   readonly outcome:ComputerUseEvaluationOutcome;
   readonly embodiment?:string;
   readonly evidence?:readonly string[];
+  readonly sources?:readonly ComputerUseEvaluationEvidenceSource[];
 }
 
 export interface ComputerUseEvaluationStratumSummary {
@@ -51,6 +67,8 @@ const EMBODIMENT=/^[a-z0-9][a-z0-9._:-]{0,127}$/;
 const EVIDENCE=/^[a-z0-9][a-z0-9._:-]{0,127}$/;
 const MAX_CASES=10_000;
 const MAX_EVIDENCE_PER_CASE=32;
+const MAX_SOURCES_PER_CASE=8;
+const GIT_SHA=/^[0-9a-f]{40}$/;
 
 function validateCase(entry:ComputerUseEvaluationCaseResult):void{
   if(!entry||typeof entry!=='object'||!CASE_ID.test(entry.caseId))throw new Error('computer-use-evaluation-case-id-invalid');
@@ -60,6 +78,31 @@ function validateCase(entry:ComputerUseEvaluationCaseResult):void{
   if(entry.evidence!==undefined){
     if(!Array.isArray(entry.evidence)||entry.evidence.length>MAX_EVIDENCE_PER_CASE||entry.evidence.some((value)=>typeof value!=='string'||!EVIDENCE.test(value)))
       throw new Error('computer-use-evaluation-evidence-invalid');
+  }
+  if(entry.sources!==undefined){
+    if(!Array.isArray(entry.sources)||entry.sources.length>MAX_SOURCES_PER_CASE)throw new Error('computer-use-evaluation-source-count-invalid');
+    const sourceIds=new Set<string>();
+    for(const source of entry.sources){
+      if(!source||typeof source!=='object'||!COMPUTER_USE_EVALUATION_SOURCE_KINDS.includes(source.kind)||!EVIDENCE.test(source.sourceId))
+        throw new Error('computer-use-evaluation-source-invalid');
+      if(source.gitSha!==undefined&&!GIT_SHA.test(source.gitSha))throw new Error('computer-use-evaluation-source-git-sha-invalid');
+      const identity=`${source.kind}:${source.sourceId}:${source.gitSha??''}`;
+      if(sourceIds.has(identity))throw new Error('computer-use-evaluation-source-duplicate');
+      sourceIds.add(identity);
+    }
+  }
+}
+
+/**
+ * Stronger validation for a production-facing empirical corpus. Any attempted
+ * case must point at at least one immutable or replay-identifiable source.
+ */
+export function validateEmpiricalComputerUseEvaluationCases(cases:readonly ComputerUseEvaluationCaseResult[]):void{
+  if(!Array.isArray(cases)||cases.length>MAX_CASES)throw new Error('computer-use-evaluation-case-count-invalid');
+  for(const entry of cases){
+    validateCase(entry);
+    if(entry.outcome!=='skipped'&&(!entry.sources||entry.sources.length===0))
+      throw new Error('computer-use-evaluation-empirical-source-required');
   }
 }
 

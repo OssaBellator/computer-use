@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   COMPUTER_USE_EVALUATION_STRATA,
   summarizeComputerUseEvaluation,
+  validateEmpiricalComputerUseEvaluationCases,
   type ComputerUseEvaluationCaseResult,
 } from '../src/computer/computerUseEvaluation.js';
+import { DP11_WINDOWS_EMPIRICAL_BASELINE, DP11_WINDOWS_EMPIRICAL_BASELINE_CASES } from '../src/computer/dp11WindowsEmpiricalEvaluation.js';
 
 function passingCases():ComputerUseEvaluationCaseResult[]{
   return COMPUTER_USE_EVALUATION_STRATA.map((stratum,index)=>({
@@ -49,6 +51,34 @@ test('DKG85 skipped-only stratum stays missing rather than becoming coverage',()
   assert.ok(summary.missingStrata.includes('cross-embodiment-equivalence'));
   const equivalence=summary.strata.find((entry)=>entry.stratum==='cross-embodiment-equivalence')!;
   assert.deepEqual({attempted:equivalence.attempted,skipped:equivalence.skipped,complete:equivalence.complete},{attempted:0,skipped:1,complete:false});
+});
+
+test('DKG85 empirical cases require bounded replay-identifiable provenance',()=>{
+  assert.throws(()=>validateEmpiricalComputerUseEvaluationCases([{
+    caseId:'empirical-without-source',stratum:'primitive-action',outcome:'passed',evidence:['uia-invoke'],
+  }]),/empirical-source-required/);
+  assert.doesNotThrow(()=>validateEmpiricalComputerUseEvaluationCases([{
+    caseId:'empirical-with-source',stratum:'primitive-action',outcome:'passed',evidence:['uia-invoke'],
+    sources:[{kind:'windows-vm-smoke',sourceId:'vm-semantic-only',gitSha:'a43015db804b28b338af1a9cd76c00e1df860895'}],
+  }]));
+  assert.throws(()=>summarizeComputerUseEvaluation([{
+    caseId:'bad-source-sha',stratum:'primitive-action',outcome:'passed',
+    sources:[{kind:'automated-test',sourceId:'test-case',gitSha:'short'}],
+  }]),/source-git-sha-invalid/);
+});
+
+test('DKG85 DP11 Windows baseline covers all seven strata without claiming the production gate',()=>{
+  assert.equal(DP11_WINDOWS_EMPIRICAL_BASELINE_CASES.length,7);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_BASELINE.summary.complete,true);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_BASELINE.summary.passing,true);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_BASELINE.productionGateSatisfied,false);
+  assert.equal(DP11_WINDOWS_EMPIRICAL_BASELINE.summary.missingStrata.length,0);
+  for(const entry of DP11_WINDOWS_EMPIRICAL_BASELINE_CASES){
+    assert.equal(entry.outcome,'passed');
+    assert.ok(entry.sources && entry.sources.length>0);
+  }
+  const equivalence=DP11_WINDOWS_EMPIRICAL_BASELINE_CASES.find((entry)=>entry.stratum==='cross-embodiment-equivalence')!;
+  assert.deepEqual(equivalence.sources?.map((source)=>source.kind),['windows-vm-smoke','windows-vm-smoke']);
 });
 
 test('DKG85 case ledger rejects duplicate and malformed evidence instead of obscuring evaluation identity',()=>{
