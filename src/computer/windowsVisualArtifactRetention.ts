@@ -113,6 +113,23 @@ export class WindowsVisualArtifactRetentionManager {
     return released;
   }
 
+  /**
+   * Revokes every local artifact lease before attempting backend destruction.
+   * Backend failures therefore cannot restore screenshot authority. All tokens are
+   * attempted; any failure is reported only after local authority is fully cleared.
+   */
+  async releaseAll():Promise<number> {
+    const leases=[...this.active.values()];
+    this.active.clear();
+    this.totalBytes=0;
+    let uncertain=false;
+    for(const lease of leases){
+      try{await this.bridge.releaseArtifact(lease.token);}catch{uncertain=true;}
+    }
+    if(uncertain)throw new Error('windows-visual-retention-release-uncertain');
+    return leases.length;
+  }
+
   activeCount():number { return this.active.size; }
   activeBytes():number { return this.totalBytes; }
 }
