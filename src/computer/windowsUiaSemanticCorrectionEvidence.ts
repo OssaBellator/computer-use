@@ -35,6 +35,49 @@ function validEvidenceIds(values:unknown):values is readonly string[]{
     values.every((value)=>typeof value==='string'&&TOKEN.test(value))&&new Set(values).size===values.length;
 }
 
+function freezeEvidenceIds(evidenceIds:readonly string[]):readonly string[]{
+  return Object.freeze([...evidenceIds]);
+}
+
+function rejectEvidence(
+  evidenceIds:readonly string[],
+  bindings:readonly WindowsUiaSemanticCorrectionEvidenceBinding[],
+  reason:string,
+):WindowsUiaSemanticCorrectionEvidenceAssessment {
+  return Object.freeze({
+    status:'rejected' as const,reason,
+    evidenceIds:freezeEvidenceIds(evidenceIds),bindings:Object.freeze([...bindings]),
+    promotionApproved:false as const,authorityGranted:false as const,
+  });
+}
+
+type IndexedEvidenceSource=
+  | Readonly<{kind:'binding';binding:WindowsUiaSemanticCorrectionEvidenceBinding}>
+  | Readonly<{kind:'git-sha-missing'}>;
+
+function indexEvidenceBindings(
+  cases:readonly ComputerUseEvaluationCaseResult[],
+  requestedEvidenceIds:ReadonlySet<string>,
+):ReadonlyMap<string,readonly IndexedEvidenceSource[]>{
+  const byEvidenceId=new Map<string,IndexedEvidenceSource[]>();
+  for(const entry of cases){
+    for(const source of entry.sources??[]){
+      if(!requestedEvidenceIds.has(source.sourceId))continue;
+      const indexed:IndexedEvidenceSource=typeof source.gitSha==='string'
+        ?Object.freeze({kind:'binding' as const,binding:Object.freeze({
+            evidenceId:source.sourceId,caseId:entry.caseId,outcome:entry.outcome,sourceKind:source.kind,gitSha:source.gitSha,
+            ...(entry.applicationId!==undefined?{applicationId:entry.applicationId}:{}),
+            ...(entry.providerFamily!==undefined?{providerFamily:entry.providerFamily}:{}),
+          })})
+        :Object.freeze({kind:'git-sha-missing' as const});
+      const existing=byEvidenceId.get(source.sourceId);
+      if(existing)existing.push(indexed);
+      else byEvidenceId.set(source.sourceId,[indexed]);
+    }
+  }
+  return byEvidenceId;
+}
+
 /**
  * Bind correction/review evidence tokens to exact empirical source records.
  * This is provenance validation only: failed cases may legitimately motivate a
@@ -47,38 +90,19 @@ export function assessWindowsUiaSemanticCorrectionEvidence(
   if(!validEvidenceIds(evidenceIds))throw new Error('windows-uia-semantic-correction-evidence-ids-invalid');
   validateEmpiricalComputerUseEvaluationCases(cases);
 
+  const indexed=indexEvidenceBindings(cases,new Set(evidenceIds));
   const bindings:WindowsUiaSemanticCorrectionEvidenceBinding[]=[];
   for(const evidenceId of evidenceIds){
-    let found=false;
-    for(const entry of cases){
-      for(const source of entry.sources??[]){
-        if(source.sourceId!==evidenceId)continue;
-        found=true;
-        if(typeof source.gitSha!=='string'){
-          return Object.freeze({
-            status:'rejected' as const,reason:`evidence-source-git-sha-missing:${evidenceId}`,
-            evidenceIds:Object.freeze([...evidenceIds]),bindings:Object.freeze([...bindings]),
-            promotionApproved:false as const,authorityGranted:false as const,
-          });
-        }
-        bindings.push(Object.freeze({
-          evidenceId,caseId:entry.caseId,outcome:entry.outcome,sourceKind:source.kind,gitSha:source.gitSha,
-          ...(entry.applicationId!==undefined?{applicationId:entry.applicationId}:{}),
-          ...(entry.providerFamily!==undefined?{providerFamily:entry.providerFamily}:{}),
-        }));
-      }
-    }
-    if(!found){
-      return Object.freeze({
-        status:'rejected' as const,reason:`evidence-source-missing:${evidenceId}`,
-        evidenceIds:Object.freeze([...evidenceIds]),bindings:Object.freeze([...bindings]),
-        promotionApproved:false as const,authorityGranted:false as const,
-      });
+    const matches=indexed.get(evidenceId);
+    if(matches===undefined)return rejectEvidence(evidenceIds,bindings,`evidence-source-missing:${evidenceId}`);
+    for(const match of matches){
+      if(match.kind==='git-sha-missing')return rejectEvidence(evidenceIds,bindings,`evidence-source-git-sha-missing:${evidenceId}`);
+      bindings.push(match.binding);
     }
   }
   bindings.sort((a,b)=>a.evidenceId.localeCompare(b.evidenceId)||a.caseId.localeCompare(b.caseId)||a.sourceKind.localeCompare(b.sourceKind));
   return Object.freeze({
-    status:'bound' as const,evidenceIds:Object.freeze([...evidenceIds]),bindings:Object.freeze(bindings),
+    status:'bound' as const,evidenceIds:freezeEvidenceIds(evidenceIds),bindings:Object.freeze(bindings),
     promotionApproved:false as const,authorityGranted:false as const,
   });
 }

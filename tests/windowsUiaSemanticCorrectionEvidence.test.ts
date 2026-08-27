@@ -39,6 +39,29 @@ test('invented correction evidence cannot become provenance-bound',()=>{
   assert.equal(result.authorityGranted,false);
 });
 
+test('correction evidence rejection preserves earlier bindings when a later source is missing',()=>{
+  const missing='xrc_missing_after_explorer';
+  const result=assessWindowsUiaSemanticCorrectionEvidence(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,[EXPLORER,missing]);
+  assert.equal(result.status,'rejected');
+  if(result.status==='rejected'){
+    assert.equal(result.reason,`evidence-source-missing:${missing}`);
+    assert.equal(result.bindings.length,2);
+    assert.ok(result.bindings.every((entry)=>entry.evidenceId===EXPLORER));
+  }
+});
+
+test('correction evidence preserves explicit missing-git-sha rejection for an existing source',()=>{
+  const sourceId='source-without-sha';
+  const result=assessWindowsUiaSemanticCorrectionEvidence([{
+    caseId:'case-without-sha',stratum:'grounding',outcome:'failed',sources:[{kind:'windows-host-smoke',sourceId}],
+  }],[sourceId]);
+  assert.equal(result.status,'rejected');
+  if(result.status==='rejected'){
+    assert.equal(result.reason,`evidence-source-git-sha-missing:${sourceId}`);
+    assert.deepEqual(result.bindings,[]);
+  }
+});
+
 test('correction evidence identifiers remain bounded unique tokens',()=>{
   assert.throws(()=>assessWindowsUiaSemanticCorrectionEvidence(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,[]),/evidence-ids-invalid/);
   assert.throws(()=>assessWindowsUiaSemanticCorrectionEvidence(DP11_WINDOWS_EMPIRICAL_EXPANDED_CASES,[EXPLORER,EXPLORER]),/evidence-ids-invalid/);
