@@ -20,6 +20,7 @@ test('Windows provider projects only directly proven neutral computer capabiliti
     'foreground-interaction-lease':'supported',
     'human-interference-detection':'supported',
     'side-effect-verification':'partial',
+    'authentication-factor-brokered-use':'supported',
   }));
   assert.equal(computerCapabilityState(result,'semantic-ui-observation').support,'supported');
   assert.equal(computerCapabilityState(result,'visual-observation').support,'supported');
@@ -27,6 +28,7 @@ test('Windows provider projects only directly proven neutral computer capabiliti
   assert.equal(computerCapabilityState(result,'keyboard-input').support,'supported');
   assert.equal(computerCapabilityState(result,'text-input').support,'supported');
   assert.equal(computerCapabilityState(result,'side-effect-verification').support,'partial');
+  assert.equal(computerCapabilityState(result,'authentication-factor-application').support,'supported');
   assert.equal(result.capabilities['clipboard-read'],undefined);
   assert.equal(result.capabilities['file-read'],undefined);
 });

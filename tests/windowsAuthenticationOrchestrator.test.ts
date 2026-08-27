@@ -71,7 +71,7 @@ test('factor broker never returns factor material and user-presence is a first-c
     credentialMediator(),states(['submitting']),undefined,
     {performFactor:async value=>{request=value;return {status:'user-presence-required',evidence:['touch-security-key']};}},
   );
-  const factor={factorRef:'factor:passkey:work',purpose:'authenticate' as const,kind:'passkey' as const};
+  const factor={factorRef:'factor:passkey:work',purpose:'authenticate' as const,kind:'passkey' as const,factorGrant:{grantId:'factor-grant:passkey',factorRef:'factor:passkey:work',purpose:'authenticate' as const,kind:'passkey' as const,expiresAtMs:10_500,source:trusted},consequenceGrants:[consequence]};
   const out=await orchestrator.authenticate({factor});
   assert.deepEqual(request,factor);
   assert.equal(out.state,'user-presence-required');
@@ -83,21 +83,17 @@ test('factor boundary exception is sticky UNKNOWN rather than a retryable failur
     credentialMediator(),states(['authenticated']),undefined,
     {performFactor:async()=>{throw new Error('boundary-lost');}},
   );
-  const out=await orchestrator.authenticate({factor:{factorRef:'factor:hello',purpose:'reauthenticate',kind:'windows-hello'}});
+  const out=await orchestrator.authenticate({factor:{factorRef:'factor:hello',purpose:'reauthenticate',kind:'windows-hello',factorGrant:{grantId:'factor-grant:hello',factorRef:'factor:hello',purpose:'reauthenticate',kind:'windows-hello',expiresAtMs:10_500,source:trusted},consequenceGrants:[consequence]}});
   assert.equal(out.state,'unknown');
   assert.equal(out.result.dispatch,'unknown');
 });
 
-test('factor references are bounded opaque identifiers and never echoed in outcome evidence',async()=>{
-  let calls=0;
+test('factor references are never echoed in authentication outcome evidence',async()=>{
   const orchestrator=new WindowsAuthenticationOrchestrator(
     credentialMediator(),states(['authenticated']),undefined,
-    {performFactor:async()=>{calls+=1;return {status:'completed'};}},
+    {performFactor:async()=>({status:'completed'})},
   );
-  const invalid=await orchestrator.authenticate({factor:{factorRef:'untrusted factor text with spaces',purpose:'authenticate',kind:'totp'}});
-  assert.equal(invalid.result.status,'rejected');
-  assert.equal(calls,0);
   const ref='factor:private-account-alias';
-  const completed=await orchestrator.authenticate({factor:{factorRef:ref,purpose:'authenticate',kind:'totp'}});
+  const completed=await orchestrator.authenticate({factor:{factorRef:ref,purpose:'authenticate',kind:'totp',factorGrant:{grantId:'factor-grant:totp',factorRef:ref,purpose:'authenticate',kind:'totp',expiresAtMs:10_500,source:trusted},consequenceGrants:[consequence]}});
   assert.equal(JSON.stringify(completed).includes(ref),false);
 });

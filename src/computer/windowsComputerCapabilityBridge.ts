@@ -56,5 +56,6 @@ export function windowsProviderComputerCapabilityProfile(
   capabilities['text-input']=mapped(profile,['keyboard-input','input-integrity-gating','foreground-interaction-lease','human-interference-detection'],'guarded Windows Unicode keyboard input');
   capabilities['side-effect-verification']=mapped(profile,['side-effect-verification'],'Windows post-action verification');
   capabilities['credential-application']=mapped(profile,['credential-brokered-use'],'brokered password-field credential application without secret export');
+  capabilities['authentication-factor-application']=mapped(profile,['authentication-factor-brokered-use'],'brokered MFA/passkey/user-presence factor application without factor export');
   return Object.freeze({id:`${profile.id}:computer-capabilities`,capabilities:Object.freeze(capabilities)});
 }

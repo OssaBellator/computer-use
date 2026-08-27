@@ -26,6 +26,7 @@ test('native runtime capability profile follows implemented operations rather th
   assert.equal(support(profile,'window-modal-authority'),'partial');
   assert.equal(support(profile,'human-interference-detection'),'unsupported');
   assert.equal(support(profile,'foreground-interaction-lease'),'unsupported');
+  assert.equal(support(profile,'authentication-factor-brokered-use'),'unsupported');
 });
 
 test('native window-state observation upgrades modal authority only with the semantic observation surface',()=>{

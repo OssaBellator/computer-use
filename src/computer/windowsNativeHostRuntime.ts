@@ -15,6 +15,7 @@ import { WindowsUiaEventRouter } from './windowsUiaEventRouter.js';
 import { WindowsUiaMtaBridge } from './windowsUiaMtaBridge.js';
 import { WindowsUiaProviderRuntime } from './windowsUiaProviderRuntime.js';
 import { WindowsRetainedGraphicsCaptureRuntime, WindowsVisualArtifactRetentionManager } from './windowsVisualArtifactRetention.js';
+import { WindowsAuthenticationFactorMediator, type WindowsAuthenticationFactorBroker } from './windowsAuthenticationFactorMediator.js';
 import { WindowsCredentialMediator, type WindowsCredentialBroker } from './windowsCredentialMediator.js';
 import { WindowsRetainedVisualGroundingRuntime, WindowsVisualGroundingProvider, type WindowsVisualGroundingBackend } from './windowsVisualGroundingProvider.js';
 
@@ -88,6 +89,7 @@ export function deriveWindowsNativeHostCapabilityProfile(
       'transient-capture-retention':capability(capture?'supported':'unsupported','no live native artifact producer exists in this host/session'),
       'side-effect-verification':capability('partial','verification runtime exists; an authoritative action-specific observation predicate remains caller-supplied'),
       'credential-brokered-use':capability(credentialNative?'supported':credentialRevalidation?'partial':'unsupported',credentialNative?undefined:credentialRevalidation?'password-field revalidation exists but no trusted credential application verb is available':'UIA password-field revalidation surface unavailable'),
+      'authentication-factor-brokered-use':capability('unsupported','no trusted authentication factor broker is attached to this runtime'),
     }),
   });
 }
@@ -96,6 +98,7 @@ function composeCapabilityProfile(
   operations:readonly WindowsNativeHostOperation[],
   visualGrounding:boolean,
   credentialBroker:boolean,
+  authenticationFactorBroker:boolean,
 ):WindowsProviderCapabilityProfile {
   const base=deriveWindowsNativeHostCapabilityProfile(operations);
   const implemented=new Set(operations);
@@ -104,6 +107,7 @@ function composeCapabilityProfile(
   if(credentialBroker&&has(implemented,'uia.resolve-control','uia.compare-elements','uia.snapshot-control')){
     capabilities['credential-brokered-use']='supported';
   }
+  if(authenticationFactorBroker)capabilities['authentication-factor-brokered-use']='supported';
   return Object.freeze({id:base.id,capabilities:Object.freeze(capabilities)});
 }
 
@@ -125,6 +129,7 @@ export interface WindowsNativeHostRuntime {
   readonly visualGrounding?:WindowsVisualGroundingProvider;
   readonly retainedVisualGrounding?:WindowsRetainedVisualGroundingRuntime;
   readonly credentials?:WindowsCredentialMediator;
+  readonly authenticationFactors?:WindowsAuthenticationFactorMediator;
   readonly capabilities:WindowsProviderCapabilityProfile;
   /** Immutable snapshot from hello. Reserved protocol verbs are not implied supported. */
   readonly implementedOperations:readonly WindowsNativeHostOperation[];
@@ -138,6 +143,8 @@ export interface WindowsNativeHostRuntimeOptions {
   readonly visualGroundingBackend?:WindowsVisualGroundingBackend;
   /** Trusted secret-owning boundary. Computer-use receives opaque refs only. */
   readonly credentialBroker?:WindowsCredentialBroker;
+  /** Trusted factor-owning boundary. Factor material never enters computer-use. */
+  readonly authenticationFactorBroker?:WindowsAuthenticationFactorBroker;
 }
 
 /**
@@ -196,6 +203,9 @@ export async function openWindowsNativeHostRuntime(
     const credentials=credentialBroker&&credentialRevalidation
       ?new WindowsCredentialMediator(uia,credentialBroker)
       :undefined;
+    const authenticationFactors=options?.authenticationFactorBroker
+      ?new WindowsAuthenticationFactorMediator(options.authenticationFactorBroker)
+      :undefined;
 
     let closed=false;
     return Object.freeze({
@@ -211,7 +221,8 @@ export async function openWindowsNativeHostRuntime(
       ...(visualGrounding?{visualGrounding}:{}),
       ...(retainedVisualGrounding?{retainedVisualGrounding}:{}),
       ...(credentials?{credentials}:{}),
-      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined,credentials!==undefined),
+      ...(authenticationFactors?{authenticationFactors}:{}),
+      capabilities:composeCapabilityProfile(implemented,retainedVisualGrounding!==undefined,credentials!==undefined,authenticationFactors!==undefined),
       implementedOperations:implemented,
       close:async()=>{
         if(closed)return;

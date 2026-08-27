@@ -20,6 +20,7 @@ export const WINDOWS_PROVIDER_CAPABILITIES = [
   'transient-capture-retention',
   'side-effect-verification',
   'credential-brokered-use',
+  'authentication-factor-brokered-use',
 ] as const;
 
 export type WindowsProviderCapability = typeof WINDOWS_PROVIDER_CAPABILITIES[number];

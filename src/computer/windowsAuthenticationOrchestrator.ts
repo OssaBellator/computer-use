@@ -1,5 +1,6 @@
 import type { ComputerActionResult } from './environmentAdapter.js';
 import type { ComputerEffectAuthorityGrant } from './consequenceAuthority.js';
+import type { WindowsAuthenticationFactorApplicationRequest, WindowsAuthenticationFactorBrokerResult } from './windowsAuthenticationFactorMediator.js';
 import type { WindowsCredentialApplicationRequest, WindowsCredentialMediator } from './windowsCredentialMediator.js';
 import { verifyWindowsPostAction, type WindowsPostActionObservationProvider } from './windowsPostActionVerification.js';
 import type { WindowsUiaControlRef } from './windowsUiaContract.js';
@@ -27,26 +28,14 @@ export interface WindowsAuthenticationSubmitter {
   submit(target:WindowsUiaControlRef, grants?:readonly ComputerEffectAuthorityGrant[]):Promise<ComputerActionResult>;
 }
 
-export interface WindowsAuthenticationFactorBrokerRequest {
-  readonly factorRef:string;
-  readonly purpose:'authenticate'|'reauthenticate';
-  readonly kind:'totp'|'passkey'|'windows-hello'|'push-approval'|'user-presence';
-}
-
-export type WindowsAuthenticationFactorBrokerResult =
-  | {readonly status:'completed';readonly evidence?:readonly string[]}
-  | {readonly status:'user-presence-required';readonly evidence?:readonly string[]}
-  | {readonly status:'rejected'|'unavailable'|'unknown';readonly evidence?:readonly string[]};
-
-/** Factor-owning boundary. There is intentionally no factor read/export method. */
-export interface WindowsAuthenticationFactorBroker {
-  performFactor(request:WindowsAuthenticationFactorBrokerRequest):Promise<WindowsAuthenticationFactorBrokerResult>;
+export interface WindowsAuthenticationFactorPerformer {
+  performFactor(request:WindowsAuthenticationFactorApplicationRequest):Promise<WindowsAuthenticationFactorBrokerResult>;
 }
 
 export interface WindowsAuthenticationAttempt {
   readonly credential?:WindowsCredentialApplicationRequest;
   readonly submitTarget?:WindowsUiaControlRef;
-  readonly factor?:WindowsAuthenticationFactorBrokerRequest;
+  readonly factor?:WindowsAuthenticationFactorApplicationRequest;
   readonly consequenceGrants?:readonly ComputerEffectAuthorityGrant[];
   readonly minimumSequenceExclusive?:number;
   readonly notBeforeMs?:number;
@@ -59,7 +48,6 @@ export interface WindowsAuthenticationOutcome {
 }
 
 const EVIDENCE=/^[a-z0-9][a-z0-9._:-]{0,191}$/i;
-const OPAQUE_REF=/^[a-z0-9][a-z0-9._:-]{0,127}$/i;
 const MAX_EVIDENCE=16;
 function mergeEvidence(...sources:(readonly string[]|undefined)[]):readonly string[]{
   const out:string[]=[];
@@ -86,7 +74,7 @@ export class WindowsAuthenticationOrchestrator {
     readonly credentials:WindowsCredentialMediator,
     readonly states:WindowsAuthenticationStateProvider,
     readonly submitter?:WindowsAuthenticationSubmitter,
-    readonly factors?:WindowsAuthenticationFactorBroker,
+    readonly factors?:WindowsAuthenticationFactorPerformer,
   ) {}
 
   async authenticate(attempt:WindowsAuthenticationAttempt):Promise<WindowsAuthenticationOutcome>{
@@ -99,7 +87,6 @@ export class WindowsAuthenticationOrchestrator {
     }
 
     if(attempt.factor){
-      if(!OPAQUE_REF.test(attempt.factor.factorRef))return outcome('factor-required',terminalResult('rejected','not-dispatched','windows-authentication-factor-ref-invalid'));
       if(!this.factors)return outcome('factor-required',terminalResult('unsupported','not-dispatched','windows-authentication-factor-broker-unavailable'));
       let factor:WindowsAuthenticationFactorBrokerResult;
       try{factor=await this.factors.performFactor(attempt.factor);}
