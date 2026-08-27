@@ -8,6 +8,7 @@ using System.Windows.Threading;
 
 internal static class Program
 {
+    private enum SemanticRunResult { Completed, UnavailableBeforeDispatch, UncertainAfterDispatch }
     private const uint KeyEventKeyUp = 0x0002;
     private const uint KeyEventUnicode = 0x0004;
     private const uint MouseLeftDown = 0x0002;
@@ -154,23 +155,29 @@ internal static class Program
         window.ContentRendered += (_, _) =>
         {
             var hwnd = new WindowInteropHelper(window).Handle;
-            var worker = new Thread(() => RunTasks(window.Dispatcher, hwnd, mode, input, result, check, slider, beta));
+            var worker = new Thread(() => RunTasks(window.Dispatcher, window, hwnd, mode, input, result, check, slider, beta));
             worker.SetApartmentState(ApartmentState.MTA);
             worker.Start();
         };
         return window;
     }
 
-    private static void RunTasks(Dispatcher dispatcher, nint hwnd, string mode, TextBox input, TextBlock result, CheckBox check, Slider slider, ListBoxItem beta)
+    private static void RunTasks(Dispatcher dispatcher, Window window, nint hwnd, string mode, TextBox input, TextBlock result, CheckBox check, Slider slider, ListBoxItem beta)
     {
         try
         {
             if (mode != "raw-only")
             {
                 var semantic = RunSemanticTasks(hwnd);
-                if (semantic)
+                if (semantic == SemanticRunResult.Completed)
                 {
                     Environment.ExitCode = 0;
+                    return;
+                }
+                if (semantic == SemanticRunResult.UncertainAfterDispatch)
+                {
+                    Console.WriteLine("WPF_FALLBACK=blocked-after-possible-semantic-dispatch");
+                    Environment.ExitCode = 5;
                     return;
                 }
                 if (mode == "semantic-only")
@@ -178,9 +185,10 @@ internal static class Program
                     Environment.ExitCode = 4;
                     return;
                 }
+                Console.WriteLine("WPF_FALLBACK=raw-after-semantic-unavailable-before-dispatch");
             }
 
-            Environment.ExitCode = RunRawTasks(dispatcher, hwnd, input, result, check, slider, beta) ? 0 : 3;
+            Environment.ExitCode = RunRawTasks(dispatcher, window, hwnd, input, result, check, slider, beta) ? 0 : 3;
         }
         catch (Exception ex)
         {
@@ -193,8 +201,9 @@ internal static class Program
         }
     }
 
-    private static bool RunSemanticTasks(nint hwnd)
+    private static SemanticRunResult RunSemanticTasks(nint hwnd)
     {
+        var actionBoundaryCrossed = false;
         try
         {
             Thread.Sleep(150);
@@ -212,7 +221,14 @@ internal static class Program
             var hasSelection = beta.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var rawSelection);
             var hasWindow = root.TryGetCurrentPattern(WindowPattern.Pattern, out var rawWindow);
             Console.WriteLine($"WPF_PATTERNS=value:{hasValue}:invoke:{hasInvoke}:toggle:{hasToggle}:range:{hasRange}:selection:{hasSelection}:window:{hasWindow}");
+            var allSupported = hasValue && hasInvoke && hasToggle && hasRange && hasSelection && hasWindow;
+            if (!allSupported)
+            {
+                Console.WriteLine("WPF_STATUS=pattern-unavailable-before-dispatch");
+                return SemanticRunResult.UnavailableBeforeDispatch;
+            }
 
+            actionBoundaryCrossed = true;
             var textPassed = false;
             if (hasValue && hasInvoke)
             {
@@ -278,20 +294,27 @@ internal static class Program
             }
             else Console.WriteLine("WPF_WINDOW=unsupported");
 
-            var allSupported = hasValue && hasInvoke && hasToggle && hasRange && hasSelection && hasWindow;
-            var allPassed = allSupported && textPassed && togglePassed && rangePassed && selectionPassed && windowPassed;
-            Console.WriteLine(allPassed ? "WPF_STATUS=completed" : allSupported ? "WPF_STATUS=verification-mismatch" : "WPF_STATUS=pattern-unavailable");
-            return allPassed;
+            var allPassed = textPassed && togglePassed && rangePassed && selectionPassed && windowPassed;
+            Console.WriteLine(allPassed ? "WPF_STATUS=completed" : "WPF_STATUS=verification-mismatch-after-dispatch");
+            return allPassed ? SemanticRunResult.Completed : SemanticRunResult.UncertainAfterDispatch;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"WPF_STATUS=blocked:{ex.GetType().Name}:0x{ex.HResult:X8}");
-            return false;
+            return actionBoundaryCrossed ? SemanticRunResult.UncertainAfterDispatch : SemanticRunResult.UnavailableBeforeDispatch;
         }
     }
 
-    private static bool RunRawTasks(Dispatcher dispatcher, nint hwnd, TextBox input, TextBlock result, CheckBox check, Slider slider, ListBoxItem beta)
+    private static bool RunRawTasks(Dispatcher dispatcher, Window window, nint hwnd, TextBox input, TextBlock result, CheckBox check, Slider slider, ListBoxItem beta)
     {
+        dispatcher.Invoke(() =>
+        {
+            window.Activate();
+            input.Focus();
+            Keyboard.Focus(input);
+        });
+        Console.WriteLine("RAW_WPF_FOCUS_SETUP=application-assisted-test-harness");
+        Thread.Sleep(100);
         var foregroundSet = SetForegroundWindow(hwnd);
         if (!foregroundSet && GetForegroundWindow() != hwnd)
         {
