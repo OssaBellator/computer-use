@@ -178,6 +178,30 @@ test('semantic dispatch can be verified only by a fresh authoritative post-actio
   assert.ok(result.evidence?.includes('windows-post-action-verified'));
 });
 
+test('coordinator automatically applies conservative built-in UIA verification when normalized post-state exists',async()=>{
+  const leases=new DesktopInteractionLeaseManager({snapshot:async()=>({sequence:1})},()=>100);
+  let revalidations=0;
+  const value=new WindowsInteractionCoordinator(
+    new WindowsUiaSemanticRuntime({
+      observeCached:async(window)=>({window,itemCount:0,textBytes:0,truncated:false,invalidationEpoch:0,capturedAtMs:1}),
+      revalidateControl:async(captured)=>{
+        revalidations+=1;
+        return {status:'current',control:{ref:captured,value:revalidations===1?'old':'new',enabled:true,patterns:['value']}};
+      },
+      performSemanticAction:async()=>({status:'completed',dispatched:true}),
+    }),
+    new WindowsNativeInputGate(leases),
+    {currentProcessIntegrityRid:async()=>0x2000,processIntegrityRid:async()=>0x2000},
+  );
+  const result=await value.actSemantic({
+    ref,action:{kind:'set-value',value:'new'},effect:'local-reversible',windows:[{window:main,isModal:false,interactionState:'running'}],
+  });
+  assert.equal(result.status,'completed');
+  assert.equal(result.dispatch,'dispatched-once');
+  assert.equal(result.verification,'verified');
+  assert.equal(revalidations,2);
+});
+
 test('matching post-action observation cannot erase partial native dispatch uncertainty',async()=>{
   const {value,lease}=await coordinator();
   const result=await value.actVisualNative({

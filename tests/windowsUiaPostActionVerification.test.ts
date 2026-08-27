@@ -35,15 +35,29 @@ test('window close verifies exact missing identity but not stale/replaced identi
   assert.equal(verification.predicate(await verification.provider.observe()),'inconclusive');
 });
 
-test('patterns without normalized authoritative post-state do not get generic verification',()=>{
+test('normalized UIA pattern states provide conservative authoritative verification',async()=>{
+  let control:any={ref,patterns:['selection-item','expand-collapse','range-value','window'],selected:true,expandCollapseState:'expanded',rangeValue:5,windowVisualState:'maximized'};
+  const p=provider(async()=>({status:'current',control}));
+  const select=createWindowsUiaActionVerification(p,ref,{kind:'select'},()=>500)!;
+  assert.equal(select.predicate(await select.provider.observe()),'match');
+  const expand=createWindowsUiaActionVerification(p,ref,{kind:'expand-collapse',state:'expanded'},()=>500)!;
+  assert.equal(expand.predicate(await expand.provider.observe()),'match');
+  const range=createWindowsUiaActionVerification(p,ref,{kind:'set-range-value',value:5},()=>500)!;
+  assert.equal(range.predicate(await range.provider.observe()),'match');
+  const maximize=createWindowsUiaActionVerification(p,ref,{kind:'window',operation:'maximize'},()=>500)!;
+  assert.equal(maximize.predicate(await maximize.provider.observe()),'match');
+  control={...control,selected:false,expandCollapseState:'collapsed',rangeValue:4,windowVisualState:'normal'};
+  assert.equal(select.predicate(await select.provider.observe()),'inconclusive');
+  assert.equal(expand.predicate(await expand.provider.observe()),'inconclusive');
+  assert.equal(range.predicate(await range.provider.observe()),'inconclusive');
+  assert.equal(maximize.predicate(await maximize.provider.observe()),'inconclusive');
+});
+
+test('patterns without normalized authoritative post-state remain caller-specific',()=>{
   const p=provider(async()=>({status:'missing'}));
   assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'invoke'}),undefined);
   assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'toggle'}),undefined);
-  assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'select'}),undefined);
-  assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'expand-collapse',state:'expanded'}),undefined);
   assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'scroll',horizontal:'no-amount',vertical:'small-increment'}),undefined);
-  assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'set-range-value',value:5}),undefined);
-  assert.equal(createWindowsUiaActionVerification(p,ref,{kind:'window',operation:'maximize'}),undefined);
 });
 
 test('malformed provider revalidation is rejected at verification observer boundary',async()=>{

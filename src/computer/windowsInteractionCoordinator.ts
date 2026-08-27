@@ -2,6 +2,7 @@ import type { ComputerActionResult, ComputerEffectClass, ComputerSurfaceRef } fr
 import type { DesktopInteractionLease } from './desktopInteractionLease.js';
 import { decideComputerConsequenceAuthority, type ComputerEffectAuthorityGrant } from './consequenceAuthority.js';
 import { WindowsNativeInputGate, type WindowsNativeInputDispatcher } from './windowsNativeInputGate.js';
+import { createWindowsUiaActionVerification } from './windowsUiaPostActionVerification.js';
 import {
   verifyWindowsPostAction,
   type WindowsPostActionObservationProvider,
@@ -99,7 +100,9 @@ export class WindowsInteractionCoordinator {
     }
     const notBeforeMs=Date.now();
     const result=await this.semantic.act(request.ref,request.action,request.effect);
-    return verifyIfRequested(result,request.verification,notBeforeMs);
+    if(request.verification)return verifyIfRequested(result,request.verification,notBeforeMs);
+    const builtIn=createWindowsUiaActionVerification(this.semantic.provider,request.ref,request.action);
+    return verifyIfRequested(result,builtIn,notBeforeMs);
   }
 
   async actVisualNative<TVerification=unknown>(request:WindowsVisualNativeInteractionRequest<TVerification>):Promise<ComputerActionResult> {

@@ -55,6 +55,22 @@ test('semantic UIA dispatch requires exact current control identity and supporte
   assert.equal(requiredWindowsUiaPattern({kind:'invoke'}),'invoke');
 });
 
+test('normalized UIA pattern state is bounded and preserved as observation rather than identity', async () => {
+  const current = Object.freeze({
+    ref,
+    name:'Stateful',
+    enabled:true,
+    patterns:Object.freeze(['selection-item','expand-collapse','range-value','window'] as const),
+    selected:true,
+    expandCollapseState:'expanded' as const,
+    rangeValue:2.5,
+    windowVisualState:'maximized' as const,
+  });
+  const runtime=new WindowsUiaSemanticRuntime(provider({revalidateControl:async()=>({status:'current',control:current})}));
+  const result=await runtime.act(ref,{kind:'select'},'local-reversible');
+  assert.equal(result.dispatch,'dispatched-once');
+});
+
 test('same RuntimeId cannot rescue a replaced control generation', () => {
   const replaced = {...ref,generation:12};
   assert.equal(sameWindowsUiaControl(ref,replaced),false);

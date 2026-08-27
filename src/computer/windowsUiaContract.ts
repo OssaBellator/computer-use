@@ -43,6 +43,11 @@ export interface WindowsUiaControlSnapshot {
   readonly offscreen?:boolean;
   readonly bounds?:DesktopRect;
   readonly patterns:readonly WindowsUiaPattern[];
+  readonly toggleState?:'off'|'on'|'indeterminate';
+  readonly selected?:boolean;
+  readonly expandCollapseState?:'collapsed'|'expanded'|'partially-expanded'|'leaf-node';
+  readonly rangeValue?:number;
+  readonly windowVisualState?:'normal'|'minimized'|'maximized';
   /** Bounded Control View children. Omitted is normalized as an empty child set. */
   readonly children?:readonly WindowsUiaControlSnapshot[];
 }
@@ -91,6 +96,9 @@ const EXPAND_STATES=new Set(['expanded','collapsed']);
 const SCROLL_AMOUNTS=new Set<WindowsUiaScrollAmount>(['large-decrement','small-decrement','no-amount','large-increment','small-increment']);
 const WINDOW_OPERATIONS=new Set<WindowsUiaWindowOperation>(['minimize','maximize','restore','close']);
 const REVALIDATION_STATUSES=new Set(['current','stale','missing','ambiguous','inaccessible']);
+const TOGGLE_STATES=new Set(['off','on','indeterminate']);
+const EXPAND_COLLAPSE_STATES=new Set(['collapsed','expanded','partially-expanded','leaf-node']);
+const WINDOW_VISUAL_STATES=new Set(['normal','minimized','maximized']);
 
 function utf8Bytes(value:string):number { return new TextEncoder().encode(value).byteLength; }
 function boundedString(value:unknown,maxBytes=MAX_ID_BYTES,allowEmpty=false):value is string {
@@ -212,7 +220,7 @@ function captureControlSnapshotTree(
   if(state.seen.has(value)) return undefined;
   state.seen.add(value);
 
-  const raw=captureOwnDataObject(value,['ref','name','value','enabled','offscreen','bounds','patterns','children']);
+  const raw=captureOwnDataObject(value,['ref','name','value','enabled','offscreen','bounds','patterns','toggleState','selected','expandCollapseState','rangeValue','windowVisualState','children']);
   if(!raw) return undefined;
   const ref=captureWindowsUiaControlRef(raw.ref);
   const patternsRaw=capturePlainArray(raw.patterns,WINDOWS_UIA_PATTERNS.length);
@@ -223,6 +231,11 @@ function captureControlSnapshotTree(
   if(raw.value!==undefined&&!boundedString(raw.value,MAX_VALUE_BYTES,true)) return undefined;
   if(raw.enabled!==undefined&&typeof raw.enabled!=='boolean') return undefined;
   if(raw.offscreen!==undefined&&typeof raw.offscreen!=='boolean') return undefined;
+  if(raw.toggleState!==undefined&&(typeof raw.toggleState!=='string'||!TOGGLE_STATES.has(raw.toggleState))) return undefined;
+  if(raw.selected!==undefined&&typeof raw.selected!=='boolean') return undefined;
+  if(raw.expandCollapseState!==undefined&&(typeof raw.expandCollapseState!=='string'||!EXPAND_COLLAPSE_STATES.has(raw.expandCollapseState))) return undefined;
+  if(raw.rangeValue!==undefined&&!(typeof raw.rangeValue==='number'&&Number.isFinite(raw.rangeValue))) return undefined;
+  if(raw.windowVisualState!==undefined&&(typeof raw.windowVisualState!=='string'||!WINDOW_VISUAL_STATES.has(raw.windowVisualState))) return undefined;
   const bounds=captureBounds(raw.bounds);
   if(raw.bounds!==undefined&&!bounds) return undefined;
 
@@ -251,6 +264,11 @@ function captureControlSnapshotTree(
     ...(raw.offscreen!==undefined?{offscreen:raw.offscreen as boolean}:{}),
     ...(bounds?{bounds}:{}),
     patterns:Object.freeze(patternsRaw as readonly WindowsUiaPattern[]),
+    ...(raw.toggleState!==undefined?{toggleState:raw.toggleState as WindowsUiaControlSnapshot['toggleState']}:{}),
+    ...(raw.selected!==undefined?{selected:raw.selected as boolean}:{}),
+    ...(raw.expandCollapseState!==undefined?{expandCollapseState:raw.expandCollapseState as WindowsUiaControlSnapshot['expandCollapseState']}:{}),
+    ...(raw.rangeValue!==undefined?{rangeValue:raw.rangeValue as number}:{}),
+    ...(raw.windowVisualState!==undefined?{windowVisualState:raw.windowVisualState as WindowsUiaControlSnapshot['windowVisualState']}:{}),
     ...(children!==undefined?{children}:{}),
   });
 }

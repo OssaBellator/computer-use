@@ -203,6 +203,11 @@ internal sealed class UiaService
         request.Add(ValuePattern.ValueProperty);
         request.Add(WindowPattern.IsModalProperty);
         request.Add(WindowPattern.WindowInteractionStateProperty);
+        request.Add(TogglePattern.ToggleStateProperty);
+        request.Add(SelectionItemPattern.IsSelectedProperty);
+        request.Add(ExpandCollapsePattern.ExpandCollapseStateProperty);
+        request.Add(RangeValuePattern.ValueProperty);
+        request.Add(WindowPattern.WindowVisualStateProperty);
         request.Add(System.Windows.Automation.InvokePattern.Pattern);
         request.Add(ValuePattern.Pattern);
         request.Add(TogglePattern.Pattern);
@@ -234,6 +239,11 @@ internal sealed class UiaService
             BoolProperty(element, AutomationElement.IsOffscreenProperty),
             Bounds(element),
             SupportedPatterns(element),
+            ToggleStateValue(element),
+            BoolProperty(element, SelectionItemPattern.IsSelectedProperty),
+            ExpandCollapseStateValue(element),
+            DoubleProperty(element, RangeValuePattern.ValueProperty),
+            WindowVisualStateValue(element),
             null);
     }
 
@@ -448,6 +458,29 @@ internal sealed class UiaService
 
     private static string StringProperty(AutomationElement element, AutomationProperty property) => Property(element, property) as string ?? string.Empty;
     private static bool? BoolProperty(AutomationElement element, AutomationProperty property) => Property(element, property) is bool flag ? flag : null;
+    private static double? DoubleProperty(AutomationElement element, AutomationProperty property) => Property(element, property) is double number && double.IsFinite(number) ? number : null;
+    private static string? ToggleStateValue(AutomationElement element) => Property(element, TogglePattern.ToggleStateProperty) is ToggleState state ? state switch
+    {
+        ToggleState.Off => "off",
+        ToggleState.On => "on",
+        ToggleState.Indeterminate => "indeterminate",
+        _ => null,
+    } : null;
+    private static string? ExpandCollapseStateValue(AutomationElement element) => Property(element, ExpandCollapsePattern.ExpandCollapseStateProperty) is ExpandCollapseState state ? state switch
+    {
+        ExpandCollapseState.Collapsed => "collapsed",
+        ExpandCollapseState.Expanded => "expanded",
+        ExpandCollapseState.PartiallyExpanded => "partially-expanded",
+        ExpandCollapseState.LeafNode => "leaf-node",
+        _ => null,
+    } : null;
+    private static string? WindowVisualStateValue(AutomationElement element) => Property(element, WindowPattern.WindowVisualStateProperty) is WindowVisualState state ? state switch
+    {
+        WindowVisualState.Normal => "normal",
+        WindowVisualState.Minimized => "minimized",
+        WindowVisualState.Maximized => "maximized",
+        _ => null,
+    } : null;
 
     private static RectDto? Bounds(AutomationElement element)
     {
@@ -521,5 +554,10 @@ internal sealed class UiaService
         bool? Offscreen,
         RectDto? Bounds,
         string[] Patterns,
+        string? ToggleState,
+        bool? Selected,
+        string? ExpandCollapseState,
+        double? RangeValue,
+        string? WindowVisualState,
         ControlSnapshotDto[]? Children);
 }

@@ -66,12 +66,37 @@ export function createWindowsUiaActionVerification(
         :'inconclusive',
     });
   }
+  if(authorityAction.kind==='select'){
+    return Object.freeze({
+      provider:observer,
+      predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='current'&&observation.value.control.selected===true?'match':'inconclusive',
+    });
+  }
+  if(authorityAction.kind==='expand-collapse'){
+    return Object.freeze({
+      provider:observer,
+      predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='current'&&observation.value.control.expandCollapseState===authorityAction.state?'match':'inconclusive',
+    });
+  }
+  if(authorityAction.kind==='set-range-value'){
+    return Object.freeze({
+      provider:observer,
+      predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='current'&&Object.is(observation.value.control.rangeValue,authorityAction.value)?'match':'inconclusive',
+    });
+  }
   if(authorityAction.kind==='window'&&authorityAction.operation==='close'){
     return Object.freeze({
       provider:observer,
       // Missing exact UIA identity is positive evidence for close. Stale/replaced
       // identity is deliberately inconclusive rather than assumed to mean closed.
       predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='missing'?'match':'inconclusive',
+    });
+  }
+  if(authorityAction.kind==='window'&&authorityAction.operation!=='close'){
+    const expected=authorityAction.operation==='restore'?'normal':authorityAction.operation==='minimize'?'minimized':'maximized';
+    return Object.freeze({
+      provider:observer,
+      predicate:(observation:WindowsAuthoritativeObservation<WindowsUiaRevalidation>)=>observation.value.status==='current'&&observation.value.control.windowVisualState===expected?'match':'inconclusive',
     });
   }
   return undefined;
