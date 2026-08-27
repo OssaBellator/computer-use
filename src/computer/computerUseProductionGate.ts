@@ -101,6 +101,14 @@ export interface ComputerUseProductionStratumBreadth {
   readonly distinctEmbodiments:number;
   readonly distinctSources:number;
 }
+export interface ComputerUseProductionReleaseEnvironmentCoverage {
+  readonly environmentId:string;
+  readonly attemptedCases:number;
+  readonly stratumBreadth:readonly ComputerUseProductionStratumBreadth[];
+  readonly distinctApplications:number;
+  readonly distinctProviderFamilies:number;
+  readonly sourceKinds:readonly ComputerUseEvaluationSourceKind[];
+}
 export interface ComputerUseProductionGateDecision {
   readonly eligible:boolean;
   readonly authorityGranted:false;
@@ -111,6 +119,7 @@ export interface ComputerUseProductionGateDecision {
   readonly corpusDiversity:Readonly<{distinctApplications:number;distinctProviderFamilies:number}>;
   readonly satisfiedClaims:readonly ComputerUseProductionSafetyClaim[];
   readonly satisfiedReleaseEnvironments:readonly string[];
+  readonly releaseEnvironmentCoverage:readonly ComputerUseProductionReleaseEnvironmentCoverage[];
   readonly policyApprovalSatisfied:boolean;
   readonly targetEnablement:ReturnType<typeof assessComputerUseEnablement>;
 }
@@ -291,25 +300,65 @@ export function evaluateComputerUseProductionGate(
 
   const releaseEvidenceByEnvironment=new Map(releaseEnvironmentEvidence.map((entry)=>[entry.environmentId,entry] as const));
   const satisfiedReleaseEnvironments:string[]=[];
+  const releaseEnvironmentCoverage:ComputerUseProductionReleaseEnvironmentCoverage[]=[];
   for(const environmentId of policy.requiredReleaseEnvironments){
+    const environmentBlockerStart=blockers.length;
     const supplied=releaseEvidenceByEnvironment.get(environmentId);
-    if(!supplied){blockers.push(`release-environment:${environmentId}:evidence-missing`);continue;}
+    const environmentCases=cases.filter((entry)=>entry.sources?.some((source)=>source.environmentId===environmentId));
+    const environmentAttempted=environmentCases.filter((entry)=>entry.outcome!=='skipped');
+    const boundCaseIds=new Set<string>();
     let validBindings=0;
-    for(const binding of supplied.bindings){
+    if(!supplied)blockers.push(`release-environment:${environmentId}:evidence-missing`);
+    else for(const binding of supplied.bindings){
       const entry=byId.get(binding.caseId);
       if(!entry){blockers.push(`release-environment:${environmentId}:case-missing:${binding.caseId}`);continue;}
-      if(entry.outcome!=='passed'){blockers.push(`release-environment:${environmentId}:case-not-passed:${binding.caseId}`);continue;}
       const source=entry.sources?.find((candidate)=>candidate.sourceId===binding.sourceId);
-      if(!source){
-        blockers.push(`release-environment:${environmentId}:source-not-bound:${binding.caseId}:${binding.sourceId}`);continue;
-      }
+      if(!source){blockers.push(`release-environment:${environmentId}:source-not-bound:${binding.caseId}:${binding.sourceId}`);continue;}
       if(source.environmentId!==environmentId){
         blockers.push(`release-environment:${environmentId}:source-environment-mismatch:${binding.caseId}:${binding.sourceId}:${source.environmentId??'missing'}`);continue;
       }
       validBindings+=1;
+      boundCaseIds.add(entry.caseId);
+      if(entry.outcome!=='passed')blockers.push(`release-environment:${environmentId}:case-not-passed:${binding.caseId}`);
     }
     if(validBindings===0)blockers.push(`release-environment:${environmentId}:no-valid-binding`);
-    else satisfiedReleaseEnvironments.push(environmentId);
+    if(environmentAttempted.length===0)blockers.push(`release-environment:${environmentId}:no-attempted-cases`);
+    for(const entry of environmentAttempted)if(!boundCaseIds.has(entry.caseId))blockers.push(`release-environment:${environmentId}:case-unbound:${entry.caseId}`);
+
+    const environmentStrata:ComputerUseProductionStratumBreadth[]=[];
+    for(const requirement of policy.stratumRequirements){
+      const attempted=environmentAttempted.filter((entry)=>entry.stratum===requirement.stratum);
+      const attemptedTrials=attempted.reduce((sum,entry)=>sum+(entry.trials??1),0);
+      const passedTrials=attempted.filter((entry)=>entry.outcome==='passed').reduce((sum,entry)=>sum+(entry.trials??1),0);
+      const failed=attempted.filter((entry)=>entry.outcome==='failed').length;
+      const unknown=attempted.filter((entry)=>entry.outcome==='unknown').length;
+      const successRate=attemptedTrials===0?0:passedTrials/attemptedTrials;
+      const embodiments=new Set(attempted.map((entry)=>entry.embodiment).filter((value):value is string=>value!==undefined));
+      const sources=new Set<string>();
+      for(const entry of attempted)for(const source of entry.sources??[])if(source.environmentId===environmentId)
+        sources.add(source.independenceId??`${source.kind}:${source.sourceId}:${source.gitSha??''}`);
+      environmentStrata.push(Object.freeze({stratum:requirement.stratum,attempted:attempted.length,attemptedTrials,distinctEmbodiments:embodiments.size,distinctSources:sources.size}));
+      if(attempted.length<requirement.minAttempted)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:attempted-below-threshold`);
+      if(attemptedTrials<requirement.minAttemptedTrials)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:trials-below-threshold`);
+      if(successRate<requirement.minSuccessRate)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:success-rate-below-threshold`);
+      if(failed>requirement.maxFailed)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:failures-above-threshold`);
+      if(unknown>requirement.maxUnknown)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:unknown-above-threshold`);
+      if(embodiments.size<requirement.minDistinctEmbodiments)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:embodiment-breadth-below-threshold`);
+      if(sources.size<requirement.minDistinctSources)blockers.push(`release-environment:${environmentId}:stratum:${requirement.stratum}:source-breadth-below-threshold`);
+    }
+    const environmentApplications=new Set(environmentAttempted.map((entry)=>entry.applicationId).filter((value):value is string=>value!==undefined));
+    const environmentProviders=new Set(environmentAttempted.map((entry)=>entry.providerFamily).filter((value):value is string=>value!==undefined));
+    const environmentSourceKinds=new Set<ComputerUseEvaluationSourceKind>();
+    for(const entry of environmentAttempted)for(const source of entry.sources??[])if(source.environmentId===environmentId)environmentSourceKinds.add(source.kind);
+    if(environmentApplications.size<policy.minDistinctApplications)blockers.push(`release-environment:${environmentId}:application-breadth-below-threshold`);
+    if(environmentProviders.size<policy.minDistinctProviderFamilies)blockers.push(`release-environment:${environmentId}:provider-family-breadth-below-threshold`);
+    for(const required of policy.requiredSourceKinds)if(!environmentSourceKinds.has(required))blockers.push(`release-environment:${environmentId}:source-kind:${required}:missing`);
+    releaseEnvironmentCoverage.push(Object.freeze({
+      environmentId,attemptedCases:environmentAttempted.length,stratumBreadth:Object.freeze(environmentStrata),
+      distinctApplications:environmentApplications.size,distinctProviderFamilies:environmentProviders.size,
+      sourceKinds:Object.freeze([...environmentSourceKinds].sort()),
+    }));
+    if(blockers.length===environmentBlockerStart)satisfiedReleaseEnvironments.push(environmentId);
   }
 
   for(const incident of COMPUTER_USE_ZERO_TOLERANCE_INCIDENTS){
@@ -346,6 +395,7 @@ export function evaluateComputerUseProductionGate(
     corpusDiversity,
     satisfiedClaims:Object.freeze(satisfiedClaims),
     satisfiedReleaseEnvironments:Object.freeze(satisfiedReleaseEnvironments),
+    releaseEnvironmentCoverage:Object.freeze(releaseEnvironmentCoverage),
     policyApprovalSatisfied,
     targetEnablement,
   });
