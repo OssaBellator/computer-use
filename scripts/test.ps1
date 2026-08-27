@@ -23,7 +23,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host '== Focused DP11/Windows tests =='
 $tests = @(
   'dist-windows/tests/consequenceAuthority.test.js',
-  'dist-windows/tests/dp11Foundations.test.js'
+  'dist-windows/tests/dp11Foundations.test.js',
+  'dist-windows/tests/computerTaskCheckpointReview.test.js'
 )
 $tests += Get-ChildItem 'dist-windows/tests/windows*.test.js' | ForEach-Object { $_.FullName }
 node --test $tests

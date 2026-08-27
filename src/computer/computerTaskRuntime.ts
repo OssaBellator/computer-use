@@ -85,6 +85,11 @@ export interface ComputerTaskRuntimeHooks {
 export interface ComputerTaskRuntimeOptions {
   executionId: string;
   checkpoint?: ComputerTaskCheckpoint;
+  /**
+   * Non-secret opaque bindings for state that must remain stable across a long-horizon resume,
+   * e.g. authenticated-account/session generation, authority revision, tenant, or environment generation.
+   */
+  resumeContext?: Readonly<Record<string, string>>;
   hooks?: ComputerTaskRuntimeHooks;
 }
 
@@ -174,6 +179,7 @@ export class ComputerTaskRuntime {
   private readonly registry: ComputerEnvironmentRegistry;
   private readonly executionId: string;
   private readonly hooks: ComputerTaskRuntimeHooks;
+  private readonly resumeContext: Readonly<Record<string, string>>;
   private readonly stepById: Map<string, ComputerTaskStep>;
   private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
   private currentStepId: string | undefined;
@@ -196,6 +202,7 @@ export class ComputerTaskRuntime {
       ...options.hooks,
       verifiers: options.hooks?.verifiers ? Object.freeze({ ...options.hooks.verifiers }) : undefined,
     });
+    this.resumeContext = this.captureResumeContext(options.resumeContext);
     this.stepById = new Map(this.program.steps.map((step) => [step.id, step]));
     this.currentStepId = this.program.entry;
 
@@ -205,6 +212,7 @@ export class ComputerTaskRuntime {
         executionId: this.executionId,
         requireRuntimeProvenance: true,
       });
+      this.assertResumeContext(options.checkpoint);
       this.currentStepId = options.checkpoint.cursor.nextStepId;
       this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
       for (const action of options.checkpoint.actions) {
@@ -223,7 +231,32 @@ export class ComputerTaskRuntime {
       nextStepId: this.currentStepId,
       stepsExecuted: this.stepsExecuted,
       actions: this.actionStates,
+      resumeContext: this.resumeContext,
     });
+  }
+
+  private captureResumeContext(value: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> {
+    if (value === undefined) return Object.freeze({});
+    const entries = Object.entries(value);
+    if (entries.length > 32) throw new Error('computer task resume context exceeds 32 bindings');
+    const captured: Record<string, string> = Object.create(null);
+    for (const [key, binding] of entries) {
+      if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(key) || typeof binding !== 'string' ||
+          binding.length === 0 || new TextEncoder().encode(binding).byteLength > 256 || /[\r\n\0]/.test(binding)) {
+        throw new Error('computer task resume context contains an invalid binding');
+      }
+      captured[key] = binding;
+    }
+    return Object.freeze(captured);
+  }
+
+  private assertResumeContext(checkpoint: ComputerTaskCheckpoint): void {
+    const expected = new Map((checkpoint.resumeContext ?? []).map((binding) => [binding.key, binding.value]));
+    const current = new Map(Object.entries(this.resumeContext));
+    if (expected.size !== current.size) throw new Error('computer task checkpoint resume context mismatch');
+    for (const [key, value] of expected) {
+      if (current.get(key) !== value) throw new Error('computer task checkpoint resume context mismatch');
+    }
   }
 
   private preflight(step: ComputerTaskStep): ComputerTaskRunResult | undefined {
@@ -381,11 +414,12 @@ export class ComputerTaskRuntime {
     if (this.unresolvedCheckpointDispatch) {
       return this.result('reconciliation-required', observations, ['checkpoint-unresolved-dispatch']);
     }
-    const maxSteps = Math.max(1, this.program.steps.length * (4 + 3));
-    let loopSteps = 0;
+    const maxTotalSteps = Math.max(1, this.program.steps.length * (4 + 3));
 
     while (this.currentStepId !== undefined) {
-      if (++loopSteps > maxSteps) return this.result('failed', observations, ['task-step-budget-exhausted']);
+      // This budget is bound to the logical execution, not the current process/run call.
+      // Checkpoint/resume therefore cannot manufacture fresh exploration/retry budget.
+      if (this.stepsExecuted >= maxTotalSteps) return this.result('failed', observations, ['task-step-budget-exhausted']);
       const step = this.stepById.get(this.currentStepId);
       if (!step) return this.result('failed', observations, ['task-step-missing']);
 

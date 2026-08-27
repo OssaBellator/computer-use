@@ -9,7 +9,7 @@ import type {
 } from '../src/computer/environmentAdapter.js';
 import { ComputerEnvironmentRegistry } from '../src/computer/environmentRegistry.js';
 import type { ComputerTaskProgram } from '../src/computer/computerTask.js';
-import { createComputerTaskCheckpoint } from '../src/computer/computerTaskCheckpoint.js';
+import { createComputerTaskCheckpoint, decodeComputerTaskCheckpoint, encodeComputerTaskCheckpoint } from '../src/computer/computerTaskCheckpoint.js';
 import { ComputerTaskRuntime } from '../src/computer/computerTaskRuntime.js';
 
 const EXECUTION_ID = '0123456789abcdef0123456789abcdef';
@@ -124,6 +124,108 @@ test('observe then unstarted action remains a valid checkpoint after action pref
   }).run();
   assert.equal(result.status, 'completed');
   assert.equal(resumed.adapter.actCount, 1);
+});
+
+test('long-horizon resume context survives checkpoint encoding and must match exactly before execution', async () => {
+  const first = registryWith([]);
+  const runtime = new ComputerTaskRuntime(task, first.registry, {
+    executionId: EXECUTION_ID,
+    resumeContext: {
+      'auth.account': 'account:work',
+      'auth.session-generation': 'session-generation:42',
+      'authority.revision': 'policy:2026-08-27:a1',
+    },
+  });
+  const checkpoint = decodeComputerTaskCheckpoint(encodeComputerTaskCheckpoint(runtime.checkpoint()));
+  assert.deepEqual(checkpoint.resumeContext, [
+    { key: 'auth.account', value: 'account:work' },
+    { key: 'auth.session-generation', value: 'session-generation:42' },
+    { key: 'authority.revision', value: 'policy:2026-08-27:a1' },
+  ]);
+
+  const matching = registryWith(['fake.write']);
+  const result = await new ComputerTaskRuntime(task, matching.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+    resumeContext: {
+      'authority.revision': 'policy:2026-08-27:a1',
+      'auth.session-generation': 'session-generation:42',
+      'auth.account': 'account:work',
+    },
+  }).run();
+  assert.equal(result.status, 'completed');
+  assert.equal(matching.adapter.actCount, 1);
+});
+
+test('long-horizon resume fails closed on account/session/authority drift before adapter execution', () => {
+  const environment = registryWith(['fake.write']);
+  const checkpoint = createComputerTaskCheckpoint({
+    program: task,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: 0,
+    actions: { write: 'not-started' },
+    resumeContext: { 'auth.account': 'account:work', 'auth.session-generation': 'session-generation:42' },
+  });
+  assert.throws(() => new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+    resumeContext: { 'auth.account': 'account:other', 'auth.session-generation': 'session-generation:42' },
+  }), /resume context mismatch/);
+  assert.equal(environment.adapter.actCount, 0);
+  assert.throws(() => new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+  }), /resume context mismatch/);
+});
+
+test('checkpoint resume cannot reset the cumulative task step budget', async () => {
+  const boundedProgram: ComputerTaskProgram = {
+    id: 'long-horizon-budget-review',
+    entry: 'observe',
+    steps: [
+      { kind: 'observe', id: 'observe', request: { adapterId: 'fake', channel: 'semantic-ui' }, next: 'write' },
+      {
+        kind: 'action',
+        id: 'write',
+        request: {
+          adapterId: 'fake',
+          actionId: 'write',
+          capability: 'fake.write',
+          effect: 'local-reversible',
+          idempotency: 'idempotent',
+        },
+      },
+    ],
+  };
+  const checkpoint = createComputerTaskCheckpoint({
+    program: boundedProgram,
+    executionId: EXECUTION_ID,
+    nextStepId: 'write',
+    stepsExecuted: boundedProgram.steps.length * 7,
+    actions: { write: 'not-started' },
+  });
+  const environment = registryWith(['fake.write']);
+  const result = await new ComputerTaskRuntime(boundedProgram, environment.registry, {
+    executionId: EXECUTION_ID,
+    checkpoint,
+  }).run();
+  assert.equal(result.status, 'failed');
+  assert.ok(result.evidence?.includes('task-step-budget-exhausted'));
+  assert.equal(environment.adapter.actCount, 0);
+});
+
+test('resume context is bounded metadata and rejects invalid or excessive bindings', () => {
+  const environment = registryWith([]);
+  assert.throws(() => new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    resumeContext: { 'bad key with spaces': 'opaque-value' },
+  }), /invalid binding/);
+  const tooMany = Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`binding:${index}`, `value:${index}`]));
+  assert.throws(() => new ComputerTaskRuntime(task, environment.registry, {
+    executionId: EXECUTION_ID,
+    resumeContext: tooMany,
+  }), /exceeds 32 bindings/);
 });
 
 test('verifier cannot mutate dispatch fields to bypass effectful post-dispatch verification', async () => {
