@@ -1,0 +1,89 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import type { WindowsUiaCachedObservation, WindowsUiaControlSnapshot, WindowsUiaWindowRef } from '../src/computer/windowsUiaContract.js';
+import { evaluateWindowsUiaSemanticRecipeOffline } from '../src/computer/windowsUiaSemanticOfflineEvaluation.js';
+import { digestWindowsUiaSemanticRecipeManifest, type WindowsUiaSemanticRecipeManifest } from '../src/computer/windowsUiaSemanticRecipeManifest.js';
+
+const windowRef:WindowsUiaWindowRef=Object.freeze({
+  hwnd:'0x720',desktopSessionId:'interactive:1',process:Object.freeze({processId:720,startIdentity:'p720'}),generation:2,
+});
+function node(runtimeId:number[],controlType:string,input:Partial<WindowsUiaControlSnapshot>={}):WindowsUiaControlSnapshot{
+  return Object.freeze({
+    ref:Object.freeze({window:windowRef,runtimeId:Object.freeze(runtimeId),controlType,generation:1,...(input.ref?.automationId?{automationId:input.ref.automationId}:{})}),
+    patterns:Object.freeze(input.patterns??[]),
+    ...(input.name!==undefined?{name:input.name}:{}),
+    ...(input.children!==undefined?{children:Object.freeze([...input.children])}:{}),
+  });
+}
+function observation(children:readonly WindowsUiaControlSnapshot[]):WindowsUiaCachedObservation{
+  return Object.freeze({window:windowRef,root:node([1],'Window',{patterns:['window'],children}),itemCount:children.length+1,textBytes:0,truncated:false,invalidationEpoch:1,capturedAtMs:1});
+}
+function manifests(baseNames:readonly string[],proposedNames:readonly string[]):readonly [WindowsUiaSemanticRecipeManifest,WindowsUiaSemanticRecipeManifest]{
+  const base:WindowsUiaSemanticRecipeManifest=Object.freeze({
+    schemaVersion:1,revision:1,evidenceIds:Object.freeze(['offline-base']),recipe:Object.freeze({
+      id:'save-skill',locator:Object.freeze({id:'save-target',names:Object.freeze(baseNames),controlTypes:Object.freeze(['Button']),requiredPatterns:Object.freeze(['invoke'] as const)}),action:Object.freeze({kind:'invoke' as const}),
+    }),
+  });
+  const proposed:WindowsUiaSemanticRecipeManifest=Object.freeze({
+    schemaVersion:1,revision:2,parentDigest:digestWindowsUiaSemanticRecipeManifest(base),evidenceIds:Object.freeze(['offline-base','offline-proposal']),recipe:Object.freeze({
+      id:'save-skill',locator:Object.freeze({id:'save-target',names:Object.freeze(proposedNames),controlTypes:Object.freeze(['Button']),requiredPatterns:Object.freeze(['invoke'] as const)}),action:Object.freeze({kind:'invoke' as const}),
+    }),
+  });
+  return Object.freeze([base,proposed]);
+}
+
+test('offline semantic replay reports recovery without granting promotion or authority',()=>{
+  const [base,proposed]=manifests(['Save'],['Save','Store']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'existing-save',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})])},
+    {caseId:'new-store',observation:observation([node([3],'Button',{name:'Store',patterns:['invoke']})])},
+  ]);
+  assert.equal(result.status,'improved');
+  assert.equal(result.recoveries,1);
+  assert.equal(result.regressions,0);
+  assert.equal(result.stableReady,1);
+  assert.equal(result.promotionEligible,false);
+  assert.equal(result.authorityGranted,false);
+});
+
+test('offline semantic replay detects regression when proposed recipe loses a previously ready case',()=>{
+  const [base,proposed]=manifests(['Save','Store'],['Store']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'save-case',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})])},
+  ]);
+  assert.equal(result.status,'regressed');
+  assert.equal(result.regressions,1);
+  assert.equal(result.proposedUnresolved,1);
+});
+
+test('offline semantic replay can be non-regressing without claiming improvement',()=>{
+  const [base,proposed]=manifests(['Save'],['Save']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'save-case',observation:observation([node([2],'Button',{name:'Save',patterns:['invoke']})])},
+  ]);
+  assert.equal(result.status,'non-regressing');
+  assert.equal(result.stableReady,1);
+  assert.equal(result.recoveries,0);
+});
+
+test('offline semantic replay retains ambiguity as unresolved rather than treating it as success',()=>{
+  const [base,proposed]=manifests(['Save'],['Save','Store']);
+  const result=evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'ambiguous-store',observation:observation([
+      node([2],'Button',{name:'Store',patterns:['invoke']}),node([3],'Button',{name:'STORE',patterns:['invoke']}),
+    ])},
+  ]);
+  assert.equal(result.caseResults[0]?.proposedStatus,'grounding-ambiguous');
+  assert.equal(result.proposedUnresolved,1);
+  assert.equal(result.promotionEligible,false);
+});
+
+test('offline semantic replay requires exact revision lineage and bounded unique case identities',()=>{
+  const [base,proposed]=manifests(['Save'],['Save','Store']);
+  const bad=Object.freeze({...proposed,parentDigest:`sha256:${'0'.repeat(64)}`});
+  assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,bad,[{caseId:'one',observation:observation([])}]),/parent-mismatch/);
+  assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[]),/cases-invalid/);
+  assert.throws(()=>evaluateWindowsUiaSemanticRecipeOffline(base,proposed,[
+    {caseId:'duplicate',observation:observation([])},{caseId:'duplicate',observation:observation([])},
+  ]),/case-id-invalid/);
+});
