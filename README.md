@@ -37,6 +37,8 @@ flowchart TD
 
 ### Reviewer path
 
+- Case study: [CASE_STUDY.md](./CASE_STUDY.md)
+
 - Neutral adapter contract: [`src/computer/environmentAdapter.ts`](./src/computer/environmentAdapter.ts)
 - Cross-adapter task runtime: [`src/computer/computerTaskRuntime.ts`](./src/computer/computerTaskRuntime.ts)
 - Browser adapter: [`src/computer/browserEnvironmentAdapter.ts`](./src/computer/browserEnvironmentAdapter.ts)
