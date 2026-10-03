@@ -8,6 +8,14 @@ The project is no longer only a browser automation engine. Chromium remains the 
 
 The central design rule is that these environments are peers. A filesystem adapter is not a special case of browser automation; a desktop accessibility adapter is not a fake DOM; terminal execution is not “local compute”; and a successful transport dispatch is not proof that a higher-level side effect succeeded.
 
+## At a glance
+
+- **Problem:** computer-use agents often conflate “command dispatched” with “desired effect happened,” then retry through stale targets or ambiguous side effects.
+- **Implemented:** generation-aware target identity, bounded observations, explicit effect classes, approval hooks, sticky dispatch uncertainty, separate verification and checkpoint/recovery semantics.
+- **Strongest runtime today:** standalone Chromium/CDP plus the neutral computer/task runtime.
+- **Reference value:** the repository shows how browser, terminal, filesystem, process, desktop and remote adapters can share one authority model without pretending they are the same environment.
+- **Boundary:** this is a reference codebase, not a claim that every platform backend on every branch is production-validated.
+
 ## Current repository state
 
 - Package: `semantic-browser-interaction-engine`
