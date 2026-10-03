@@ -18,6 +18,7 @@ The central design rule is that these environments are peers. A filesystem adapt
 - Current browser capability profile: **standalone Chromium 0.43**
 - Test model: local TypeScript/Node tests plus synthetic/local Chromium integration tests; GitHub Actions is intentionally not used
 - Public surface: the historical browser API and the neutral computer contracts are exported from `src/index.ts`; many newly integrated concrete computer adapters/runtimes are implemented source modules but are **not yet all re-exported through the top-level package index**
+- Experimental Windows provider work: **[PR #189](https://github.com/OssaBellator/computer-use/pull/189)** adds production Windows UI Automation, Windows.Graphics.Capture, guarded native input, and verification foundations. Its PR description records the exact validation baseline and the pieces that still require further Windows validation.
 
 ## What is implemented today
 
