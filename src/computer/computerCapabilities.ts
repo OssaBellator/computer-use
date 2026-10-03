@@ -120,6 +120,8 @@ export const COMPUTER_CAPABILITIES = [
   'task-checkpointing',
   'explicit-confirmation-gate',
   'side-effect-verification',
+  'credential-application',
+  'authentication-factor-application',
 ] as const;
 
 export type ComputerCapability = typeof COMPUTER_CAPABILITIES[number];

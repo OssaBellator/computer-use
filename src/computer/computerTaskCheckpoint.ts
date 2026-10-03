@@ -5,6 +5,13 @@ export const COMPUTER_TASK_CHECKPOINT_VERSION = 1 as const;
 export const COMPUTER_TASK_CHECKPOINT_FORMAT = 'browser-automation/computer-task-checkpoint' as const;
 export const COMPUTER_TASK_CHECKPOINT_MAX_BYTES = 64 * 1024;
 export const COMPUTER_TASK_CHECKPOINT_MAX_STEPS_EXECUTED = 1_000_000;
+export const COMPUTER_TASK_CHECKPOINT_MAX_RESUME_BINDINGS = 32;
+export const COMPUTER_TASK_CHECKPOINT_MAX_RESUME_BINDING_BYTES = 256;
+
+export interface ComputerTaskResumeContextBinding {
+  key: string;
+  value: string;
+}
 
 export type ComputerTaskActionCheckpointState = 'not-started' | 'completed' | 'dispatched-unverified' | 'unknown-dispatch';
 
@@ -22,6 +29,8 @@ export interface ComputerTaskCheckpoint {
     stepsExecuted: number;
   };
   actions: readonly ComputerTaskActionCheckpoint[];
+  /** Non-secret opaque bindings that must match exactly before long-horizon resume. */
+  resumeContext?: readonly ComputerTaskResumeContextBinding[];
 }
 
 export interface ComputerTaskCheckpointValidationOptions {
@@ -45,6 +54,7 @@ const ACTION_STATES: readonly ComputerTaskActionCheckpointState[] = [
   'dispatched-unverified',
   'unknown-dispatch',
 ];
+const RESUME_BINDING_KEY = /^[a-z0-9][a-z0-9._:-]{0,127}$/i;
 const CHECKPOINT_PROVENANCE = Symbol('computer-task-checkpoint-provenance');
 type ProvenancedCheckpoint = ComputerTaskCheckpoint & { readonly [CHECKPOINT_PROVENANCE]: true };
 
@@ -170,6 +180,9 @@ function freezeCheckpoint(checkpoint: ComputerTaskCheckpoint): ComputerTaskCheck
     execution: Object.freeze({ ...checkpoint.execution }),
     cursor: Object.freeze({ ...checkpoint.cursor }),
     actions: Object.freeze(checkpoint.actions.map((action) => Object.freeze({ ...action }))),
+    resumeContext: checkpoint.resumeContext
+      ? Object.freeze(checkpoint.resumeContext.map((binding) => Object.freeze({ ...binding })))
+      : undefined,
   };
   markCheckpointProvenance(frozen);
   return Object.freeze(frozen);
@@ -201,6 +214,19 @@ export function validateComputerTaskCheckpoint(
     throw new Error('invalid computer task checkpoint cursor step');
   }
   if (!Array.isArray(checkpoint.actions) || checkpoint.actions.length > 512) throw new Error('invalid computer task checkpoint actions');
+  if (checkpoint.resumeContext !== undefined) {
+    if (!Array.isArray(checkpoint.resumeContext) || checkpoint.resumeContext.length > COMPUTER_TASK_CHECKPOINT_MAX_RESUME_BINDINGS) {
+      throw new Error('invalid computer task checkpoint resume context');
+    }
+    const resumeKeys = new Set<string>();
+    for (const binding of checkpoint.resumeContext) {
+      if (!binding || typeof binding !== 'object' || !RESUME_BINDING_KEY.test(binding.key) ||
+          !boundedIdentifier(binding.value, COMPUTER_TASK_CHECKPOINT_MAX_RESUME_BINDING_BYTES) || resumeKeys.has(binding.key)) {
+        throw new Error('invalid computer task checkpoint resume context binding');
+      }
+      resumeKeys.add(binding.key);
+    }
+  }
   const seen = new Set<string>();
   for (const action of checkpoint.actions) {
     if (!boundedIdentifier(action?.stepId, 128) || !ACTION_STATES.includes(action.state) || seen.has(action.stepId)) {
@@ -254,6 +280,7 @@ export function createComputerTaskCheckpoint(options: {
   nextStepId?: string;
   stepsExecuted: number;
   actions: ReadonlyMap<string, ComputerTaskActionCheckpointState> | Readonly<Record<string, ComputerTaskActionCheckpointState>>;
+  resumeContext?: Readonly<Record<string, string>>;
 }): ComputerTaskCheckpoint {
   const programErrors = validateComputerTaskProgram(options.program);
   if (programErrors.length > 0) throw new Error(`invalid computer task program: ${programErrors.join('; ')}`);
@@ -267,12 +294,16 @@ export function createComputerTaskCheckpoint(options: {
       throw new Error('computer task checkpoint action names a missing or non-action step');
     }
   }
+  const resumeContext = options.resumeContext === undefined ? undefined : Object.entries(options.resumeContext)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => ({ key, value }));
   const checkpoint: ComputerTaskCheckpoint = {
     version: COMPUTER_TASK_CHECKPOINT_VERSION,
     program: { id: options.program.id, hash: computerTaskProgramHash(options.program) },
     execution: { id: options.executionId },
     cursor: { nextStepId: options.nextStepId, stepsExecuted: options.stepsExecuted },
     actions,
+    ...(resumeContext ? { resumeContext } : {}),
   };
   validateComputerTaskCheckpoint(checkpoint, { program: options.program, executionId: options.executionId });
   return freezeCheckpoint(checkpoint);

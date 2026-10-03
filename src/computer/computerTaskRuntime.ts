@@ -19,10 +19,15 @@ import {
 } from './computerTask.js';
 import {
   createComputerTaskCheckpoint,
+  encodeComputerTaskCheckpoint,
   validateComputerTaskCheckpoint,
   type ComputerTaskActionCheckpointState,
   type ComputerTaskCheckpoint,
 } from './computerTaskCheckpoint.js';
+import {
+  loadComputerTaskCheckpointStoreHead,
+  type ComputerTaskCheckpointStore,
+} from './computerTaskCheckpointStore.js';
 
 export const COMPUTER_TASK_MAX_RETAINED_OBSERVATIONS = 64;
 const EVIDENCE_CODE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
@@ -45,7 +50,8 @@ export type ComputerTaskTerminalStatus =
   | 'verification-mismatch'
   | 'unverified'
   | 'unknown-dispatch'
-  | 'reconciliation-required';
+  | 'reconciliation-required'
+  | 'suspended';
 
 export interface ComputerTaskTargetRevalidation {
   state: 'fresh' | 'stale' | 'missing';
@@ -72,7 +78,22 @@ export interface ComputerTaskVerificationContext {
   registry: ComputerEnvironmentRegistry;
 }
 
+export interface ComputerTaskContinuationDecision {
+  state: 'continue' | 'suspend';
+  evidence?: readonly string[];
+}
+
 export interface ComputerTaskRuntimeHooks {
+  /**
+   * Trusted host continuation gate for long-horizon execution. Runs before any adapter preflight/dispatch.
+   * Suspension preserves the current cursor and does not consume task budget.
+   */
+  continuationGate?: (context: { step: ComputerTaskStep; stepsExecuted: number }) => Promise<ComputerTaskContinuationDecision>;
+  /**
+   * Optional durable sink. For action steps the runtime writes a conservative pre-dispatch fence before
+   * crossing the adapter boundary, then advances it only after verified state transitions.
+   */
+  checkpointSink?: (checkpoint: ComputerTaskCheckpoint) => Promise<void>;
   /** Must use bounded adapter/domain observations; raw observations are not retained by the runtime. */
   revalidateTarget?: (
     registry: ComputerEnvironmentRegistry,
@@ -85,6 +106,15 @@ export interface ComputerTaskRuntimeHooks {
 export interface ComputerTaskRuntimeOptions {
   executionId: string;
   checkpoint?: ComputerTaskCheckpoint;
+  /** Strong durable anti-rollback store. Resume callers must supply the revision paired with checkpoint. */
+  checkpointStore?: ComputerTaskCheckpointStore;
+  /** 0 only for a new execution with no durable head; positive revisions must come from the store head. */
+  checkpointStoreRevision?: number;
+  /**
+   * Non-secret opaque bindings for state that must remain stable across a long-horizon resume,
+   * e.g. authenticated-account/session generation, authority revision, tenant, or environment generation.
+   */
+  resumeContext?: Readonly<Record<string, string>>;
   hooks?: ComputerTaskRuntimeHooks;
 }
 
@@ -174,6 +204,9 @@ export class ComputerTaskRuntime {
   private readonly registry: ComputerEnvironmentRegistry;
   private readonly executionId: string;
   private readonly hooks: ComputerTaskRuntimeHooks;
+  private readonly resumeContext: Readonly<Record<string, string>>;
+  private readonly checkpointStore: ComputerTaskCheckpointStore | undefined;
+  private checkpointStoreRevision: number | undefined;
   private readonly stepById: Map<string, ComputerTaskStep>;
   private readonly actionStates = new Map<string, ComputerTaskActionCheckpointState>();
   private currentStepId: string | undefined;
@@ -196,6 +229,18 @@ export class ComputerTaskRuntime {
       ...options.hooks,
       verifiers: options.hooks?.verifiers ? Object.freeze({ ...options.hooks.verifiers }) : undefined,
     });
+    this.checkpointStore = options.checkpointStore;
+    if (this.checkpointStore) {
+      const revision = options.checkpointStoreRevision ?? (options.checkpoint ? undefined : 0);
+      if (revision === undefined || !Number.isSafeInteger(revision) || revision < 0 || revision > 1_000_000_000 ||
+          (options.checkpoint !== undefined && revision === 0) || (options.checkpoint === undefined && revision !== 0)) {
+        throw new Error('computer task checkpoint store revision is invalid for runtime state');
+      }
+      this.checkpointStoreRevision = revision;
+    } else if (options.checkpointStoreRevision !== undefined) {
+      throw new Error('computer task checkpoint store revision requires a checkpoint store');
+    }
+    this.resumeContext = this.captureResumeContext(options.resumeContext);
     this.stepById = new Map(this.program.steps.map((step) => [step.id, step]));
     this.currentStepId = this.program.entry;
 
@@ -205,6 +250,7 @@ export class ComputerTaskRuntime {
         executionId: this.executionId,
         requireRuntimeProvenance: true,
       });
+      this.assertResumeContext(options.checkpoint);
       this.currentStepId = options.checkpoint.cursor.nextStepId;
       this.stepsExecuted = options.checkpoint.cursor.stepsExecuted;
       for (const action of options.checkpoint.actions) {
@@ -223,7 +269,32 @@ export class ComputerTaskRuntime {
       nextStepId: this.currentStepId,
       stepsExecuted: this.stepsExecuted,
       actions: this.actionStates,
+      resumeContext: this.resumeContext,
     });
+  }
+
+  private captureResumeContext(value: Readonly<Record<string, string>> | undefined): Readonly<Record<string, string>> {
+    if (value === undefined) return Object.freeze({});
+    const entries = Object.entries(value);
+    if (entries.length > 32) throw new Error('computer task resume context exceeds 32 bindings');
+    const captured: Record<string, string> = Object.create(null);
+    for (const [key, binding] of entries) {
+      if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(key) || typeof binding !== 'string' ||
+          binding.length === 0 || new TextEncoder().encode(binding).byteLength > 256 || /[\r\n\0]/.test(binding)) {
+        throw new Error('computer task resume context contains an invalid binding');
+      }
+      captured[key] = binding;
+    }
+    return Object.freeze(captured);
+  }
+
+  private assertResumeContext(checkpoint: ComputerTaskCheckpoint): void {
+    const expected = new Map((checkpoint.resumeContext ?? []).map((binding) => [binding.key, binding.value]));
+    const current = new Map(Object.entries(this.resumeContext));
+    if (expected.size !== current.size) throw new Error('computer task checkpoint resume context mismatch');
+    for (const [key, value] of expected) {
+      if (current.get(key) !== value) throw new Error('computer task checkpoint resume context mismatch');
+    }
   }
 
   private preflight(step: ComputerTaskStep): ComputerTaskRunResult | undefined {
@@ -238,6 +309,46 @@ export class ComputerTaskRuntime {
       if (!descriptor.capabilities.includes(capability)) return this.result('unsupported', [], ['capability-not-advertised']);
     }
     return undefined;
+  }
+
+  /** Current monotonic durable revision, when a CAS store is attached. */
+  durableCheckpointRevision(): number | undefined {
+    return this.checkpointStoreRevision;
+  }
+
+  private async checkpointStoreHeadIsCurrent(): Promise<boolean> {
+    if (!this.checkpointStore) return true;
+    try {
+      const head = await loadComputerTaskCheckpointStoreHead(this.checkpointStore, this.executionId);
+      const revision = head?.revision ?? 0;
+      if (revision !== this.checkpointStoreRevision) return false;
+      if (!head) return revision === 0;
+      return encodeComputerTaskCheckpoint(head.checkpoint) === encodeComputerTaskCheckpoint(this.checkpoint());
+    } catch {
+      return false;
+    }
+  }
+
+  private async persistCheckpoint(): Promise<boolean> {
+    const checkpoint = this.checkpoint();
+    if (this.checkpointStore) {
+      const expectedRevision = this.checkpointStoreRevision;
+      if (expectedRevision === undefined) return false;
+      try {
+        const committed = await this.checkpointStore.compareAndSwap(this.executionId, expectedRevision, checkpoint);
+        if (!committed || committed.status !== 'committed' || committed.revision !== expectedRevision + 1) return false;
+        this.checkpointStoreRevision = committed.revision;
+      } catch {
+        return false;
+      }
+    }
+    if (!this.hooks.checkpointSink) return true;
+    try {
+      await this.hooks.checkpointSink(checkpoint);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async targetFresh(step: ComputerTaskActionStep): Promise<ComputerTaskTargetRevalidation> {
@@ -316,6 +427,14 @@ export class ComputerTaskRuntime {
       if (predispatch.state !== 'fresh') {
         return { result: this.result('stale-target', [], evidence(predispatch.evidence, ['target-changed-before-dispatch'])) };
       }
+      if (this.hooks.checkpointSink || this.checkpointStore) {
+        // Write-ahead fence: after this durable state exists, any crash/lost process must reconcile
+        // rather than replaying the action from an older not-started checkpoint.
+        this.actionStates.set(step.id, 'unknown-dispatch');
+        if (!await this.persistCheckpoint()) {
+          return { result: this.result('suspended', [], ['checkpoint-persistence-unknown-before-dispatch']) };
+        }
+      }
       const registryResult = await this.registry.act(step.request);
       let adapterResult: ComputerActionResult;
       try {
@@ -378,16 +497,35 @@ export class ComputerTaskRuntime {
   async run(): Promise<ComputerTaskRunResult> {
     const observations: ComputerTaskObservationRecord[] = [];
     this.observationsDropped = 0;
+    if (!await this.checkpointStoreHeadIsCurrent()) {
+      return this.result('suspended', observations, ['checkpoint-store-head-mismatch']);
+    }
     if (this.unresolvedCheckpointDispatch) {
       return this.result('reconciliation-required', observations, ['checkpoint-unresolved-dispatch']);
     }
-    const maxSteps = Math.max(1, this.program.steps.length * (4 + 3));
-    let loopSteps = 0;
+    const maxTotalSteps = Math.max(1, this.program.steps.length * (4 + 3));
 
     while (this.currentStepId !== undefined) {
-      if (++loopSteps > maxSteps) return this.result('failed', observations, ['task-step-budget-exhausted']);
+      // This budget is bound to the logical execution, not the current process/run call.
+      // Checkpoint/resume therefore cannot manufacture fresh exploration/retry budget.
+      if (this.stepsExecuted >= maxTotalSteps) return this.result('failed', observations, ['task-step-budget-exhausted']);
       const step = this.stepById.get(this.currentStepId);
       if (!step) return this.result('failed', observations, ['task-step-missing']);
+
+      if (this.hooks.continuationGate) {
+        let continuation: ComputerTaskContinuationDecision;
+        try {
+          continuation = await this.hooks.continuationGate({ step, stepsExecuted: this.stepsExecuted });
+        } catch {
+          return this.result('suspended', observations, ['continuation-gate-unknown']);
+        }
+        if (!continuation || (continuation.state !== 'continue' && continuation.state !== 'suspend')) {
+          return this.result('suspended', observations, ['continuation-gate-invalid']);
+        }
+        if (continuation.state === 'suspend') {
+          return this.result('suspended', observations, evidence(continuation.evidence, ['task-continuation-suspended']));
+        }
+      }
 
       const preflight = this.preflight(step);
       if (preflight) return { ...preflight, observations: Object.freeze([...observations]), observationsDropped: this.observationsDropped };
@@ -401,6 +539,7 @@ export class ComputerTaskRuntime {
         observations.push(observationRecord(observation));
         this.stepsExecuted += 1;
         this.currentStepId = step.next;
+        if (!await this.persistCheckpoint()) return this.result('suspended', observations, ['checkpoint-persistence-failed-after-step']);
         continue;
       }
 
@@ -410,10 +549,12 @@ export class ComputerTaskRuntime {
       if (!skippedKnownCompleted) this.stepsExecuted += 1;
       if (execution.result.status === 'completed') {
         this.currentStepId = execution.next;
+        if (!await this.persistCheckpoint()) return this.result('suspended', observations, ['checkpoint-persistence-failed-after-step']);
         continue;
       }
       if (execution.result.status === 'failed' && execution.next !== undefined) {
         this.currentStepId = execution.next;
+        if (!await this.persistCheckpoint()) return this.result('suspended', observations, ['checkpoint-persistence-failed-after-step']);
         continue;
       }
       return {
