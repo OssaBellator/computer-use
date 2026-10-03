@@ -1,6 +1,8 @@
 # Bounded Computer-Use Runtime and Semantic Browser Engine
 
-A private TypeScript research/runtime repository for building **bounded, verifiable computer-use agents** from the safety properties first developed in the browser stack.
+> **Reference repository.** This codebase is public as an implementation and architecture reference for bounded, verifiable computer-use systems. It informed later Minimal MCP design work and is no longer the primary active runtime. The package remains intentionally unpublished to npm, and experimental branches/PRs may contain work that is not fully validated on every target platform.
+
+A TypeScript research/runtime repository for building **bounded, verifiable computer-use agents** from the safety properties first developed in the browser stack.
 
 The project is no longer only a browser automation engine. Chromium remains the most complete environment, but `main` now also contains the environment-neutral computer-use core, a neutral task/checkpoint runtime, and concrete or backend-neutral foundations for filesystem, process, terminal, desktop UI, remote sessions, system/device state, local compute, realtime/game/media control, and application/document semantic models.
 
@@ -12,7 +14,7 @@ The central design rule is that these environments are peers. A filesystem adapt
 - Version: **0.43.0**
 - Runtime: **Node.js >= 20**
 - Language/tooling: TypeScript 5.9+, ESM
-- Repository package status: **private**
+- Repository status: **public reference repository; npm publication disabled (`private: true`)**
 - Current browser capability profile: **standalone Chromium 0.43**
 - Test model: local TypeScript/Node tests plus synthetic/local Chromium integration tests; GitHub Actions is intentionally not used
 - Public surface: the historical browser API and the neutral computer contracts are exported from `src/index.ts`; many newly integrated concrete computer adapters/runtimes are implemented source modules but are **not yet all re-exported through the top-level package index**
@@ -464,7 +466,7 @@ RUN_LIVE_WEB=1 npm run test:live
 
 The live path is not used for purchases, payments, transfers, bookings, publication, account-security changes, deployments, or other high-consequence side effects.
 
-GitHub Actions is intentionally disabled. A focused reconstructed TypeScript/synthetic harness may be used in constrained review environments, but it must never be represented as a full repository test-suite pass.
+GitHub Actions is intentionally disabled. Validation evidence is documented per tranche and should be read with its stated scope; a focused reconstructed TypeScript/synthetic harness must never be represented as a full repository test-suite pass.
 
 ## Repository layout
 
