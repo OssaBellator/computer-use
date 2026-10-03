@@ -16,6 +16,35 @@ The central design rule is that these environments are peers. A filesystem adapt
 - **Reference value:** the repository shows how browser, terminal, filesystem, process, desktop and remote adapters can share one authority model without pretending they are the same environment.
 - **Boundary:** this is a reference codebase, not a claim that every platform backend on every branch is production-validated.
 
+## Authority and verification model
+
+```mermaid
+flowchart LR
+    A[Planner / task] --> B[ComputerTaskRuntime]
+    B --> C{Fresh target?}
+    C -- no --> X[Reject / reconcile]
+    C -- yes --> D{Consequential effect?}
+    D -- yes --> E[Approval]
+    D -- no --> F[Dispatch]
+    E --> F
+    F --> G{Dispatch state}
+    G -->|not-dispatched| H[Retry may be safe]
+    G -->|dispatched-once / unknown| I[Do not blind retry]
+    I --> J[Independent verification]
+    H --> J
+    J --> K[Checkpoint / evidence]
+```
+
+### Reviewer path
+
+- Neutral adapter contract: [`src/computer/environmentAdapter.ts`](./src/computer/environmentAdapter.ts)
+- Cross-adapter task runtime: [`src/computer/computerTaskRuntime.ts`](./src/computer/computerTaskRuntime.ts)
+- Browser adapter: [`src/computer/browserEnvironmentAdapter.ts`](./src/computer/browserEnvironmentAdapter.ts)
+- Architecture notes: [`docs/computer-use-architecture.md`](./docs/computer-use-architecture.md)
+- Checkpoint model: [`docs/task-checkpoints.md`](./docs/task-checkpoints.md)
+- Runtime safety tests: [`tests/computerTaskRuntime.test.ts`](./tests/computerTaskRuntime.test.ts)
+- Browser integration smoke: [`tests/integration/standaloneChromiumSmoke.test.mjs`](./tests/integration/standaloneChromiumSmoke.test.mjs)
+
 ## Current repository state
 
 - Package: `semantic-browser-interaction-engine`
