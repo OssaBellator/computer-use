@@ -19,20 +19,14 @@ The central design rule is that these environments are peers. A filesystem adapt
 ## Authority and verification model
 
 ```mermaid
-flowchart LR
-    A[Planner / task] --> B[ComputerTaskRuntime]
-    B --> C{Fresh target?}
-    C -- no --> X[Reject / reconcile]
-    C -- yes --> D{Consequential effect?}
-    D -- yes --> E[Approval]
-    D -- no --> F[Dispatch]
-    E --> F
-    F --> G{Dispatch state}
-    G -->|not-dispatched| H[Retry may be safe]
-    G -->|dispatched-once / unknown| I[Do not blind retry]
-    I --> J[Independent verification]
-    H --> J
-    J --> K[Checkpoint / evidence]
+flowchart TD
+    A[Task]
+    B[Fresh target and authority check]
+    C[Approved dispatch]
+    D[Independent verification]
+    E[Checkpoint and evidence]
+
+    A --> B --> C --> D --> E
 ```
 
 ### Reviewer path
