@@ -16,6 +16,12 @@ The central design rule is that these environments are peers. A filesystem adapt
 - **Reference value:** the repository shows how browser, terminal, filesystem, process, desktop and remote adapters can share one authority model without pretending they are the same environment.
 - **Boundary:** this is a reference codebase, not a claim that every platform backend on every branch is production-validated.
 
+## Live proof
+
+Focused `ComputerTaskRuntime` safety-suite output captured on 2026-10-03: **21/21 tests passed**. This is intentionally a focused runtime proof, **not** a claim that the entire repository build/test surface is currently green.
+
+![Focused computer-use runtime safety-suite output](./docs/assets/proof.svg)
+
 ## Authority and verification model
 
 ```mermaid
